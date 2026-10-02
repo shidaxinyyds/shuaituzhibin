@@ -191,3 +191,20 @@ REVOKE EXECUTE ON FUNCTION public.sp_activate(TEXT, TEXT, TEXT) FROM PUBLIC, ano
 REVOKE EXECUTE ON FUNCTION public.sp_renew(TEXT, TEXT, BIGINT)  FROM PUBLIC, anon, authenticated;
 GRANT  EXECUTE ON FUNCTION public.sp_activate(TEXT, TEXT, TEXT) TO service_role;
 GRANT  EXECUTE ON FUNCTION public.sp_renew(TEXT, TEXT, BIGINT)  TO service_role;
+
+-- ----------------------------------------------------------------------------
+-- 5. 跨游戏特征知识库与云端热更表 (game_profiles)
+-- 允许管理员在后台直接发布或热更新各游戏的守军天梯、按键别名与战术数值，
+-- 客户端通过 Edge Function 自动静默拉取热更新，免去重新发版 APK。
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.game_profiles (
+  id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  game_id      TEXT        NOT NULL UNIQUE,
+  game_name    TEXT        NOT NULL,
+  version      TEXT        NOT NULL,
+  profile_json JSONB       NOT NULL,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.game_profiles ENABLE ROW LEVEL SECURITY;
+GRANT ALL ON TABLE public.game_profiles TO service_role;

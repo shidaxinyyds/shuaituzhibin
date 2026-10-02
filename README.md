@@ -73,6 +73,13 @@
 - **纯原生 C++ HMAC-SHA256 离线强验签**：私钥不留在 Java 层，激活后本地离线缓存凭证，断网脱机也能正常运行，单次验签耗时 `< 1ms`。
 - **设备硬件指纹绑定与时钟防回拨熔断**：一机一码锁定，系统时钟篡改主动熔断防破解。
 
+### 7. 模块化进阶：跨游戏独立知识库与云端静默热更体系 (`KnowledgeBaseManager`)
+- **通用引擎与游戏规则解耦**：触控、防封、720p 归一化、悬浮窗为 100% 通用底座，各游戏规则独立封装为 JSON 与实体 Profile。
+- **内置官方级知识库**：
+  - **《率土之滨 · 2026征服赛季旗舰版》(`stzb`)**：120 士气/体力，Lv.3~Lv.8 开荒天梯打分与克制避让，17 组抗版本迭代语义按键，看门狗弹窗过滤。
+  - **《三国志·战略版 · PK赛季旗舰版》(`sgz`)**：100 士气，夜战双倍消耗，占领/调动/筑城按键，守军兵种克制。
+- **云端零发版静默热更**：游戏官方更新数值或按键时，使用 `python tools/upload_profile.py --json pipeline/rate_of_land.json` 即可一键更新 Supabase 配置，全网客户端自动拉取热更新，彻底告别频繁重新发版打包 APK！
+
 ---
 
 ## 🛠️ 项目目录结构
@@ -88,6 +95,7 @@ shuaituzhibin/
 │   │   │   ├── cpp/                  # C++ NDK 核心 (SecurityBridge.cpp, RapidOCR)
 │   │   │   ├── java/com/stzb/assistant/
 │   │   │   │   ├── antiban/          # 阶段四：防封风控与动力学触控
+│   │   │   │   ├── knowledge/        # 跨游戏知识库、Profile与云端热更管理
 │   │   │   │   ├── license/          # 阶段六：卡密激活与离线验签
 │   │   │   │   ├── ocr/              # 阶段二：RapidOCR与率土特征识别
 │   │   │   │   ├── overlay/          # 阶段五：悬浮窗胶囊与HUD控制台
@@ -101,12 +109,15 @@ shuaituzhibin/
 ├── backend/
 │   └── supabase/
 │       ├── migrations/
-│       │   └── 0001_multi_game_license.sql # 数据库建表与存储过程
+│       │   └── 0001_multi_game_license.sql # 数据库建表、知识库热更表与存储过程
 │       └── functions/
-│           └── license/index.ts            # Supabase Edge Functions 无服务接口
+│           └── license/index.ts            # Supabase Edge Functions 无服务接口 (鉴权+知识库热更)
+├── pipeline/
+│   └── rate_of_land.json             # 率土之滨官方知识库全量 JSON 定义
 ├── tools/
 │   ├── gen_cards.py                  # 商业卡密批量生成工具 (零知识安全)
-│   └── keep_alive.py                 # Supabase 免费实例自动保活脚本
+│   ├── keep_alive.py                 # Supabase 免费实例自动保活脚本
+│   └── upload_profile.py             # 跨游戏知识库云端热更发布工具
 ├── docs/
 │   └── 00_COMMERCIAL_ROADMAP.md      # 六阶段全流程落地规划文档
 ├── .gitignore

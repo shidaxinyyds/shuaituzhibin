@@ -166,11 +166,15 @@ object StzbUiMatcher {
     }
 
     /**
-     * 模糊语义匹配逻辑，免疫空格、连字符及轻微错别字
+     * 模糊语义匹配逻辑，优先结合当前激活的游戏知识库动态别名，免疫空格、连字符及轻微错别字
      */
     private fun matchesType(cleanText: String, type: ButtonType): Boolean {
-        if (cleanText.contains(type.primaryKeyword)) return true
-        for (alias in type.aliases) {
+        val btnDef = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.semanticButtons[type.name]
+        val primary = btnDef?.primaryKeyword ?: type.primaryKeyword
+        val aliases = btnDef?.aliases ?: type.aliases
+
+        if (cleanText.contains(primary)) return true
+        for (alias in aliases) {
             val cleanAlias = alias.replace(" ", "")
             if (cleanText.contains(cleanAlias)) return true
         }

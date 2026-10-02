@@ -185,6 +185,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val inflater = LayoutInflater.from(context)
         dashboardView = inflater.inflate(R.layout.view_floating_dashboard, null)
 
+        val tvTitle = dashboardView?.findViewById<TextView>(R.id.tvDashboardTitle)
+        tvTitle?.text = "${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName} · 战术总控"
+
         val tvClose = dashboardView?.findViewById<TextView>(R.id.tvCloseDashboard)
         tvClose?.setOnClickListener { hideDashboard() }
 

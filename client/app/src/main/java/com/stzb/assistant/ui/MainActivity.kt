@@ -55,6 +55,15 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     private lateinit var btnActivateLicense: Button
     private lateinit var tvLicenseMessage: TextView
 
+    // 多游戏特征知识库管理组件
+    private lateinit var tvKnowledgeTitle: TextView
+    private lateinit var tvKnowledgeVersionBadge: TextView
+    private lateinit var tvKnowledgeStats: TextView
+    private lateinit var btnSwitchGame: Button
+    private lateinit var btnUpdateKnowledge: Button
+    private lateinit var btnViewLandGuide: Button
+    private lateinit var tvKnowledgeMessage: TextView
+
     private lateinit var tvLog: TextView
     private lateinit var btnOverlay: MaterialButton
     private lateinit var btnAccessibility: MaterialButton
@@ -116,6 +125,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         setupButtons()
         checkPermissions()
         refreshLicenseStatus()
+        refreshKnowledgeUi()
     }
 
     override fun onDestroy() {
@@ -127,6 +137,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         super.onResume()
         checkPermissions()
         refreshLicenseStatus()
+        refreshKnowledgeUi()
     }
 
     private fun initViews() {
@@ -135,6 +146,14 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         etLicenseCode = findViewById(R.id.etLicenseCode)
         btnActivateLicense = findViewById(R.id.btnActivateLicense)
         tvLicenseMessage = findViewById(R.id.tvLicenseMessage)
+
+        tvKnowledgeTitle = findViewById(R.id.tvKnowledgeTitle)
+        tvKnowledgeVersionBadge = findViewById(R.id.tvKnowledgeVersionBadge)
+        tvKnowledgeStats = findViewById(R.id.tvKnowledgeStats)
+        btnSwitchGame = findViewById(R.id.btnSwitchGame)
+        btnUpdateKnowledge = findViewById(R.id.btnUpdateKnowledge)
+        btnViewLandGuide = findViewById(R.id.btnViewLandGuide)
+        tvKnowledgeMessage = findViewById(R.id.tvKnowledgeMessage)
 
         tvLog = findViewById(R.id.tvLogOutput)
         btnOverlay = findViewById(R.id.btnOverlayPermission)
@@ -187,6 +206,76 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
                     log("❌【卡密激活失败】${err.message}")
                 }
             }
+        }
+
+        btnSwitchGame.setOnClickListener {
+            val games = com.stzb.assistant.knowledge.KnowledgeBaseManager.getSupportedGames()
+            val gameNames = games.map { it.second }.toTypedArray()
+            val currentIndex = games.indexOfFirst { it.first == com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameId }
+
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("选择要挂接的游戏知识库")
+                .setSingleChoiceItems(gameNames, if (currentIndex >= 0) currentIndex else 0) { dialog, which ->
+                    val selectedGameId = games[which].first
+                    com.stzb.assistant.knowledge.KnowledgeBaseManager.switchGame(this, selectedGameId)
+                    refreshKnowledgeUi()
+                    log("🔄【已切换游戏知识库】当前激活: ${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName} (版本: ${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.profileVersion})")
+                    dialog.dismiss()
+                }
+                .setNegativeButton("取消", null)
+                .show()
+        }
+
+        btnUpdateKnowledge.setOnClickListener {
+            btnUpdateKnowledge.isEnabled = false
+            btnUpdateKnowledge.text = "检查中..."
+            CoroutineScope(Dispatchers.Main).launch {
+                val result = com.stzb.assistant.knowledge.KnowledgeBaseManager.checkCloudUpdate(this@MainActivity)
+                btnUpdateKnowledge.isEnabled = true
+                btnUpdateKnowledge.text = "检查云端热更"
+                result.onSuccess { updateRes ->
+                    refreshKnowledgeUi()
+                    if (updateRes.isUpdated) {
+                        Toast.makeText(this@MainActivity, updateRes.message, Toast.LENGTH_SHORT).show()
+                        tvKnowledgeMessage.text = "🎉 ${updateRes.message}"
+                        tvKnowledgeMessage.setTextColor(Color.parseColor("#10B981"))
+                        log("🎉【知识库热更新完成】版本已升级为: ${updateRes.currentVersion}")
+                    } else {
+                        Toast.makeText(this@MainActivity, "当前知识库已是最新版本", Toast.LENGTH_SHORT).show()
+                        tvKnowledgeMessage.text = "✅ 当前已是最新知识库 (${updateRes.currentVersion})"
+                        tvKnowledgeMessage.setTextColor(Color.parseColor("#10B981"))
+                        log("✅【知识库检查】本地已为最新版本: ${updateRes.currentVersion}")
+                    }
+                }.onFailure { err ->
+                    Toast.makeText(this@MainActivity, err.message ?: "检查失败", Toast.LENGTH_SHORT).show()
+                    tvKnowledgeMessage.text = "⚠️ 检查云端失败: ${err.message}"
+                    tvKnowledgeMessage.setTextColor(Color.parseColor("#F59E0B"))
+                    log("⚠️【知识库检查异常】${err.message}")
+                }
+            }
+        }
+
+        btnViewLandGuide.setOnClickListener {
+            val suggestions = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.defenderDb.landSuggestions
+            if (suggestions.isEmpty()) {
+                Toast.makeText(this, "当前游戏无土地建议数据", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val sb = StringBuilder()
+            suggestions.toSortedMap().forEach { (lvl, s) ->
+                sb.append("【Lv.$lvl 土地指南】推荐兵力: ${s.recommendedSoldiers}+\n")
+                sb.append("  • 软柿子优先打: ${s.safeHeroes.joinToString("、")}\n")
+                if (s.blacklistHeroes.isNotEmpty()) {
+                    sb.append("  • 黑名单千万别撞: ${s.blacklistHeroes.joinToString("、")}\n")
+                }
+                sb.append("  • 策略: ${s.note}\n\n")
+            }
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("📖 开荒打地天梯指南")
+                .setMessage(sb.toString().trim())
+                .setPositiveButton("我知道了", null)
+                .show()
+            log("📖【开荒指南速查】\n$sb")
         }
 
         btnOverlay.setOnClickListener {
@@ -344,6 +433,19 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         }
     }
 
+    private fun refreshKnowledgeUi() {
+        val profile = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile
+        tvKnowledgeTitle.text = profile.gameName
+        tvKnowledgeVersionBadge.text = "v${profile.profileVersion}"
+        val heroCount = profile.defenderDb.dangerHeroes.size +
+                profile.defenderDb.hardHeroes.size +
+                profile.defenderDb.moderateHeroes.size +
+                profile.defenderDb.safeHeroes.size
+        tvKnowledgeStats.text = "规则: ${profile.rules.maxMorale}士气/${profile.rules.maxStamina}体力 | 守军库: ${heroCount}名 | 语义按键: ${profile.semanticButtons.size}组"
+        tvKnowledgeMessage.text = "当前加载: ${profile.gameName} (包名: ${profile.targetPackage})"
+        tvKnowledgeMessage.setTextColor(Color.parseColor("#10B981"))
+    }
+
     private fun assertEngineReady(): Boolean {
         val license = LicenseManager.checkLocalLicense(this)
         if (!license.isValid) {
@@ -424,11 +526,14 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
                 if (ocrResult != null) {
                     val stamina = OcrManager.parseStamina(testBmp)
                     val coords = OcrManager.parseCoordinates(testBmp)
+                    val detail = evaluation.matchedDefenders.joinToString("\n") { "  • ${it.name} [${it.tag}]: ${it.counterTip}" }
                     log(
                         "🎉【OCR 自检成功】耗时: ${costMs}ms\n" +
                         "📝 文本: ${ocrResult.strRes.replace("\n", " | ")}\n" +
                         "⚡ 体力: ${stamina}/120 | 📍 坐标: (${coords?.first}, ${coords?.second})\n" +
-                        "🛡️ 守军难度: ${evaluation.tier.desc} - ${evaluation.recommendation}"
+                        "🛡️ 守军评估: ${evaluation.tier.desc}\n" +
+                        "📋 守将机制解析:\n$detail\n" +
+                        "💡 战术建议: ${evaluation.recommendation}"
                     )
                 } else {
                     log("⚠️ OCR 返回为空。")

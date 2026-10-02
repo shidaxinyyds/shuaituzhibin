@@ -1,62 +1,197 @@
 {
   "game_id": "stzb",
-  "game_name": "率土之滨",
-  "template_type": "GRID_STRATEGY_LOOP",
-  "resolution_base": {
-    "width": 1280,
-    "height": 720,
-    "orientation": "landscape"
+  "game_name": "率土之滨 · 2026征服赛季旗舰版",
+  "profile_version": "2026.10.1",
+  "target_package": "com.netease.stzb",
+  "description": "适配率土之滨 2025~2026 征服赛季，包含 120 士气系统、毫秒破免、深度守将天梯打分与深夜敌袭决策 C 反击。",
+  "rules": {
+    "max_stamina": 120,
+    "stamina_per_action": 20,
+    "max_morale": 120,
+    "morale_standard": 100,
+    "min_morale_for_paving": 100,
+    "immunity_duration_sec": 3600,
+    "immunity_padding_ms": 1000,
+    "night_window_start_hour": 0,
+    "night_window_end_hour": 7,
+    "night_stamina_multiplier": 1.0,
+    "screen_virtual_width": 1280,
+    "screen_virtual_height": 720
   },
-  "safety_settings": {
-    "random_touch_offset_px": 8,
-    "touch_duration_jitter_ms": [80, 160],
-    "action_interval_jitter_ms": [1200, 2400],
-    "bezier_curvature_variance": 0.25
-  },
-  "states": {
-    "IDLE": {
-      "description": "主地图巡航休眠状态，帧率降低至 0.5 FPS 极省电",
-      "inspect_interval_ms": 3000,
-      "triggers": ["check_night_alarm", "check_troop_status", "check_stamina"]
+  "semantic_buttons": {
+    "ATTACK": {
+      "primary_keyword": "出征",
+      "aliases": ["确定出征", "出 征", "出征作战", "出兵"]
     },
-    "CITY_TAX_COLLECT": {
-      "description": "主城每日收税与例行事务",
-      "roi": [0.85, 0.05, 0.98, 0.20],
-      "ocr_targets": ["税收", "征税", "强征"],
-      "action": "click_if_found"
+    "SWEEP": {
+      "primary_keyword": "扫荡",
+      "aliases": ["扫 荡", "扫荡练兵"]
     },
-    "TROOP_STAMINA_INSPECT": {
-      "description": "部队体力和伤兵状态检测",
-      "roi": [0.70, 0.15, 0.95, 0.85],
-      "ocr_pattern": "(\\d+)/(\\d+)",
-      "min_stamina_threshold": 20,
-      "min_soldiers_ratio": 0.85
+    "DEFEND": {
+      "primary_keyword": "驻守",
+      "aliases": ["驻 守", "部队驻守", "协防"]
     },
-    "TILE_COORDINATE_JUMP": {
-      "description": "通过坐标搜寻栏跳转至指定土地 (X, Y)",
-      "search_bar_roi": [0.35, 0.02, 0.55, 0.08],
-      "confirm_button_roi": [0.56, 0.02, 0.65, 0.08]
+    "FARM": {
+      "primary_keyword": "屯田",
+      "aliases": ["屯 田", "资源屯田"]
     },
-    "TILE_ACTION_EXECUTE": {
-      "description": "选中地块并执行下发指令（扫荡 / 屯田 / 占领 / 驻守）",
-      "action_menu_roi": [0.40, 0.40, 0.60, 0.70],
-      "actions": {
-        "sweep": { "label": "扫荡", "template": "btn_sweep.png" },
-        "march": { "label": "出征", "template": "btn_march.png" },
-        "farm":  { "label": "屯田", "template": "btn_farm.png" },
-        "defend": { "label": "驻守", "template": "btn_defend.png" }
-      }
+    "TRAIN": {
+      "primary_keyword": "练兵",
+      "aliases": ["练 兵"]
     },
-    "MARCH_WAIT_GOVERNOR": {
-      "description": "出征行军与战平/回流状态监控",
-      "status_roi": [0.75, 0.20, 0.98, 0.45],
-      "troop_states": ["行军中", "交战中", "返回中", "已回城"]
+    "SCOUT_DEFENDERS": {
+      "primary_keyword": "查看守军",
+      "aliases": ["守军", "守军详情", "查看", "守军信息", "守将"]
     },
-    "NIGHT_RAID_ALARM": {
-      "description": "敌袭警报检测（界面边缘红线 / 战报号角）",
-      "alarm_roi": [0.02, 0.02, 0.15, 0.15],
-      "red_channel_threshold": 210,
-      "alert_action": "sound_vibrate_emergency"
+    "BUILD": {
+      "primary_keyword": "建设",
+      "aliases": ["建 设", "筑城", "建造", "起要塞"]
+    },
+    "ABANDON": {
+      "primary_keyword": "放弃",
+      "aliases": ["放 弃", "放弃领地", "放弃土地"]
+    },
+    "CONFIRM": {
+      "primary_keyword": "确定",
+      "aliases": ["确 定", "确认", "出征", "出发", "立即前往"]
+    },
+    "MARCH": {
+      "primary_keyword": "行军",
+      "aliases": ["行 军"]
+    },
+    "TRANSFER": {
+      "primary_keyword": "调兵",
+      "aliases": ["调 兵", "调动"]
+    },
+    "RETREAT": {
+      "primary_keyword": "撤退",
+      "aliases": ["撤 退", "立即撤退", "召回"]
+    },
+    "RECRUIT": {
+      "primary_keyword": "征兵",
+      "aliases": ["征 兵", "快速征兵", "预备兵"]
+    },
+    "COORDINATE": {
+      "primary_keyword": "坐标",
+      "aliases": ["座标", "跳转", "查坐标"]
+    },
+    "JUMP": {
+      "primary_keyword": "跳转",
+      "aliases": ["跳 转", "前往"]
+    },
+    "TAX": {
+      "primary_keyword": "税收",
+      "aliases": ["征税", "强征", "税额"]
+    },
+    "UPGRADE": {
+      "primary_keyword": "升级",
+      "aliases": ["升 级", "扩建", "建筑升级"]
     }
-  }
+  },
+  "defender_db": {
+    "danger_heroes": [
+      { "name": "郭嘉", "tag": "强控-混乱", "threat_score": 5, "description": "十胜十败附带高概率混乱控制，极易导致主力自相残杀灭队", "counter_tip": "坚决避开！不可盲撞" },
+      { "name": "李儒", "tag": "怯战-禁疗", "threat_score": 5, "description": "封普攻+附带高额谋略伤害并禁疗，开荒菜刀队克星", "counter_tip": "法系队需谨慎，菜刀队禁打" },
+      { "name": "法正", "tag": "神谋-跳过准备", "threat_score": 5, "description": "概率跳过主动战法准备回合，超爆发猝死点", "counter_tip": "避开，容易战损暴增" },
+      { "name": "陈宫", "tag": "高伤-点名反弹", "threat_score": 5, "description": "根据敌我战法发动频率追加谋略伤害，智商极高", "counter_tip": "避开" },
+      { "name": "黄忠", "tag": "高物理爆发", "threat_score": 5, "description": "重击+嘲讽，普攻输出极高", "counter_tip": "避让或兵力压制" },
+      { "name": "陆逊", "tag": "火烧连营", "threat_score": 5, "description": "群体灼烧多段引爆，伤害极其爆炸", "counter_tip": "极高危，建议换地" },
+      { "name": "庞统", "tag": "锁链-反噬", "threat_score": 5, "description": "密谋附带伤害传导，主力容易同时暴毙", "counter_tip": "坚决避让" },
+      { "name": "吕蒙", "tag": "白衣渡江-怯战", "threat_score": 5, "description": "开局前两回合全体无法普攻+稳定法伤", "counter_tip": "前锋极易直接被秒" },
+      { "name": "贾诩", "tag": "算无遗策", "threat_score": 5, "description": "主动战法越多伤害越恐怖，专杀高频主动队", "counter_tip": "避开" },
+      { "name": "周瑜", "tag": "极度高危", "threat_score": 5, "description": "玄武洰流群体怯战，强力法术轰杀", "counter_tip": "坚决避开" },
+      { "name": "魏延", "tag": "奇兵奇谋", "threat_score": 5, "description": "突脸直切大营主力，造成大营意外暴毙", "counter_tip": "换地打软柿子" }
+    ],
+    "hard_heroes": [
+      { "name": "张任", "tag": "落凤-技穷", "threat_score": 4, "description": "落凤高额单点伤害并计穷，容易打乱战法释放节奏", "counter_tip": "兵力充足且带控制可打" },
+      { "name": "严颜", "tag": "老当益壮", "threat_score": 4, "description": "自身极高免伤与减伤，极难快速破防", "counter_tip": "需要高爆发队伍" },
+      { "name": "廖化", "tag": "诈降-回血", "threat_score": 3, "description": "自愈续航能力强，容易拖入平局", "counter_tip": "注意平局补刀" },
+      { "name": "管亥", "tag": "狂暴吸血", "threat_score": 3, "description": "倒戈吸血+物理连击，身板偏硬", "counter_tip": "可打但战损略高" },
+      { "name": "潘璋", "tag": "断道-定身", "threat_score": 3, "description": "具有先手定身控制机制", "counter_tip": "带解控或霸体可打" },
+      { "name": "张勋", "tag": "枪阵贯穿", "threat_score": 3, "description": "群体物理贯穿，容易压低中军血线", "counter_tip": "中军需保证防御" },
+      { "name": "纪灵", "tag": "三尖两刃", "threat_score": 3, "description": "挑衅战法强制吸引火力", "counter_tip": "输出分散，易拖回合" },
+      { "name": "曹仁", "tag": "八门金锁", "threat_score": 4, "description": "群体怯战，物理平A队克星", "counter_tip": "法系队可打" }
+    ],
+    "moderate_heroes": [
+      { "name": "于禁", "tag": "整军经武", "threat_score": 2, "description": "纯被动防御型武将，无爆发战法", "counter_tip": "主力正常出征即可" },
+      { "name": "徐晃", "tag": "长驱直入", "threat_score": 2, "description": "慢热型增伤，前3回合无威胁", "counter_tip": "前几回合速推拿下" },
+      { "name": "鲍信", "tag": "援军秘策", "threat_score": 2, "description": "少量奶量，无控无爆", "counter_tip": "难度偏低，推荐打" },
+      { "name": "严白虎", "tag": "山贼蛮力", "threat_score": 2, "description": "属性偏低，战法不稳定", "counter_tip": "兵力达标即可拿下" },
+      { "name": "华雄", "tag": "恃勇无谋", "threat_score": 2, "description": "高伤害但附带自身受损负面状态", "counter_tip": "推荐收割" },
+      { "name": "公孙瓒", "tag": "白马义从", "threat_score": 2, "description": "增加行军速度与少量规避", "counter_tip": "战损低" },
+      { "name": "朱儁", "tag": "节镇关东", "threat_score": 2, "description": "少量先手伤害，后程疲软", "counter_tip": "可稳拿" }
+    ],
+    "safe_heroes": [
+      { "name": "邓茂", "tag": "白给软柿子", "threat_score": 1, "description": "全率土公认开荒大礼包，毫无战法威胁", "counter_tip": "🟢 极力推荐！战损接近 0" },
+      { "name": "田续", "tag": "白给软柿子", "threat_score": 1, "description": "战法释放率极低，毫无爆发伤害", "counter_tip": "🟢 极力推荐！开荒必挑" },
+      { "name": "裴元绍", "tag": "义勇草寇", "threat_score": 1, "description": "身板脆弱，开局直接被秒杀", "counter_tip": "🟢 极佳目标" },
+      { "name": "审配", "tag": "守城弱将", "threat_score": 1, "description": "轻微防御，无任何反伤手段", "counter_tip": "🟢 极力推荐" },
+      { "name": "李典", "tag": "谦逊奉公", "threat_score": 1, "description": "微量辅助战法，无法造成致命减员", "counter_tip": "🟢 放心出征" },
+      { "name": "陶谦", "tag": "安民守土", "threat_score": 1, "description": "老态龙钟，攻击力极低", "counter_tip": "🟢 白给队伍" },
+      { "name": "韩馥", "tag": "懦弱守将", "threat_score": 1, "description": "四维属性低下，平A极弱", "counter_tip": "🟢 软柿子收割" },
+      { "name": "孔融", "tag": "知书达礼", "threat_score": 1, "description": "无任何杀伤性战法", "counter_tip": "🟢 极低战损" },
+      { "name": "刘焉", "tag": "据守益州", "threat_score": 1, "description": "无控无输出，开荒首选经验包", "counter_tip": "🟢 推荐收割" },
+      { "name": "张宝", "tag": "黄巾符水", "threat_score": 1, "description": "战法触发概率极低，白给阵容", "counter_tip": "🟢 推荐主力直接拿下" }
+    ],
+    "land_suggestions": [
+      {
+        "land_level": 3,
+        "recommended_soldiers": 1200,
+        "safe_heroes": ["邓茂", "田续", "刘焉"],
+        "blacklist_heroes": ["管亥"],
+        "note": "开荒第 1 阶段快速铺平跳板地，战损控制在 50 兵以内"
+      },
+      {
+        "land_level": 4,
+        "recommended_soldiers": 3000,
+        "safe_heroes": ["邓茂", "田续", "审配", "裴元绍"],
+        "blacklist_heroes": ["李儒", "郭嘉"],
+        "note": "开荒首冲 4 级地，务必先用斥候【查看守军】，非软柿子不打！"
+      },
+      {
+        "land_level": 5,
+        "recommended_soldiers": 5500,
+        "safe_heroes": ["李典", "徐晃", "魏续", "鲍信"],
+        "blacklist_heroes": ["法正", "陈宫", "陆逊", "郭嘉"],
+        "note": "开荒关键分水岭！撞到法正/陈宫必翻车，必须严格匹配软柿子守军"
+      },
+      {
+        "land_level": 6,
+        "recommended_soldiers": 16000,
+        "safe_heroes": ["华雄", "张勋", "周仓"],
+        "blacklist_heroes": ["吕蒙", "贾诩", "周瑜"],
+        "note": "6级地开始出现第二队守军（双队战平连打），主力需 16000+ 且备战第二补刀队"
+      },
+      {
+        "land_level": 7,
+        "recommended_soldiers": 22000,
+        "safe_heroes": ["于禁", "纪灵"],
+        "blacklist_heroes": ["陆逊", "庞统", "魏延"],
+        "note": "7级地双队 42000 兵力，需先打下周围地块起要塞，部队满士气出击"
+      },
+      {
+        "land_level": 8,
+        "recommended_soldiers": 28000,
+        "safe_heroes": ["曹仁", "徐晃"],
+        "blacklist_heroes": ["关妹", "赵云", "法正"],
+        "note": "8级要塞与高级矿产，必须双主力协同或同盟卡秒集火"
+      }
+    ]
+  },
+  "tactical_defaults": {
+    "paving_default_slots": [1, 2, 3],
+    "paving_step_interval_ms": 2500,
+    "immunity_default_troop_slot": 1,
+    "immunity_break_precision_ms": 1000,
+    "siege_main_squad_slot": 1,
+    "siege_demolition_slots": [2, 3],
+    "raid_patrol_interval_ms": 4000,
+    "raid_decision_c_auto_counter": true,
+    "raid_alarm_sound": true
+  },
+  "watchdog_keywords": [
+    "点击任意位置关闭", "点击屏幕继续", "确定", "知道了", "跳过",
+    "领奖", "恭喜主公", "同盟邮件", "天下大势", "演武提示",
+    "系统维护", "签到", "暂不升级", "稍后再说", "完成"
+  ]
 }

@@ -117,6 +117,32 @@ async function handle(req: Request): Promise<Response> {
     // 定时保活调用（无设备参数时）：仅用于产生数据库读写，防止 7 天暂停
     const status = await touchDb();
     return Response.json({ ok: true, db: status, server_time: now });
+  } else if (action === "get_profile") {
+    const currentVer = String(json.current_version ?? "").trim();
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/game_profiles?select=profile_json,version&game_id=eq.${encodeURIComponent(gameId)}&limit=1`,
+      { headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` } }
+    ).catch(() => null);
+
+    const rows = res && res.ok ? await res.json().catch(() => []) : [];
+    if (Array.isArray(rows) && rows.length > 0) {
+      const row = rows[0];
+      const remoteVer = String(row.version ?? "");
+      const hasNew = remoteVer > currentVer;
+      return Response.json({
+        ok: true,
+        game_id: gameId,
+        has_new_version: hasNew,
+        latest_version: remoteVer,
+        profile_json: hasNew ? row.profile_json : undefined,
+      });
+    }
+    return Response.json({
+      ok: true,
+      game_id: gameId,
+      has_new_version: false,
+      latest_version: currentVer || "2026.10.1",
+    });
   } else if (action === "activate") {
     if (!device) return Response.json({ ok: false, error: "no_device" });
     if (!code) return Response.json({ ok: false, error: "no_code" });

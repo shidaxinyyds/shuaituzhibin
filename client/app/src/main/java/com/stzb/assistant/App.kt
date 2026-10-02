@@ -28,7 +28,8 @@ class App : Application() {
         // 1. 创建前台服务通知渠道 (适配 Android 8.0+)
         createNotificationChannel()
 
-        // 2. 初始化全机型自适应坐标系统
+        // 2. 初始化知识库系统与全机型自适应坐标系统
+        com.stzb.assistant.knowledge.KnowledgeBaseManager.init(this)
         com.stzb.assistant.service.CoordinateTransformer.refreshMetrics()
 
         // 3. 异步后台预热 RapidOCR 模型与 OpenCV 模板资产

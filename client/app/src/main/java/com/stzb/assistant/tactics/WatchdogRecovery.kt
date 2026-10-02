@@ -68,11 +68,13 @@ object WatchdogRecovery {
     }
 
     /**
-     * 检索屏幕上是否存在通用弹窗，并自动点击关闭/确定按键
+     * 检索屏幕上是否存在通用弹窗，并自动点击关闭/确定按键 (结合当前知识库动态关闭词表)
      */
     suspend fun dismissAnyDialog(): Boolean {
         val frame = EngineBridge.captureFrame() ?: return false
-        val matches = OcrManager.findKeywords(frame, DISMISS_KEYWORDS)
+        val activeKeywords = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.watchdogKeywords
+        val targetKeywords = if (activeKeywords.isNotEmpty()) activeKeywords else DISMISS_KEYWORDS
+        val matches = OcrManager.findKeywords(frame, targetKeywords)
         frame.recycle()
 
         if (matches.isNotEmpty()) {
