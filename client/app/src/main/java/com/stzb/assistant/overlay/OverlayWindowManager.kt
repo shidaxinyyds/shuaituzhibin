@@ -347,10 +347,10 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         root.findViewById<Button>(R.id.btnAdvisorScanDecree)?.setOnClickListener {
             if (!checkAuth()) return@setOnClickListener
-            val screenshot = com.stzb.assistant.service.ScreenCaptureService.captureLatestFrame()
+            val screenshot = com.stzb.assistant.service.EngineBridge.captureFrame()
             val textToParse = if (screenshot != null) {
-                val ocrResult = com.stzb.assistant.ocr.OcrManager.recognizeScreen(screenshot)
-                if (ocrResult.fullText.isNotBlank()) ocrResult.fullText else "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
+                val ocrResult = com.stzb.assistant.ocr.OcrManager.detect(screenshot)
+                if (!ocrResult?.strRes.isNullOrBlank()) ocrResult!!.strRes else "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
             } else {
                 "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
             }

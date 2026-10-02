@@ -55,6 +55,13 @@ jobs:
             exit $EXIT_CODE
           fi
 
+      - name: Upload Build Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-log
+          path: client/build_log.txt
+
       - name: Prepare Single Commercial APK
         run: |
           mkdir -p single-release-apk
