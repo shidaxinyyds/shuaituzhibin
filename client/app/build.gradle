@@ -76,6 +76,10 @@ android {
         abortOnError false
         checkReleaseBuilds false
     }
+
+    androidResources {
+        noCompress 'bin', 'gguf', 'tflite', 'onnx', 'param'
+    }
 }
 
 dependencies {

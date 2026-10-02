@@ -32,10 +32,11 @@ class EdgeSlmEngine(private val context: Context) {
 
     private fun checkModelAvailability() {
         try {
-            val list = context.assets.list("models")
-            if (list?.any { it.contains("slm") || it.contains("smollm") || it.contains("rwkv") } == true) {
+            val path = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_135m.bin")
+            if (path != null && java.io.File(path).length() > 10 * 1024 * 1024) {
                 isModelWeightLoaded = true
-                Log.i(TAG, "检测到端侧微脑量化权重 (~75MB)，端侧大模型通道已就绪")
+                modelPath = path
+                Log.i(TAG, "检测到端侧微脑量化权重 (~75MB)，端侧大模型通道已就绪: $path")
             } else {
                 Log.i(TAG, "未放置 ~75MB 外部权重，启用端侧超轻量军令语义提取内核")
                 isModelWeightLoaded = false

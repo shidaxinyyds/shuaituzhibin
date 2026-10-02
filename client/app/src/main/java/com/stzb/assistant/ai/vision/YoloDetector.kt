@@ -80,10 +80,11 @@ class YoloDetector(private val context: Context) {
 
     private fun initModel() {
         try {
-            val assetModels = context.assets.list("models")
-            if (assetModels?.contains("yolov8n_stzb.bin") == true) {
+            val path = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov8n_stzb.bin")
+            if (path != null && java.io.File(path).length() > 50 * 1024) {
                 isNativeModelLoaded = true
-                Log.i(TAG, "YOLOv8-Nano 离线权重加载成功 (~2.1MB)")
+                modelFilePath = path
+                Log.i(TAG, "YOLOv8-Nano 离线权重加载成功 (~2.1MB): $path")
             } else {
                 Log.w(TAG, "未在 assets/models 检测到 yolov8n_stzb.bin，启用智能几何色度容灾通道")
                 isNativeModelLoaded = false

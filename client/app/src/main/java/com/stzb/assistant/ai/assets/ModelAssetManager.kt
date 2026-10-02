@@ -113,4 +113,45 @@ object ModelAssetManager {
             )
         )
     }
+
+    /**
+     * 获取指定模型的本地可执行路径（优先使用 App 私有沙盒，若无则从 Assets 自动解压映射）
+     */
+    fun getOrExtractModelPath(context: Context, modelName: String): String? {
+        val targetFile = File(getModelsDirectory(context), modelName)
+        if (targetFile.exists() && targetFile.length() > 0) {
+            return targetFile.absolutePath
+        }
+
+        return try {
+            val assetList = context.assets.list("models") ?: emptyArray()
+            if (!assetList.contains(modelName)) return null
+
+            context.assets.open("models/$modelName").use { input ->
+                targetFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Log.i(TAG, "从 assets/models 成功提取模型: $modelName (大小: ${targetFile.length()} 字节)")
+            targetFile.absolutePath
+        } catch (e: Exception) {
+            Log.e(TAG, "从 assets 提取模型 $modelName 失败: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 自动解压并就绪所有内置模型 (模式 A 全内置一体化支持)
+     */
+    fun preloadAllBuiltinModels(context: Context) {
+        val models = listOf(
+            "yolov8n_stzb.bin",
+            "ch_PP-OCRv4_det.bin",
+            "ch_PP-OCRv4_rec.bin",
+            "slm_microbrain_135m.bin"
+        )
+        for (m in models) {
+            getOrExtractModelPath(context, m)
+        }
+    }
 }
