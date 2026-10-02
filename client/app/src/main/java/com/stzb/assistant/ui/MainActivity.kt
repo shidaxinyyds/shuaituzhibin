@@ -14,7 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
-import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -22,7 +22,6 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
 import com.stzb.assistant.R
-import com.stzb.assistant.license.LicenseManager
 import com.stzb.assistant.ocr.DefenderEvaluator
 import com.stzb.assistant.ocr.OcrManager
 import com.stzb.assistant.ocr.RaidRadarDetector
@@ -48,13 +47,6 @@ import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
 
-    // 阶段六商业卡密鉴权组件
-    private lateinit var tvLicenseBadge: TextView
-    private lateinit var tvDeviceId: TextView
-    private lateinit var etLicenseCode: EditText
-    private lateinit var btnActivateLicense: Button
-    private lateinit var tvLicenseMessage: TextView
-
     // 多游戏特征知识库管理组件
     private lateinit var tvKnowledgeTitle: TextView
     private lateinit var tvKnowledgeVersionBadge: TextView
@@ -69,6 +61,11 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     private lateinit var btnAccessibility: MaterialButton
     private lateinit var btnCapture: MaterialButton
     private lateinit var btnToggleOverlay: MaterialButton
+
+    // 开发者自检区（默认折叠）
+    private lateinit var btnToggleDebug: MaterialButton
+    private lateinit var debugSection: LinearLayout
+    private var isDebugExpanded = false
 
     // 阶段三战术流水线按钮
     private lateinit var btnStartRoadPaving: MaterialButton
@@ -114,7 +111,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
                 putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, result.data)
             }
             ContextCompat.startForegroundService(this, serviceIntent)
-            btnCapture.text = "3. 720p 捕获通道 [运行中 ✅]"
+            btnCapture.text = "3. 屏幕捕获  运行中 ✓"
         } else {
             log("❌ 用户取消或拒绝了屏幕录制授权。")
         }
@@ -130,7 +127,6 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         initViews()
         setupButtons()
         checkPermissions()
-        refreshLicenseStatus()
         refreshKnowledgeUi()
     }
 
@@ -142,17 +138,10 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     override fun onResume() {
         super.onResume()
         checkPermissions()
-        refreshLicenseStatus()
         refreshKnowledgeUi()
     }
 
     private fun initViews() {
-        tvLicenseBadge = findViewById(R.id.tvLicenseBadge)
-        tvDeviceId = findViewById(R.id.tvDeviceId)
-        etLicenseCode = findViewById(R.id.etLicenseCode)
-        btnActivateLicense = findViewById(R.id.btnActivateLicense)
-        tvLicenseMessage = findViewById(R.id.tvLicenseMessage)
-
         tvKnowledgeTitle = findViewById(R.id.tvKnowledgeTitle)
         tvKnowledgeVersionBadge = findViewById(R.id.tvKnowledgeVersionBadge)
         tvKnowledgeStats = findViewById(R.id.tvKnowledgeStats)
@@ -166,6 +155,9 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         btnAccessibility = findViewById(R.id.btnAccessibilityPermission)
         btnCapture = findViewById(R.id.btnScreenCapturePermission)
         btnToggleOverlay = findViewById(R.id.btnToggleOverlay)
+
+        btnToggleDebug = findViewById(R.id.btnToggleDebug)
+        debugSection = findViewById(R.id.debugSection)
 
         btnStartRoadPaving = findViewById(R.id.btnStartRoadPaving)
         btnStartImmunityBreak = findViewById(R.id.btnStartImmunityBreak)
@@ -194,29 +186,10 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     }
 
     private fun setupButtons() {
-        btnActivateLicense.setOnClickListener {
-            val code = etLicenseCode.text.toString().trim()
-            if (code.isEmpty()) {
-                Toast.makeText(this, "请输入卡密激活码", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-            btnActivateLicense.isEnabled = false
-            btnActivateLicense.text = "激活中..."
-            CoroutineScope(Dispatchers.Main).launch {
-                val result = LicenseManager.activateOnline(this@MainActivity, code)
-                btnActivateLicense.isEnabled = true
-                btnActivateLicense.text = "立即激活"
-                result.onSuccess { info ->
-                    Toast.makeText(this@MainActivity, "🎉 卡密激活成功！", Toast.LENGTH_SHORT).show()
-                    refreshLicenseStatus()
-                    log("🎉【商业卡密激活成功】类型: ${info.cardType} | 状态: ${info.message}")
-                }.onFailure { err ->
-                    Toast.makeText(this@MainActivity, err.message ?: "激活失败", Toast.LENGTH_LONG).show()
-                    tvLicenseMessage.text = "❌ 激活失败: ${err.message}"
-                    tvLicenseMessage.setTextColor(Color.parseColor("#EF4444"))
-                    log("❌【卡密激活失败】${err.message}")
-                }
-            }
+        btnToggleDebug.setOnClickListener {
+            isDebugExpanded = !isDebugExpanded
+            debugSection.visibility = if (isDebugExpanded) android.view.View.VISIBLE else android.view.View.GONE
+            btnToggleDebug.text = if (isDebugExpanded) "开发者自检工具  ▴" else "开发者自检工具  ▾"
         }
 
         btnSwitchGame.setOnClickListener {
@@ -302,8 +275,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         }
 
         btnAccessibility.setOnClickListener {
-            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-            startActivity(intent)
+            openAccessibilitySettings()
         }
 
         btnCapture.setOnClickListener {
@@ -312,7 +284,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
                     action = ScreenCaptureService.ACTION_STOP_CAPTURE
                 }
                 startService(stopIntent)
-                btnCapture.text = "3. 启动 720p 屏幕流捕获通道"
+                btnCapture.text = "3. 启动屏幕捕获"
                 log("⏹️ 屏幕捕获通道已手动停止。")
             } else {
                 val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -330,12 +302,12 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
             if (isOverlayShown) {
                 stopService(intent)
                 isOverlayShown = false
-                btnToggleOverlay.text = "4. 显示游戏常驻悬浮胶囊"
+                btnToggleOverlay.text = "4. 显示游戏悬浮胶囊"
                 log("悬浮胶囊已关闭。")
             } else {
                 startService(intent)
                 isOverlayShown = true
-                btnToggleOverlay.text = "4. 隐藏游戏常驻悬浮胶囊"
+                btnToggleOverlay.text = "4. 隐藏游戏悬浮胶囊"
                 log("🟢 悬浮胶囊已成功显示在屏幕上！")
             }
         }
@@ -432,24 +404,6 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         btnTestSafetyGate.setOnClickListener { runSafetyGateTest() }
     }
 
-    private fun refreshLicenseStatus() {
-        val license = LicenseManager.checkLocalLicense(this)
-        tvDeviceId.text = "设备指纹: ${license.deviceId}"
-        if (license.isValid) {
-            tvLicenseBadge.text = "${license.cardType ?: "全功能旗舰版"} [已授权]"
-            tvLicenseBadge.setTextColor(Color.parseColor("#10B981"))
-            tvLicenseBadge.setBackgroundColor(Color.parseColor("#064E3B"))
-            tvLicenseMessage.text = "✅ 授权有效 | ${license.message}"
-            tvLicenseMessage.setTextColor(Color.parseColor("#10B981"))
-        } else {
-            tvLicenseBadge.text = "未激活 / 已过期"
-            tvLicenseBadge.setTextColor(Color.parseColor("#F59E0B"))
-            tvLicenseBadge.setBackgroundColor(Color.parseColor("#78350F"))
-            tvLicenseMessage.text = "⚠️ ${license.message} (离线强签名校验)"
-            tvLicenseMessage.setTextColor(Color.parseColor("#F59E0B"))
-        }
-    }
-
     private fun refreshKnowledgeUi() {
         val profile = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile
         tvKnowledgeTitle.text = profile.gameName
@@ -464,21 +418,50 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     }
 
     private fun assertEngineReady(): Boolean {
-        val license = LicenseManager.checkLocalLicense(this)
-        if (!license.isValid) {
-            Toast.makeText(this, "商业授权未激活或已过期，请先激活卡密！", Toast.LENGTH_LONG).show()
-            log("❌【卡密鉴权拦截】${license.message}。请在上方输入卡密激活。")
-            return false
-        }
         if (!EngineBridge.isCaptureReady) {
-            Toast.makeText(this, "请先启动 720p 屏幕捕获通道 (按钮 3)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "请先启动屏幕捕获 (按钮 3)", Toast.LENGTH_SHORT).show()
             return false
         }
         if (!EngineBridge.isTouchReady) {
-            Toast.makeText(this, "请先开启无障碍触控通道或 Shizuku (按钮 2)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "请先开启无障碍触控通道 (按钮 2)", Toast.LENGTH_SHORT).show()
             return false
         }
         return true
+    }
+
+    /**
+     * 直接跳转到本应用的无障碍服务详情页，解决用户在总列表中“找不到入口”的问题。
+     * 失败时降级回无障碍总设置页。
+     */
+    private fun openAccessibilitySettings() {
+        try {
+            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                putExtra(
+                    Settings.EXTRA_FRAGMENT_ARG_KEY,
+                    "$packageName/${AutoTouchService::class.java.name}"
+                )
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            startActivity(intent)
+            Toast.makeText(this, "请开启“率土管家”触控服务", Toast.LENGTH_LONG).show()
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } catch (e2: Exception) {
+                Toast.makeText(this, "无法打开系统设置，请手动进入“设置-无障碍”", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 通过 Settings.Secure 实时判断本无障碍服务是否已真正开启。
+     */
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val svcName = "$packageName/${AutoTouchService::class.java.name}"
+        val enabled = Settings.Secure.getString(
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.split(':').any { it.equals(svcName, ignoreCase = true) }
     }
 
     private fun checkPermissions() {
@@ -486,19 +469,21 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
             Settings.canDrawOverlays(this)
         } else true
 
-        btnOverlay.text = if (hasOverlay) "1. 悬浮窗权限 [已授予 ✅]" else "1. 授予系统悬浮窗权限"
+        btnOverlay.text = if (hasOverlay) "1. 悬浮窗权限  已授予 ✓" else "1. 授予悬浮窗权限"
         btnOverlay.isEnabled = !hasOverlay
 
-        val hasAccessibility = AutoTouchService.isConnected
+        val hasAccessibility = AutoTouchService.isConnected || isAccessibilityServiceEnabled()
         val hasShizuku = ShizukuTouchManager.hasPermission()
         btnAccessibility.text = when {
-            hasShizuku -> "2. 触控通道: Shizuku 底层注入 [已就绪 ✅]"
-            hasAccessibility -> "2. 触控通道: 系统无障碍手势 [已开启 ✅]"
-            else -> "2. 开启无障碍触控通道 (或使用 Shizuku)"
+            hasShizuku -> "2. 触控通道  Shizuku 已就绪 ✓"
+            hasAccessibility -> "2. 触控通道  无障碍已开启 ✓"
+            else -> "2. 开启无障碍触控通道"
         }
 
         if (ScreenCaptureService.isCapturing.get()) {
-            btnCapture.text = "3. 720p 捕获通道 [运行中 ✅]"
+            btnCapture.text = "3. 屏幕捕获  运行中 ✓"
+        } else {
+            btnCapture.text = "3. 启动屏幕捕获"
         }
     }
 
@@ -806,7 +791,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         val intent = Intent(this, FloatOverlayService::class.java)
         startService(intent)
         isOverlayShown = true
-        btnToggleOverlay.text = "4. 隐藏游戏常驻悬浮胶囊"
+        btnToggleOverlay.text = "4. 隐藏游戏悬浮胶囊"
 
         log(
             "🟢【游戏常驻悬浮 UI 就绪】\n" +

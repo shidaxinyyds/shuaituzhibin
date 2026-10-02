@@ -100,7 +100,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             y = 200
         }
 
-        // 2. 控制台面板参数 (可获焦点以支持输入，居中显示)
+        // 2. 控制台面板参数 (可获焦点以支持输入，默认居中偏上，支持拖拽自由移动)
         dashboardParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -108,7 +108,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.CENTER
+            gravity = Gravity.TOP or Gravity.START
+            x = (context.resources.displayMetrics.widthPixels - 356) / 2
+            y = 140
         }
 
         // 3. 准星全屏取点层参数 (拦截全屏轻点，取点完成后立即销毁)
@@ -200,6 +202,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val tvClose = dashboardView?.findViewById<TextView>(R.id.tvCloseDashboard)
         tvClose?.setOnClickListener { hideDashboard() }
 
+        // 顶部标题栏拖拽：按住可在屏幕任意位置自由移动控制面板
+        setupDashboardDrag()
+
         // Tab 切换
         val tabPaving = dashboardView?.findViewById<Button>(R.id.tabPaving)
         val tabImmunity = dashboardView?.findViewById<Button>(R.id.tabImmunity)
@@ -221,7 +226,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         fun switchTab(index: Int) {
             panels.forEachIndexed { i, p -> p?.visibility = if (i == index) View.VISIBLE else View.GONE }
             tabs.forEachIndexed { i, t ->
-                t?.setBackgroundColor(if (i == index) 0xFF1565C0.toInt() else 0xFF37474F.toInt())
+                t?.setBackgroundResource(if (i == index) R.drawable.bg_tab_active else R.drawable.bg_tab_inactive)
                 t?.setTextColor(if (i == index) Color.WHITE else 0xFFB0BEC5.toInt())
             }
         }
@@ -233,6 +238,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         tabLogs?.setOnClickListener { switchTab(4) }
         tabAdvisor?.setOnClickListener { switchTab(5) }
 
+        // 默认选中首个 Tab，统一圆角选中样式
+        switchTab(0)
+
         // 按钮事件接入
         setupDashboardActions()
     }
@@ -240,13 +248,18 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private fun setupDashboardActions() {
         val root = dashboardView ?: return
 
-        val checkAuth = {
-            val license = com.stzb.assistant.license.LicenseManager.checkLocalLicense(context)
-            if (!license.isValid) {
-                Toast.makeText(context, "商业卡密未激活或已过期: ${license.message}", Toast.LENGTH_LONG).show()
-                false
-            } else {
-                true
+        // 引擎就绪守卫：未开启捕获/触控时给出明确提示，避免“点击无响应”
+        val ensureEngineReady = {
+            when {
+                !com.stzb.assistant.service.EngineBridge.isCaptureReady -> {
+                    Toast.makeText(context, "请先在主程序开启屏幕捕获", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                !com.stzb.assistant.service.EngineBridge.isTouchReady -> {
+                    Toast.makeText(context, "请先开启无障碍触控通道", Toast.LENGTH_SHORT).show()
+                    false
+                }
+                else -> true
             }
         }
 
@@ -255,7 +268,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             startCrosshairPicker(PickTarget.PAVING)
         }
         root.findViewById<Button>(R.id.btnExecPaving)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val target = pickedPavingCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f + 80f, 360f)
             pipeline.startRoadPaving(
                 RoadPavingFlow.PavingConfig(
@@ -272,7 +285,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             startCrosshairPicker(PickTarget.IMMUNITY)
         }
         root.findViewById<Button>(R.id.btnExecBreakImmunity)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val target = pickedImmunityCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
             pipeline.startImmunityBreak(
                 ImmunityBreakFlow.ImmunityConfig(
@@ -289,7 +302,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             startCrosshairPicker(PickTarget.SIEGE)
         }
         root.findViewById<Button>(R.id.btnExecSiegeSync)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val target = pickedSiegeCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
             pipeline.startSiegeSync(
                 SiegeSyncFlow.SiegeConfig(
@@ -304,7 +317,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         // 4. 深夜巡检
         root.findViewById<Button>(R.id.btnExecRaidPatrol)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             pipeline.startRaidDefense(
                 RaidDefenseFlow.DefenseConfig(
                     counterAttackSquadSlot = 1,
@@ -346,7 +359,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         })
 
         root.findViewById<Button>(R.id.btnAdvisorScanDecree)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val screenshot = com.stzb.assistant.service.EngineBridge.captureFrame()
             val textToParse = if (screenshot != null) {
                 val ocrResult = com.stzb.assistant.ocr.OcrManager.detect(screenshot)
@@ -362,20 +375,54 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         }
 
         root.findViewById<Button>(R.id.btnAdvisorDiagnose)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val sampleReport = "战斗大捷！敌军阵亡12000，我军伤亡2300。对方前锋配置战必断金，大营配置反计之策与浑水摸鱼。"
             val diagnosis = edgeSlmEngine.diagnoseBattleReport(sampleReport)
             tvAdvisorStream?.text = diagnosis.militaryCommentary
         }
 
         root.findViewById<Button>(R.id.btnAdvisorAutoExec)?.setOnClickListener {
-            if (!checkAuth()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
             val order = lastExtractedOrder
             if (order == null) {
                 Toast.makeText(context, "请先点击【识别全屏军令】提取战术方略", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             safetyGate.verifyAndDispatch(order, currentStamina = 95)
+        }
+    }
+
+    /**
+     * 为控制面板顶部标题栏安装拖拽监听，支持拖到屏幕任意位置。
+     */
+    private fun setupDashboardDrag() {
+        val header = dashboardView?.findViewById<View>(R.id.dashboardHeader) ?: return
+        var initX = 0
+        var initY = 0
+        var touchX = 0f
+        var touchY = 0f
+        header.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initX = dashboardParams.x
+                    initY = dashboardParams.y
+                    touchX = event.rawX
+                    touchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    dashboardParams.x = initX + (event.rawX - touchX).toInt()
+                    dashboardParams.y = initY + (event.rawY - touchY).toInt()
+                    try {
+                        windowManager.updateViewLayout(dashboardView, dashboardParams)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "拖动控制面板异常: ${e.message}")
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> true
+                else -> false
+            }
         }
     }
 

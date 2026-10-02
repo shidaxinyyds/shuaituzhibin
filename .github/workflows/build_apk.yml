@@ -152,8 +152,8 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.0.4"
-          name: "率土之滨全能管家 v1.0.4 终极战神商业版 (190MB 满血四位一体矩阵)"
+          tag_name: "v1.0.5"
+          name: "率土之滨全能管家 v1.0.5 商业化 UI 重构版"
           files: single-release-apk/RateOfLand-Commercial-Release.apk
           generate_release_notes: true
         env:

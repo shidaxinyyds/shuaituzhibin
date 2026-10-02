@@ -32,13 +32,12 @@ class App : Application() {
         com.stzb.assistant.knowledge.KnowledgeBaseManager.init(this)
         com.stzb.assistant.service.CoordinateTransformer.refreshMetrics()
 
-        // 3. 异步后台预热 RapidOCR 模型、OpenCV 模板资产、85MB 端侧 AI 与永久授权
+        // 3. 异步后台预热 RapidOCR 模型、OpenCV 模板资产与端侧 AI 权重
         CoroutineScope(Dispatchers.IO).launch {
             val ocrOk = OcrManager.init(this@App)
             val cvOk = com.stzb.assistant.ocr.OpenCvMatcher.init(this@App)
             com.stzb.assistant.ai.assets.ModelAssetManager.preloadAllBuiltinModels(this@App)
-            com.stzb.assistant.license.LicenseManager.checkLocalLicense(this@App)
-            Log.i("StzbApp", "底层基础设施预热完成: RapidOCR=$ocrOk, OpenCV=$cvOk, AI权重与离线授权已就绪")
+            Log.i("StzbApp", "底层基础设施预热完成: RapidOCR=$ocrOk, OpenCV=$cvOk, AI 权重已就绪")
         }
     }
 

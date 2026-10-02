@@ -3,7 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#121212"
+    android:background="@color/app_bg"
     android:fillViewport="true">
 
     <LinearLayout
@@ -16,8 +16,8 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="率土全能管家 · 商业旗舰版"
-            android:textColor="#FFFFFF"
+            android:text="@string/app_name"
+            android:textColor="@color/text_primary"
             android:textSize="22sp"
             android:textStyle="bold" />
 
@@ -25,111 +25,89 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="本地离线引擎 | 毫秒级OCR | 敌袭反击 | 拟人防封"
-            android:textColor="#9E9E9E"
+            android:text="本地离线视觉引擎 · 拟人自动化辅助"
+            android:textColor="@color/text_secondary"
             android:textSize="13sp" />
 
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:layout_marginTop="16dp"
-            android:background="#2E2E2E" />
-
-        <!-- 商业授权与卡密状态卡片 -->
+        <!-- 运行环境 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:background="#1E293B"
+            android:layout_marginTop="20dp"
+            android:background="@drawable/bg_card"
             android:orientation="vertical"
             android:padding="16dp">
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal">
-
-                <TextView
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="商业卡密授权中心 (全功能版)"
-                    android:textColor="#38BDF8"
-                    android:textSize="15sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvLicenseBadge"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:background="#334155"
-                    android:paddingStart="8dp"
-                    android:paddingTop="2dp"
-                    android:paddingEnd="8dp"
-                    android:paddingBottom="2dp"
-                    android:text="检查中..."
-                    android:textColor="#FACC15"
-                    android:textSize="11sp" />
-            </LinearLayout>
-
             <TextView
-                android:id="@+id/tvDeviceId"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="设备指纹: 获取中..."
-                android:textColor="#94A3B8"
-                android:textSize="11sp"
-                android:fontFamily="monospace" />
+                style="@style/SectionTitle"
+                android:text="运行环境" />
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:orientation="horizontal">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnOverlayPermission"
+                style="@style/Btn.Secondary"
+                android:text="1. 授予悬浮窗权限" />
 
-                <EditText
-                    android:id="@+id/etLicenseCode"
-                    android:layout_width="0dp"
-                    android:layout_height="44dp"
-                    android:layout_weight="1"
-                    android:background="#0F172A"
-                    android:hint="输入卡密激活码 (周卡/月卡/季卡)"
-                    android:paddingStart="12dp"
-                    android:paddingEnd="12dp"
-                    android:textColor="#FFFFFF"
-                    android:textColorHint="#64748B"
-                    android:textSize="13sp" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAccessibilityPermission"
+                style="@style/Btn.Secondary"
+                android:text="2. 开启无障碍触控通道" />
 
-                <Button
-                    android:id="@+id/btnActivateLicense"
-                    android:layout_width="wrap_content"
-                    android:layout_height="44dp"
-                    android:layout_marginStart="8dp"
-                    android:background="#2563EB"
-                    android:text="立即激活"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12sp" />
-            </LinearLayout>
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnScreenCapturePermission"
+                style="@style/Btn.Secondary"
+                android:text="3. 启动屏幕捕获" />
 
-            <TextView
-                android:id="@+id/tvLicenseMessage"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="本地离线验签就绪 | 支持断网离线运行"
-                android:textColor="#10B981"
-                android:textSize="11sp" />
-
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnToggleOverlay"
+                style="@style/Btn.Primary"
+                android:text="4. 显示游戏悬浮胶囊" />
         </LinearLayout>
 
-        <!-- 游戏特征知识库与云端热更中心 -->
+        <!-- 战术调度 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:background="#1E293B"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                style="@style/SectionTitle"
+                android:text="战术调度" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartRoadPaving"
+                style="@style/Btn.Secondary"
+                android:text="自动铺路翻地" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartImmunityBreak"
+                style="@style/Btn.Secondary"
+                android:text="极限卡免破免" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartSiegeSync"
+                style="@style/Btn.Secondary"
+                android:text="同盟集火攻城" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStartRaidDefense"
+                style="@style/Btn.Secondary"
+                android:text="深夜敌袭巡检反击" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStopAllTactics"
+                style="@style/Btn.Danger"
+                android:text="紧急停止全部任务" />
+        </LinearLayout>
+
+        <!-- 游戏知识库 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:background="@drawable/bg_card"
             android:orientation="vertical"
             android:padding="16dp">
 
@@ -144,22 +122,22 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="游戏特征知识库中心"
-                    android:textColor="#38BDF8"
-                    android:textSize="15sp"
+                    android:text="游戏知识库"
+                    android:textColor="@color/text_primary"
+                    android:textSize="16sp"
                     android:textStyle="bold" />
 
                 <TextView
                     android:id="@+id/tvKnowledgeVersionBadge"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:background="#064E3B"
+                    android:background="@drawable/bg_pill"
                     android:paddingStart="8dp"
-                    android:paddingTop="2dp"
+                    android:paddingTop="3dp"
                     android:paddingEnd="8dp"
-                    android:paddingBottom="2dp"
-                    android:text="v2026.10.1"
-                    android:textColor="#10B981"
+                    android:paddingBottom="3dp"
+                    android:text="v—"
+                    android:textColor="@color/success"
                     android:textSize="11sp" />
             </LinearLayout>
 
@@ -168,323 +146,91 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="规则: 120士气/120体力 | 守军库: 36名 | 语义按键: 17组"
-                android:textColor="#94A3B8"
-                android:textSize="11sp" />
+                android:text="规则数据加载中…"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
+                android:layout_marginTop="12dp"
                 android:orientation="horizontal">
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnSwitchGame"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
-                    android:layout_weight="1"
-                    android:background="#334155"
-                    android:text="切换游戏"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12sp" />
+                    style="@style/Btn.Chip"
+                    android:text="切换游戏" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnUpdateKnowledge"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
+                    style="@style/Btn.Chip"
                     android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:background="#2563EB"
-                    android:text="检查云端热更"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12sp" />
+                    android:text="检查更新" />
 
-                <Button
+                <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnViewLandGuide"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
+                    style="@style/Btn.Chip"
                     android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:background="#059669"
-                    android:text="开荒打地指南"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12sp" />
+                    android:text="打地指南" />
             </LinearLayout>
 
             <TextView
                 android:id="@+id/tvKnowledgeMessage"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="6dp"
-                android:text="数据驱动架构 | 支持断网脱机运行 | 零发版热更"
-                android:textColor="#10B981"
-                android:textSize="11sp" />
-
+                android:layout_marginTop="10dp"
+                android:text="支持离线运行"
+                android:textColor="@color/text_secondary"
+                android:textSize="12sp" />
         </LinearLayout>
 
-        <!-- 权限配置卡片 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="核心权限授权中心"
-            android:textColor="#EF5350"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
+        <!-- 开发者自检（默认折叠，隐藏调试内容） -->
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnOverlayPermission"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="12dp"
-            android:text="1. 授予系统悬浮窗权限"
-            app:backgroundTint="#263238" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnAccessibilityPermission"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="2. 开启无障碍触控通道"
-            app:backgroundTint="#263238" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnScreenCapturePermission"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="3. 启动 720p 屏幕流捕获通道"
-            app:backgroundTint="#1B5E20" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnToggleOverlay"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="4. 显示 / 隐藏 游戏常驻悬浮胶囊"
-            app:backgroundTint="#00695C" />
-
-        <!-- 阶段三核心战术动作机控制区 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="核心战术动作机与拟人执行流 (阶段三)"
-            android:textColor="#AB47BC"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStartRoadPaving"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="10dp"
-            android:text="🚀 启动自动铺路翻地流 (多部队动态轮班防溢)"
-            app:backgroundTint="#2E7D32" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStartImmunityBreak"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="⚡ 启动极限卡免与压秒破免 (00:00:01 准点触敌)"
-            app:backgroundTint="#E65100" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStartSiegeSync"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="🏹 启动同盟集火攻城卡秒 (主力21:00:00 + 拆迁21:00:01)"
-            app:backgroundTint="#4E342E" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStartRaidDefense"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="🚨 启动深夜敌袭巡检与【决策 C 自动反击断跳板】"
-            app:backgroundTint="#C62828" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnStopAllTactics"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="8dp"
-            android:text="⏹️ 一键安全终止当前战术流水线"
-            app:backgroundTint="#37474F" />
-
-        <!-- 阶段一与阶段二功能自检测试区 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="视觉感知与率土核心特征库自检 (阶段二)"
-            android:textColor="#42A5F5"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestOcr"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="A. 测试 RapidOCR 本地推理与守军打分"
-            app:backgroundTint="#37474F" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestCaptureTouch"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="B. 测试 720p 自适应画布与三次贝塞尔触控"
-            app:backgroundTint="#455A64" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestSceneMatch"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="C. 测试全场景状态识别与语义按键定位 (免死模板)"
-            app:backgroundTint="#1565C0" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestRaidRadar"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="D. 测试红线敌袭雷达与源头要塞反击回溯 (决策C)"
-            app:backgroundTint="#C62828" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestTileImmunity"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="E. 测试土地金色免战罩与毫秒级卡免倒计时"
-            app:backgroundTint="#F57F17" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestTroopTiming"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="F. 测试部队体能、2026士气120与攻城卡秒"
-            app:backgroundTint="#4E342E" />
-
-        <!-- 阶段四商业化防封与拟人化风控对抗自检 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="商业化防封与拟人化风控对抗自检 (阶段四)"
-            android:textColor="#00E676"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestTimingFingerprint"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="G. 测试外高斯时间指纹打散与昼夜节律"
-            app:backgroundTint="#004D40" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestKineticTouch"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="H. 测试 2D 双变量高斯微抖与惯性过冲轨迹"
-            app:backgroundTint="#006064" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestStealthAudit"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="I. 测试反嗅探环境、Shizuku 隐身与 C++ 原生体检"
-            app:backgroundTint="#1A237E" />
-
-        <!-- 阶段五游戏常驻悬浮 UI 与交互体验自检 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="游戏常驻悬浮 UI 与交互体验自检 (阶段五)"
-            android:textColor="#FFD54F"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestCapsuleOverlay"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="J. 启动/体验 游戏内迷你胶囊与 HUD 战术控制台"
-            app:backgroundTint="#FF6F00" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestCrosshairPicker"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="K. 体验 全屏准星地块坐标嗅探拾取器 (Crosshair Picker)"
-            app:backgroundTint="#F57F17" />
-
-        <!-- 85MB 双轨制·生成式端侧认知微脑自检 -->
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="24dp"
-            android:text="端侧 85MB 认知微脑与双轨决策自检 (AI 军师)"
-            android:textColor="#80D8FF"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestYoloVision"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="L. 测试 YOLOv8-Nano 毫秒级目标边界框检测与拟人抖动"
-            app:backgroundTint="#00838F" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestSlmDecree"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="M. 测试 SmolLM2 微脑军令因果推理与压秒日程提取"
-            app:backgroundTint="#283593" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestSlmDiagnosis"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="N. 测试 战报战法克制深度会诊与兵种站位优化"
-            app:backgroundTint="#4527A0" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnTestSafetyGate"
-            android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="8dp"
-            android:text="O. 测试 双轨效用决策中枢与防大模型幻觉安全闸门"
-            app:backgroundTint="#2E7D32" />
-
-        <TextView
-            android:id="@+id/tvLogOutput"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:id="@+id/btnToggleDebug"
+            style="@style/Btn.Secondary"
             android:layout_marginTop="14dp"
-            android:background="#1E1E1E"
-            android:padding="12dp"
-            android:text="系统就绪，等待权限检查与战术调度..."
-            android:textColor="#81C784"
-            android:fontFamily="monospace"
-            android:textSize="12sp" />
+            android:text="开发者自检工具  ▾" />
+
+        <LinearLayout
+            android:id="@+id/debugSection"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/bg_card"
+            android:orientation="vertical"
+            android:padding="16dp"
+            android:visibility="gone">
+
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestOcr" style="@style/Btn.Secondary" android:layout_height="44dp" android:text="A · OCR 推理与守军打分" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestCaptureTouch" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="B · 自适应画布与贝塞尔触控" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestSceneMatch" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="C · 场景识别与语义按键" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestRaidRadar" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="D · 敌袭雷达与源头回溯" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestTileImmunity" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="E · 免战罩与卡免倒计时" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestTroopTiming" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="F · 部队士气与攻城卡秒" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestTimingFingerprint" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="G · 时间指纹与昼夜节律" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestKineticTouch" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="H · 高斯微抖与惯性轨迹" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestStealthAudit" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="I · 反嗅探环境审计" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestCapsuleOverlay" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="J · 悬浮胶囊与控制台" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestCrosshairPicker" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="K · 准星坐标拾取器" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestYoloVision" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="L · YOLO 目标检测" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestSlmDecree" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="M · 军令因果推理" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestSlmDiagnosis" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="N · 战报深度会诊" />
+            <com.google.android.material.button.MaterialButton android:id="@+id/btnTestSafetyGate" style="@style/Btn.Secondary" android:layout_height="44dp" android:layout_marginTop="8dp" android:text="O · 双轨决策安全闸门" />
+
+            <TextView
+                android:id="@+id/tvLogOutput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/bg_pill"
+                android:fontFamily="monospace"
+                android:maxLines="18"
+                android:padding="12dp"
+                android:scrollbars="vertical"
+                android:text="系统就绪。"
+                android:textColor="@color/success"
+                android:textSize="12sp" />
+        </LinearLayout>
 
     </LinearLayout>
 </ScrollView>

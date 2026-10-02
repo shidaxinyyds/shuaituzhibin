@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 中性深色基调：真实、简约、现代 -->
+    <color name="app_bg">#0F1115</color>
+    <color name="surface">#1A1D24</color>
+    <color name="surface_elevated">#22262F</color>
+    <color name="outline">#2C313B</color>
+
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#9AA0A6</color>
+    <color name="text_hint">#5F6368</color>
+
+    <!-- 单一主色调 + 语义色 -->
+    <color name="accent">#3B82F6</color>
+    <color name="accent_dark">#2563EB</color>
+    <color name="success">#22C55E</color>
+    <color name="warning">#F59E0B</color>
+    <color name="danger">#EF4444</color>
+
+    <color name="white">#FFFFFF</color>
+</resources>
