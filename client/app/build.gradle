@@ -19,8 +19,7 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // 商业版：兼顾真实手机 (arm64-v8a) 与 PC 模拟器原生加速 (x86_64)
-            abiFilters 'arm64-v8a', 'x86_64'
+            abiFilters 'arm64-v8a'
         }
 
         externalNativeBuild {

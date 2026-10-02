@@ -18,6 +18,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <cstring>
+#include <cstdint>
 
 // 静态常量定义 (建议后续通过 OLLVM 混淆)
 static const char* EXPECTED_GAME_ID = "stzb";
