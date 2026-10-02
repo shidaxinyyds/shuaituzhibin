@@ -45,7 +45,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.1.8937393
         run: |
           cd client
-          ./gradlew assembleRelease --refresh-dependencies --stacktrace --no-daemon 2>&1 | tee build_log.txt
+          ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build_log.txt
           EXIT_CODE=${PIPESTATUS[0]}
           if [ $EXIT_CODE -ne 0 ]; then
             echo "## ❌ Gradle Build Failed with exit code $EXIT_CODE" >> $GITHUB_STEP_SUMMARY
@@ -58,20 +58,23 @@ jobs:
       - name: Prepare Single Commercial APK
         run: |
           mkdir -p single-release-apk
-          APK_FILE=$(find client/app/build/outputs/apk -name "*.apk" | head -n 1)
+          APK_FILE=$(find client/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            APK_FILE=$(find client/app/build/outputs/apk -name "*.apk" | head -n 1)
+          fi
           if [ -z "$APK_FILE" ]; then
             echo "❌ No APK found in build outputs!"
             exit 1
           fi
           echo "Selected Commercial APK: $APK_FILE"
-          cp "$APK_FILE" single-release-apk/RateOfLand-Commercial-v1.0.2.apk
+          cp "$APK_FILE" single-release-apk/RateOfLand-Commercial-Release.apk
           ls -lah single-release-apk/
 
       - name: Upload Single Commercial APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RateOfLand-Commercial-v1.0.2
-          path: single-release-apk/RateOfLand-Commercial-v1.0.2.apk
+          name: RateOfLand-Commercial-Release
+          path: single-release-apk/RateOfLand-Commercial-Release.apk
           retention-days: 30
 
       - name: Publish to GitHub Release
@@ -79,7 +82,7 @@ jobs:
         with:
           tag_name: "v1.0.2"
           name: "率土之滨全能管家 v1.0.2 商业旗舰版"
-          files: single-release-apk/RateOfLand-Commercial-v1.0.2.apk
+          files: single-release-apk/RateOfLand-Commercial-Release.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
