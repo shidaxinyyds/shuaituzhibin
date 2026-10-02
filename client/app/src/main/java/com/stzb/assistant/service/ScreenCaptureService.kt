@@ -139,6 +139,7 @@ class ScreenCaptureService : Service() {
             CoordinateTransformer.refreshMetrics()
             val vWidth = CoordinateTransformer.virtualWidth.toInt()
             val vHeight = CoordinateTransformer.virtualHeight.toInt()
+            val densityDpi = Resources.getSystem().displayMetrics.densityDpi
 
             // 创建缓冲区，使用双缓冲 (maxImages = 2) 防止图像撕裂
             imageReader = ImageReader.newInstance(

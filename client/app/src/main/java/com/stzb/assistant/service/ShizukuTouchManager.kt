@@ -54,19 +54,29 @@ object ShizukuTouchManager {
         }
     }
 
+    private fun executeShellCommand(cmd: String): Boolean {
+        return try {
+            val method = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            method.isAccessible = true
+            val process = method.invoke(null, arrayOf("sh", "-c", cmd), null, null) as java.lang.Process
+            process.waitFor() == 0
+        } catch (e: Throwable) {
+            Log.w(TAG, "Shizuku 底层执行指令异常: ${e.message}")
+            false
+        }
+    }
+
     /**
      * 通过 Shizuku 执行底层的物理像素点击
      */
     suspend fun clickReal(realX: Float, realY: Float): Boolean = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext false
-        try {
-            val cmd = "input tap ${realX.toInt()} ${realY.toInt()}"
-            val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
-            process.waitFor() == 0
-        } catch (e: Throwable) {
-            Log.e(TAG, "Shizuku 点击派发失败: ${e.message}")
-            false
-        }
+        executeShellCommand("input tap ${realX.toInt()} ${realY.toInt()}")
     }
 
     /**
@@ -78,13 +88,6 @@ object ShizukuTouchManager {
         durationMs: Long
     ): Boolean = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext false
-        try {
-            val cmd = "input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs"
-            val process = Shizuku.newProcess(arrayOf("sh", "-c", cmd), null, null)
-            process.waitFor() == 0
-        } catch (e: Throwable) {
-            Log.e(TAG, "Shizuku 滑动派发失败: ${e.message}")
-            false
-        }
+        executeShellCommand("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs")
     }
 }

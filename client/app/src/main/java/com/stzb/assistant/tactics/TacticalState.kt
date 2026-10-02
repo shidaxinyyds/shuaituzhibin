@@ -24,10 +24,10 @@ object TacticalState {
     }
 
     data class TacticalLog(
-        val timestamp: Long = System.currentTimeMillis(),
         val taskType: TaskType,
         val level: String, // "INFO", "WARN", "ERROR", "TACTIC"
-        val message: String
+        val message: String,
+        val timestamp: Long = System.currentTimeMillis()
     )
 
     interface TacticalEventListener {
