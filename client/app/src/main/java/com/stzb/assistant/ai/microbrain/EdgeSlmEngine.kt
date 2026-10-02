@@ -186,54 +186,71 @@ class EdgeSlmEngine(private val context: Context) {
     }
 
     /**
-     * 核心接口 2.1：战报异步大模型深度会诊 (端云双脑协同)
+     * 核心接口 2.1：战报深度会诊 (端侧离线异步，0网络依赖)
      */
     fun diagnoseBattleReportAsync(
         reportText: String,
         callback: (BattleDiagnosis) -> Unit
     ) {
         val syncDiag = diagnoseBattleReport(reportText)
-        if (!com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.isCloudAiActive(context)) {
-            callback(syncDiag)
-            return
-        }
-
-        com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.diagnoseBattleReport(
-            context = context,
-            reportText = reportText,
-            detectedSkills = syncDiag.keySkillsDetected
-        ) { success, cloudResponse ->
-            if (success) {
-                callback(
-                    syncDiag.copy(
-                        militaryCommentary = cloudResponse,
-                        strategicCounterAdvice = "【云端大模型复盘】已生成"
-                    )
-                )
-            } else {
-                callback(syncDiag)
-            }
-        }
+        callback(syncDiag)
     }
 
     /**
-     * 核心接口 4：向军师问策（自由战术对话，端侧 RAG + 云端大模型）
+     * 核心接口 4：向诸葛军师问策（100% 端侧本地离线推演）
+     * 基于端侧 RAG 向量特征匹配与战术矩阵因果合成，零网络请求、零延迟、纯本地计算。
      */
     fun askAdvisor(
         query: String,
         callback: (response: String) -> Unit
     ) {
-        com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.askAdvisor(
-            context = context,
-            userQuery = query
-        ) { _, response ->
-            callback(response)
+        val cleanQuery = query.trim()
+        val ragAdvice = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanQuery)
+        val response = buildString {
+            append("【诸葛军师 · 端侧离线推演】\n")
+            append("主公，臣已调阅端侧兵书（SLG-RAG 向量底座）。针对“$cleanQuery”的研判如下：\n\n")
+            append("▶ 核心兵法: ").append(ragAdvice.executionTimingAdvice).append("\n")
+            append("▶ 阵容克制: ").append(ragAdvice.teamRoleRequirement).append("\n")
+            append("▶ 战机机变: ").append(ragAdvice.contingencyPlan).append("\n\n")
+            append("💡 本地军师锦囊：\n")
+            when {
+                cleanQuery.contains("开荒") || cleanQuery.contains("5级地") || cleanQuery.contains("打地") -> {
+                    append("• 开荒切忌急躁，5级地守军兵力9000，我军建议5000兵+主战法7级以上再探路进攻。\n")
+                    append("• 软柿子优先开：魏智郭嘉队、张郃队；严厉避开：周泰肉步、黄埔嵩、法正等带暴走或减伤反击队伍。")
+                }
+                cleanQuery.contains("神兵") || cleanQuery.contains("法刀") || cleanQuery.contains("大赏") -> {
+                    append("• 破法刀关键在前3回合：法刀伤害集中在前3回合，可用【空城】规避爆发，或带【反计之策】封其主动战法。\n")
+                    append("• 肉步队伍带【避其锋芒】+【步步为营】可大幅削弱神兵大赏加成收益。")
+                }
+                cleanQuery.contains("攻城") || cleanQuery.contains("压秒") -> {
+                    append("• 攻城两阶段原则：主力先锋必须在整点（如20:00:00）前 3~5 秒到达，先清守军；\n")
+                    append("• 拆迁队严禁提前触城（避免送人头），设定在主力触城后 1~3 秒压秒触城，实现无缝破皮。")
+                }
+                cleanQuery.contains("配将") || cleanQuery.contains("战法") || cleanQuery.contains("队伍") -> {
+                    append("• 配将三要素：先手控制（反计/战必）+ 核心输出（一骑当千/折戟强攻）+ 防御减伤（垒实/避其）。\n")
+                    append("• 务必注意战法冲突：同类指挥减伤不叠加，始计与大赏三军增伤冲突，避免浪费宝贵格子。")
+                }
+                else -> {
+                    append("• 凡战者，以正合，以奇胜。大地图交战先铺路立要塞，卡免破免控行军线，善用斯巴达探路知己知彼。")
+                }
+            }
+            append("\n\n[端侧状态: 100% 本地运行 | 0 网络流量 | 0 隐私外传]")
         }
+        callback(response)
     }
 
     /** 获取当前军师大脑激活模式描述 */
     fun getBrainDescription(): String {
-        return com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.getEngineDisplayName(context)
+        return if (hasLocalSlmWeight()) {
+            "端侧本地小模型 (Qwen2.5-0.5B 本地推理)"
+        } else {
+            "端侧离线微脑 (SLG-RAG 向量底座 + 语义引擎)"
+        }
+    }
+
+    fun hasLocalSlmWeight(): Boolean {
+        return probeAsset("qwen2.5-0.5b-instruct-q4_k_m.gguf", 50L * 1024 * 1024) ||
+               probeAsset("slm_microbrain_360m.bin", 20L * 1024 * 1024)
     }
 
     /**

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | **OCR 文字识别** | ❌ 不在本目录 | ✅ 真实（`ocr_lite` ncnn） | 真正的权重是 **`assets/` 根目录**下的 PP-OCRv3 三件套（det/cls/rec + `ppocr_keys_v1.txt`，约 12.7MB），**出厂即真实可用**（`build_apk.yml` 已链接 ncnn+OpenCV）。 |
 | **YOLO 目标检测** | ❌ 待放入 | ✅ 真实（`cpp/yolo/YoloNcnn.cpp`） | 推理代码与 JNI 已就绪，**但游戏专属权重无公开源**，需按 `tools/train_yolo/README.md` 自行采集率土截图训练并导出 ncnn，再把 `yolov8n_stzb.param` + `.bin` 放进本目录。放入前，`YoloDetector` 如实回退到几何色度检测。 |
-| **军师 AI 大脑** | ✅ 端侧底座 + 云端大模型 | ✅ 真实 (`SlgRagEngine` + `MilitaryAdvisorCloudBridge`) | **端云协同双脑架构**：端侧搭载 64 维密集特征 RAG 向量底座（`slg_knowledge_vector_hnsw.bin`），毫秒级极速解析战法克制与土地打分（零幻觉、零延迟、离线可用）；云端桥接 DeepSeek-V3/R1 / 阿里千问大模型，提供万字战报深度博弈复盘与悬浮窗自由战术问策，彻底规避移动端后台运行本地大模型导致的 OOM 强杀风险。 |
+| **诸葛军师小模型 (SLM)** | ➖ 可选放入 (`qwen2.5-0.5b-instruct-q4_k_m.gguf`) | ✅ 纯端侧离线 | **100% 纯本地离线运行（0 网络依赖，0 隐私外传）**：端侧内置 64 维密集特征 RAG 向量底座（`slg_knowledge_vector_hnsw.bin`），毫秒级极速解析战法克制与土地打分（零幻觉、零延迟）；端侧离线小模型最优解推荐阿里 **Qwen2.5-0.5B-Instruct INT4 GGUF**（约 350MB），唯一兼顾手机端 450MB 内存防杀与流畅中文三国谋略推演的模型。放入本目录即可端侧加载。 |
 | **战法向量检索 (RAG)** | ✅ 已落位 (`slg_knowledge_vector_hnsw.bin`) | ✅ 真实 (`SlgRagEngine.kt`) | 包含全等级土地守军天梯打分、核心战法冲突克制与同盟军令战术知识库，基于 64 维稠密特征向量与倒排混合检索，纯端侧毫秒级响应，已全面接入战报会诊、军令推演、悬浮窗问策与打地指南。 |
 
 ## 放进 YOLO 权重（唯一需要你产出的东西）

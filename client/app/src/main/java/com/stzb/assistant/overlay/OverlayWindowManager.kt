@@ -591,29 +591,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             }
             val brainDesc = edgeSlmEngine.getBrainDescription()
             tvAdvisorMetrics?.text = "状态: 军令解析完成 ($brainDesc)"
-
-            // 若云端大模型处于激活状态，异步获取军师深度战略提炼
-            if (com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.isCloudAiActive(context)) {
-                com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.interpretAllianceDecree(
-                    context = context,
-                    decreeText = decreeText,
-                    parsedTargetName = order.targetName,
-                    parsedCoord = order.targetCoord,
-                    parsedTimeMs = order.targetTime
-                ) { success, cloudInterpretation ->
-                    if (success) {
-                        mainHandler.post {
-                            tvAdvisorStream?.text = buildString {
-                                append("📜【诸葛军师 · 云端战略洞察】\n")
-                                append(cloudInterpretation).append("\n\n")
-                                append("▶ 战术指令: 目标【${order.targetName}】")
-                                append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
-                                append(order.advisorThinking)
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         root.findViewById<Button>(R.id.btnAdvisorDiagnose)?.setOnClickListener {
