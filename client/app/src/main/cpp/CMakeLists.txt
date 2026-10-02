@@ -64,6 +64,24 @@ if (ncnn_FOUND AND OpenCV_FOUND)
         SecurityBridge.cpp
         yolo/YoloNcnn.cpp
     )
+
+    # ⚠️ 必须显式重新开启 C++ 异常与 RTTI。
+    #
+    # clipper.cpp / BitmapUtils.cpp / YoloNcnn.cpp 都用了 try/throw/catch。
+    # build.gradle 的 cppFlags 虽然写了 -fexceptions -frtti，但 NDK 工具链与
+    # ncnn/OpenCV 依赖目标会在命令行更靠后的位置追加 -fno-exceptions -fno-rtti，
+    # clang 以最后一个为准 → 异常被关掉，报 "cannot use 'try' with exceptions disabled"。
+    # 之前空桩分支不编译这些文件，所以从未暴露。
+    #
+    # 源级 COMPILE_FLAGS 排在整条编译命令的最末尾，稳赢覆盖；target 级作为兜底。
+    set_source_files_properties(
+        ${OCR_SOURCES}
+        SecurityBridge.cpp
+        yolo/YoloNcnn.cpp
+        PROPERTIES COMPILE_FLAGS "-fexceptions -frtti"
+    )
+    target_compile_options(RapidOcr PRIVATE -fexceptions -frtti)
+
     target_link_libraries(RapidOcr
         ${log-lib}
         ${jnigraphics-lib}
