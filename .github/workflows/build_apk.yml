@@ -1,0 +1,72 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & Package APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK & CMake
+        run: |
+          yes | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+
+      - name: Grant Execute Permission for Gradlew
+        run: chmod +x client/gradlew
+
+      - name: Build Debug & Release APK
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-android.outputs.sdk-path }}/ndk/25.1.8937393
+        run: |
+          cd client
+          ./gradlew clean assembleDebug assembleRelease --stacktrace
+
+      - name: Find & Rename APK Outputs
+        id: apk-paths
+        run: |
+          mkdir -p release-apks
+          find client/app/build/outputs/apk -name "*.apk" -type f -exec cp {} release-apks/ \;
+          ls -lah release-apks/
+
+      - name: Upload APK Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rate-of-land-commercial-apk
+          path: release-apks/*.apk
+          retention-days: 30
+
+      - name: Create Release and Upload Asset (Tagged Release)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apks/*.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

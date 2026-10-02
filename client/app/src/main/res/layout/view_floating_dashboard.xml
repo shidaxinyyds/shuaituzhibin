@@ -1,0 +1,288 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/dashboardRoot"
+    android:layout_width="340dp"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_dashboard"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- 顶部标题栏与关闭胶囊折叠按键 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="率土管家 · 游戏内战术总控"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvCloseDashboard"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:background="#22FFFFFF"
+            android:gravity="center"
+            android:text="✕"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_marginTop="10dp"
+        android:background="#2E3A46" />
+
+    <!-- 战术功能 Tab 切换栏 -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/tabPaving"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:background="#1565C0"
+                android:text="自动铺路"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabImmunity"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:background="#37474F"
+                android:text="极限卡免"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabSiege"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:background="#37474F"
+                android:text="攻城卡秒"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabPatrol"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:background="#37474F"
+                android:text="深夜反击"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabLogs"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:background="#37474F"
+                android:text="实时日志"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- 容器内容区 (根据 Tab 动态切换可见性) -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp">
+
+        <!-- 1. 铺路面板 -->
+        <LinearLayout
+            android:id="@+id/panelPaving"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <TextView
+                android:id="@+id/tvPavingCoord"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="锁定目标地块: 尚未点选 (点击右侧准星嗅探)"
+                android:textColor="#90CAF9"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPickPavingTile"
+                android:layout_width="match_parent"
+                android:layout_height="38dp"
+                android:layout_marginTop="6dp"
+                android:background="#1E88E5"
+                android:text="🎯 启动十字准星点选目标地块"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnExecPaving"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="10dp"
+                android:background="#2E7D32"
+                android:text="🚀 开始铺路翻地 (多部队轮班防溢出)"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 2. 卡免面板 -->
+        <LinearLayout
+            android:id="@+id/panelImmunity"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvImmunityCoord"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="卡免目标地块: 尚未选择"
+                android:textColor="#FFE082"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPickImmunityTile"
+                android:layout_width="match_parent"
+                android:layout_height="38dp"
+                android:layout_marginTop="6dp"
+                android:background="#F57F17"
+                android:text="🎯 准星点选免战地块"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnExecBreakImmunity"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="10dp"
+                android:background="#E65100"
+                android:text="⚡ 启动压秒破免 (00:00:01 准点触敌)"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 3. 攻城面板 -->
+        <LinearLayout
+            android:id="@+id/panelSiege"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvSiegeCoord"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="集火目标城池: 尚未点选"
+                android:textColor="#CE93D8"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnPickSiegeCity"
+                android:layout_width="match_parent"
+                android:layout_height="38dp"
+                android:layout_marginTop="6dp"
+                android:background="#8E24AA"
+                android:text="🎯 准星点选目标城池"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnExecSiegeSync"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="10dp"
+                android:background="#4A148C"
+                android:text="🏹 启动主力+拆迁倒排卡秒"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 4. 敌袭巡检面板 -->
+        <LinearLayout
+            android:id="@+id/panelPatrol"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="全天候 24h 红线巡检与【决策 C 自动断路反击】"
+                android:textColor="#EF9A9A"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnExecRaidPatrol"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="10dp"
+                android:background="#C62828"
+                android:text="🚨 开启深夜雷达巡检与反击守护"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 5. 日志面板 -->
+        <LinearLayout
+            android:id="@+id/panelLogs"
+            android:layout_width="match_parent"
+            android:layout_height="140dp"
+            android:background="#161B22"
+            android:orientation="vertical"
+            android:padding="8dp"
+            android:visibility="gone">
+
+            <ScrollView
+                android:id="@+id/scrollInGameLogs"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
+
+                <TextView
+                    android:id="@+id/tvInGameLogs"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:text="战术流水线日志就绪..."
+                    android:textColor="#81C784"
+                    android:textSize="10sp" />
+            </ScrollView>
+        </LinearLayout>
+
+    </FrameLayout>
+
+    <!-- 急停按钮 -->
+    <Button
+        android:id="@+id/btnEmergencyStop"
+        android:layout_width="match_parent"
+        android:layout_height="36dp"
+        android:layout_marginTop="12dp"
+        android:background="#37474F"
+        android:text="⏹️ 一键急停当前战术流水线"
+        android:textColor="#EF5350"
+        android:textSize="11sp" />
+
+</LinearLayout>

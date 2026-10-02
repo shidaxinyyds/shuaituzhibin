@@ -1,0 +1,62 @@
+{
+  "game_id": "stzb",
+  "game_name": "率土之滨",
+  "template_type": "GRID_STRATEGY_LOOP",
+  "resolution_base": {
+    "width": 1280,
+    "height": 720,
+    "orientation": "landscape"
+  },
+  "safety_settings": {
+    "random_touch_offset_px": 8,
+    "touch_duration_jitter_ms": [80, 160],
+    "action_interval_jitter_ms": [1200, 2400],
+    "bezier_curvature_variance": 0.25
+  },
+  "states": {
+    "IDLE": {
+      "description": "主地图巡航休眠状态，帧率降低至 0.5 FPS 极省电",
+      "inspect_interval_ms": 3000,
+      "triggers": ["check_night_alarm", "check_troop_status", "check_stamina"]
+    },
+    "CITY_TAX_COLLECT": {
+      "description": "主城每日收税与例行事务",
+      "roi": [0.85, 0.05, 0.98, 0.20],
+      "ocr_targets": ["税收", "征税", "强征"],
+      "action": "click_if_found"
+    },
+    "TROOP_STAMINA_INSPECT": {
+      "description": "部队体力和伤兵状态检测",
+      "roi": [0.70, 0.15, 0.95, 0.85],
+      "ocr_pattern": "(\\d+)/(\\d+)",
+      "min_stamina_threshold": 20,
+      "min_soldiers_ratio": 0.85
+    },
+    "TILE_COORDINATE_JUMP": {
+      "description": "通过坐标搜寻栏跳转至指定土地 (X, Y)",
+      "search_bar_roi": [0.35, 0.02, 0.55, 0.08],
+      "confirm_button_roi": [0.56, 0.02, 0.65, 0.08]
+    },
+    "TILE_ACTION_EXECUTE": {
+      "description": "选中地块并执行下发指令（扫荡 / 屯田 / 占领 / 驻守）",
+      "action_menu_roi": [0.40, 0.40, 0.60, 0.70],
+      "actions": {
+        "sweep": { "label": "扫荡", "template": "btn_sweep.png" },
+        "march": { "label": "出征", "template": "btn_march.png" },
+        "farm":  { "label": "屯田", "template": "btn_farm.png" },
+        "defend": { "label": "驻守", "template": "btn_defend.png" }
+      }
+    },
+    "MARCH_WAIT_GOVERNOR": {
+      "description": "出征行军与战平/回流状态监控",
+      "status_roi": [0.75, 0.20, 0.98, 0.45],
+      "troop_states": ["行军中", "交战中", "返回中", "已回城"]
+    },
+    "NIGHT_RAID_ALARM": {
+      "description": "敌袭警报检测（界面边缘红线 / 战报号角）",
+      "alarm_roi": [0.02, 0.02, 0.15, 0.15],
+      "red_channel_threshold": 210,
+      "alert_action": "sound_vibrate_emergency"
+    }
+  }
+}

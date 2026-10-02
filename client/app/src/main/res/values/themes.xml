@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.StzbAssistant" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#D32F2F</item>
+        <item name="colorPrimaryVariant">#B71C1C</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="android:statusBarColor">#B71C1C</item>
+    </style>
+</resources>

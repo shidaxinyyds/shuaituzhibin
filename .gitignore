@@ -1,0 +1,46 @@
+# Android & Gradle
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx/
+**/build/
+**/bin/
+*.apk
+*.aab
+*.ap_
+
+# C++ Object & Compiled
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Signing & Keys
+*.jks
+*.keystore
+*.key
+google-services.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.venv
+venv/
+ENV/
+
+# Supabase Local
+.supabase/
+.env
+.env.local
+
+# OS Caches
+Thumbs.db
+[Ee]xcluded/
