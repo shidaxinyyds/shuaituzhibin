@@ -28,7 +28,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
       - name: Install Android NDK & CMake
         run: |
@@ -46,7 +45,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.1.8937393
         run: |
           cd client
-          ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build_log.txt
+          ./gradlew assembleRelease --refresh-dependencies --stacktrace --no-daemon 2>&1 | tee build_log.txt
           EXIT_CODE=${PIPESTATUS[0]}
           if [ $EXIT_CODE -ne 0 ]; then
             echo "## ❌ Gradle Build Failed with exit code $EXIT_CODE" >> $GITHUB_STEP_SUMMARY
