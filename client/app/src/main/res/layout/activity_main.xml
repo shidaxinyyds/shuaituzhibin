@@ -432,6 +432,48 @@
             android:text="K. 体验 全屏准星地块坐标嗅探拾取器 (Crosshair Picker)"
             app:backgroundTint="#F57F17" />
 
+        <!-- 85MB 双轨制·生成式端侧认知微脑自检 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="端侧 85MB 认知微脑与双轨决策自检 (AI 军师)"
+            android:textColor="#80D8FF"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTestYoloVision"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="L. 测试 YOLOv8-Nano 毫秒级目标边界框检测与拟人抖动"
+            app:backgroundTint="#00838F" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTestSlmDecree"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="M. 测试 SmolLM2 微脑军令因果推理与压秒日程提取"
+            app:backgroundTint="#283593" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTestSlmDiagnosis"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="N. 测试 战报战法克制深度会诊与兵种站位优化"
+            app:backgroundTint="#4527A0" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnTestSafetyGate"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layout_marginTop="8dp"
+            android:text="O. 测试 双轨效用决策中枢与防大模型幻觉安全闸门"
+            app:backgroundTint="#2E7D32" />
+
         <TextView
             android:id="@+id/tvLogOutput"
             android:layout_width="match_parent"

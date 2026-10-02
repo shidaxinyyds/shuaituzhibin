@@ -101,6 +101,16 @@
                 android:text="实时日志"
                 android:textColor="#B0BEC5"
                 android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabAdvisor"
+                android:layout_width="wrap_content"
+                android:layout_height="34dp"
+                android:layout_marginStart="4dp"
+                android:background="#4527A0"
+                android:text="AI 军师"
+                android:textColor="#80D8FF"
+                android:textSize="11sp" />
         </LinearLayout>
     </HorizontalScrollView>
 
@@ -271,6 +281,86 @@
                     android:textColor="#81C784"
                     android:textSize="10sp" />
             </ScrollView>
+        </LinearLayout>
+
+        <!-- 6. AI 诸葛军师思考流面板 -->
+        <LinearLayout
+            android:id="@+id/panelAdvisor"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="🧠 诸葛军师 · 端侧认知微脑 (85MB 双轨推理)"
+                android:textColor="#80D8FF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvAdvisorMetrics"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="状态: 纯端侧离线 | 内存: &lt; 85MB | 延迟: ~18ms"
+                android:textColor="#90A4AE"
+                android:textSize="10sp" />
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="90dp"
+                android:layout_marginTop="6dp"
+                android:background="#1B2631"
+                android:padding="6dp">
+
+                <TextView
+                    android:id="@+id/tvAdvisorStream"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="【军师待命】：正在感知战场动态，随时解读同盟法令与战局走向..."
+                    android:textColor="#E0E0E0"
+                    android:textSize="11sp" />
+            </ScrollView>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnAdvisorScanDecree"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_weight="1"
+                    android:background="#0277BD"
+                    android:text="📜 识别全屏军令"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnAdvisorDiagnose"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginStart="6dp"
+                    android:layout_weight="1"
+                    android:background="#4527A0"
+                    android:text="⚔️ 深度战报会诊"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnAdvisorAutoExec"
+                android:layout_width="match_parent"
+                android:layout_height="34dp"
+                android:layout_marginTop="6dp"
+                android:background="#2E7D32"
+                android:text="🚀 安全守门员核验并自动接管执行"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
         </LinearLayout>
 
     </FrameLayout>

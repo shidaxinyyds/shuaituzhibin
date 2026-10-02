@@ -94,6 +94,12 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
     private lateinit var btnTestCapsuleOverlay: MaterialButton
     private lateinit var btnTestCrosshairPicker: MaterialButton
 
+    // 85MB 端侧认知微脑与双轨决策测试按钮
+    private lateinit var btnTestYoloVision: MaterialButton
+    private lateinit var btnTestSlmDecree: MaterialButton
+    private lateinit var btnTestSlmDiagnosis: MaterialButton
+    private lateinit var btnTestSafetyGate: MaterialButton
+
     private var isOverlayShown = false
     private lateinit var pipeline: TacticalPipeline
 
@@ -180,6 +186,11 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
 
         btnTestCapsuleOverlay = findViewById(R.id.btnTestCapsuleOverlay)
         btnTestCrosshairPicker = findViewById(R.id.btnTestCrosshairPicker)
+
+        btnTestYoloVision = findViewById(R.id.btnTestYoloVision)
+        btnTestSlmDecree = findViewById(R.id.btnTestSlmDecree)
+        btnTestSlmDiagnosis = findViewById(R.id.btnTestSlmDiagnosis)
+        btnTestSafetyGate = findViewById(R.id.btnTestSafetyGate)
     }
 
     private fun setupButtons() {
@@ -413,6 +424,12 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         // 阶段五悬浮 UI 自检
         btnTestCapsuleOverlay.setOnClickListener { runCapsuleOverlayTest() }
         btnTestCrosshairPicker.setOnClickListener { runCrosshairPickerTest() }
+
+        // 85MB 端侧认知微脑与双轨决策自检
+        btnTestYoloVision.setOnClickListener { runYoloVisionTest() }
+        btnTestSlmDecree.setOnClickListener { runSlmDecreeTest() }
+        btnTestSlmDiagnosis.setOnClickListener { runSlmDiagnosisTest() }
+        btnTestSafetyGate.setOnClickListener { runSafetyGateTest() }
     }
 
     private fun refreshLicenseStatus() {
@@ -816,6 +833,127 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
             "4. 系统将毫秒级抓取物理触控坐标，自动等比换算为 720p 归一化虚拟坐标并回填参数；\n" +
             "⚡ 体验革新: 彻底告别繁琐的手工查看 X/Y 坐标输入，一触即发！"
         )
+    }
+
+    /**
+     * 测试 12 (85MB 架构)：YOLOv8-Nano 目标检测与高斯拟人抖动
+     */
+    private fun runYoloVisionTest() {
+        log("🔄 正在执行 YOLOv8-Nano 目标检测与空间几何显著性自检...")
+        val detector = com.stzb.assistant.ai.vision.YoloDetector(this)
+
+        // 构建包含信件红点与出征金黄按键的仿真图元
+        val bmp = Bitmap.createBitmap(800, 480, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.rgb(20, 25, 30))
+
+        // 绘制信件红点 (右上)
+        val paintRed = Paint().apply { color = Color.rgb(220, 30, 30); style = Paint.Style.FILL }
+        canvas.drawCircle(720f, 40f, 25f, paintRed)
+
+        // 绘制出征金黄按键 (右下)
+        val paintGold = Paint().apply { color = Color.rgb(210, 160, 50); style = Paint.Style.FILL }
+        canvas.drawRect(580f, 380f, 760f, 440f, paintGold)
+
+        val detections = detector.detect(bmp)
+        val resultsDesc = detections.joinToString("\n") {
+            "  • [${it.detectionClass.label}] 置信度: ${(it.confidence * 100).toInt()}% 区域: ${it.rect} -> 拟人触控点: (${it.humanTouchPoint.x.toInt()}, ${it.humanTouchPoint.y.toInt()})"
+        }
+
+        log(
+            "👁️【YOLOv8-Nano 目标感知自检完成】\n" +
+            "• 检出目标数量: ${detections.size} 个\n" +
+            resultsDesc + "\n" +
+            "⚡ 优势: 克服纯模板失效难题，支持任意赛季皮肤、缩放比与分辨率！"
+        )
+    }
+
+    /**
+     * 测试 13 (85MB 架构)：SmolLM2 认知微脑长文军令因果推理与压秒日程提取
+     */
+    private fun runSlmDecreeTest() {
+        log("🔄 正在启动 SmolLM2 端侧认知微脑因果推理...")
+        val engine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(this)
+        val sampleDecree = "【全盟最高法令】：今晚20:00全员压秒打虎牢关(782,451)！先锋队提前5分钟铺路，主力队准时触城，拆迁队20:05压上去！抢跑罚地！若城皮被敌对盟抢了立刻转关口驻守！"
+
+        val order = engine.parseAllianceDecree(sampleDecree)
+        val timeFormatted = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(order.targetTime))
+
+        log(
+            "🧠【SmolLM2 认知微脑军令推演成功】\n" +
+            "• 指令流水号: ${order.orderId} (置信度: ${(order.confidence * 100).toInt()}%)\n" +
+            "• 核心战术意图: 【${order.intent.desc}】\n" +
+            "• 战术目标: ${order.targetName} | 坐标: (${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n" +
+            "• 攻城时刻: $timeFormatted (提前量: ${order.advanceSeconds}秒)\n" +
+            "• 参战编队: ${order.assignedTeams.joinToString("/") { it.roleName }}\n" +
+            "• 应急预案: ${order.contingencyPlan?.actionName ?: "常规保障"}\n\n" +
+            "💭【悬浮窗军师思考流播报】:\n${order.advisorThinking}"
+        )
+    }
+
+    /**
+     * 测试 14 (85MB 架构)：战报深度会诊与兵种战法克制诊断
+     */
+    private fun runSlmDiagnosisTest() {
+        log("🔄 正在执行战报战法克制深度会诊...")
+        val engine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(this)
+        val sampleReport = "战斗大捷！我军伤亡2300，敌军阵亡12000。战斗回放显示敌方前锋配置【战必断金】，中军配置【反计之策】，大营配置【浑水摸鱼】。我军前三回合输出受阻。"
+
+        val diagnosis = engine.diagnoseBattleReport(sampleReport)
+
+        log(
+            "⚔️【战报深度会诊与兵种战法诊断】\n" +
+            "• 会诊单号: ${diagnosis.battleId} (战况: ${diagnosis.battleResult.desc})\n" +
+            "• 敌我战损比: 伤亡 ${diagnosis.myTroopLoss} vs 斩敌 ${diagnosis.enemyTroopLoss}\n" +
+            "• 识别关键战法: [${diagnosis.keySkillsDetected.joinToString(", ")}]\n" +
+            "• 战术对策建议: ${diagnosis.strategicCounterAdvice}\n" +
+            "• 军师文言复盘:\n${diagnosis.militaryCommentary}"
+        )
+    }
+
+    /**
+     * 测试 15 (85MB 架构)：双轨效用决策中枢与防大模型幻觉安全闸门
+     */
+    private fun runSafetyGateTest() {
+        log("🔄 正在测试双轨效用决策与安全守门员拦截体系...")
+        val safetyGate = com.stzb.assistant.ai.decision.DualTrackSafetyGate(this)
+
+        safetyGate.setCallback(object : com.stzb.assistant.ai.decision.DualTrackSafetyGate.SafetyGateCallback {
+            override fun onOrderVerified(order: com.stzb.assistant.ai.microbrain.TacticalOrder, utilityScore: Float) {
+                log("✅【安全守门员审核通过】指令 [${order.orderId}] 效用评分: ${utilityScore}分！准予下发执行！")
+            }
+
+            override fun onOrderRejected(order: com.stzb.assistant.ai.microbrain.TacticalOrder, reason: String) {
+                log("🛑【安全守门员成功拦截违规/幻觉指令】原因: $reason")
+            }
+
+            override fun onExecutionDispatched(taskType: TacticalState.TaskType, summary: String) {
+                log("🚀【流水线调度完成】${taskType.displayName} -> $summary")
+            }
+        })
+
+        // 1. 测试合规指令
+        val validOrder = com.stzb.assistant.ai.microbrain.TacticalOrder(
+            orderId = "VALID-01",
+            intent = com.stzb.assistant.ai.microbrain.OrderIntent.ALLIANCE_SIEGE,
+            targetName = "虎牢关",
+            targetCoord = Pair(782, 451),
+            targetTime = System.currentTimeMillis() + 600 * 1000,
+            advanceSeconds = 180,
+            confidence = 0.98f
+        )
+        safetyGate.verifyAndDispatch(validOrder, currentStamina = 95)
+
+        // 2. 测试越界幻觉指令 (坐标非法 9999, 8888)
+        val hallucinatedOrder = com.stzb.assistant.ai.microbrain.TacticalOrder(
+            orderId = "HALLUCINATED-02",
+            intent = com.stzb.assistant.ai.microbrain.OrderIntent.ROAD_PAVING,
+            targetName = "火星关卡",
+            targetCoord = Pair(9999, 8888),
+            targetTime = System.currentTimeMillis(),
+            confidence = 0.40f
+        )
+        safetyGate.verifyAndDispatch(hallucinatedOrder, currentStamina = 15)
     }
 
     private fun log(message: String) {

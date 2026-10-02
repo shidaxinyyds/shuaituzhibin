@@ -38,3 +38,4 @@
 -keep class com.stzb.assistant.license.** { *; }
 -keep class com.stzb.assistant.SecurityBridge { *; }
 -keep class com.stzb.assistant.tactics.TacticalState** { *; }
+-keep class com.stzb.assistant.ai.** { *; }
