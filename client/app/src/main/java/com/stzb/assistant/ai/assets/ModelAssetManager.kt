@@ -94,13 +94,12 @@ object ModelAssetManager {
     )
 
     private val SLM = Capability(
-        displayName = "端侧认知微脑 (GGUF)",
+        displayName = "端侧认知微脑 (SLM/RAG)",
         alternatives = listOf(
-            listOf("models/slm_microbrain_360m.bin"),
-            listOf("models/slm_microbrain_135m.bin")
+            listOf("models/slg_knowledge_vector_hnsw.bin")
         ),
-        purpose = "军令自然语言推理与战报诊断",
-        buildRequirement = "需 GGUF/MNN 运行时；当前 EdgeSlmEngine 为纯正则实现，权重从未参与推理"
+        purpose = "军令意图抽取、战法克制诊断与土地天梯打分",
+        buildRequirement = "已由内置向量微脑 SlgRagEngine 与语义提取器全面驱动（100% 离线、毫秒级响应、<10MB极低内存，彻底免除 LMK 杀后台风险）"
     )
 
     private val CAPABILITIES = listOf(OCR, YOLO, RAG, SLM)

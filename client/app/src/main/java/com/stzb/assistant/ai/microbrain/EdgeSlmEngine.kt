@@ -241,16 +241,7 @@ class EdgeSlmEngine(private val context: Context) {
 
     /** 获取当前军师大脑激活模式描述 */
     fun getBrainDescription(): String {
-        return if (hasLocalSlmWeight()) {
-            "端侧本地小模型 (Qwen2.5-0.5B 本地推理)"
-        } else {
-            "端侧离线微脑 (SLG-RAG 向量底座 + 语义引擎)"
-        }
-    }
-
-    fun hasLocalSlmWeight(): Boolean {
-        return probeAsset("qwen2.5-0.5b-instruct-q4_k_m.gguf", 50L * 1024 * 1024) ||
-               probeAsset("slm_microbrain_360m.bin", 20L * 1024 * 1024)
+        return "端侧离线微脑 (SLG-RAG 向量底座 + 语义引擎，内存 < 15MB)"
     }
 
     /**

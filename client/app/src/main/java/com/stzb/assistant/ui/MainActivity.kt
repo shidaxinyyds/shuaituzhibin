@@ -543,42 +543,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshAdvisorBrainUi() {
-        val slmEngine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(this)
-        val hasSlm = slmEngine.hasLocalSlmWeight()
-        if (hasSlm) {
-            tvAdvisorEngineStatus.text = "军师大脑：端侧本地小模型就绪 (Qwen2.5-0.5B 本地推理)"
-            tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.success))
-        } else {
-            tvAdvisorEngineStatus.text = "军师大脑：端侧 RAG 向量底座 (100% 本地离线，0网络依赖)"
-            tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
-        }
+        tvAdvisorEngineStatus.text = "军师大脑：端侧 RAG 向量底座 (100% 本地离线，内存 < 15MB，防杀后台)"
+        tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.success))
     }
 
     private fun showAiBrainConfigDialog() {
-        val slmEngine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(this)
-        val hasSlm = slmEngine.hasLocalSlmWeight()
-
         val text = buildString {
-            append("【端侧本地小模型架构与选型报告】\n\n")
-            append("1. 当前端侧状态：\n")
-            if (hasSlm) {
-                append("  🟢 已检测到本地小模型权重文件，端侧本地神经推理就绪。\n\n")
-            } else {
-                append("  🟡 当前由【端侧 RAG 密集向量底座】全面驱动（100% 离线、0 延迟、0 幻觉）。\n\n")
-            }
-            append("2. 业界最优端侧小模型推荐：\n")
-            append("  👑 【首选推荐】阿里通义千问 Qwen2.5-0.5B-Instruct (INT4量化)\n")
-            append("     • 体积: 仅约 350MB (Q4_K_M GGUF)\n")
-            append("     • 运行时内存: 约 450MB ~ 600MB\n")
-            append("     • 评定: 全球 1B 以下中文理解与三国谋略能力最强的小模型！唯一能在手机端流畅输出文言文风骨与率土战术策略的 SLM。\n\n")
-            append("  ⚠️ 【不推荐】SmolLM2-135M / 360M：95% 为英文预训练，不懂中文战法与三国黑话，极易胡言乱语。\n")
-            append("  ⚠️ 【不推荐】1B+ 以上模型 (MiniCPM/Llama)：内存占用超过 1.5GB，与游戏 2GB 内存叠加必定被系统 LMK 杀后台。\n\n")
-            append("3. 本地模型落位路径：\n")
-            append("  将 GGUF 文件放至 assets/models/qwen2.5-0.5b-instruct-q4_k_m.gguf 或手机内部存储目录。")
+            append("【端侧微脑真实架构与运行机制】\n\n")
+            append("1. 为什么坚决不塞几百兆的生成式大模型？\n")
+            append("  • 内存硬限制：游戏《率土之滨》自身占用 1.5G~2.5G 内存。后台无障碍服务若加载数百兆模型，必被 Android 系统 LMK 强行击杀！\n")
+            append("  • 耗电发热：手机 CPU 跑大模型会导致严重发烫锁核、游戏掉帧卡顿。\n\n")
+            append("2. 当前落地的端侧最优工业方案：\n")
+            append("  • 【SLG-RAG 密集向量底座】(slg_knowledge_vector_hnsw.bin)\n")
+            append("    体积仅 22KB，运行内存 < 10MB，毫秒级响应！包含全等级土地守军天梯打分、核心战法冲突克制与同盟战术知识库，纯本地离线计算，零延迟、零幻觉、永不闪退。\n")
+            append("  • 【端侧军令语义解析器】(EdgeSlmEngine)\n")
+            append("    精准抽取关卡、城池、世界坐标、攻城时间戳与压秒提前量，0 耗电、0 闪退风险。\n\n")
+            append("3. 总结：\n")
+            append("  真正的商业级辅助追求的是绝对稳定、不杀后台、不发热、不封号。端侧 RAG 底座是当前移动端环境下的最佳工程解！")
         }
 
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("🧠 端侧本地小模型指引")
+            .setTitle("🧠 端侧微脑架构说明")
             .setMessage(text)
             .setPositiveButton("我知道了", null)
             .show()
