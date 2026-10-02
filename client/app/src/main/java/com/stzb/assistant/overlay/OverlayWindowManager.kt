@@ -1224,16 +1224,18 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         fun resolveTargets(
             type: TacticalState.TaskType
         ): List<com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint> {
-            val mgr = com.stzb.assistant.tactics.ScheduledTaskManager
+            // 注意：TargetPoint 是 object ScheduledTaskManager 的**嵌套类**，
+            // 只能通过类名限定访问，不能通过实例引用（如 `val mgr = ScheduledTaskManager; mgr.TargetPoint`）——
+            // 后者 Kotlin 会报 "Classifier accessed via instance reference"。
             return when (type) {
                 TacticalState.TaskType.ROAD_PAVING -> pickedPavingPoints.mapIndexed { i, p ->
                     val w = pickedPavingWorld.getOrNull(i)
-                    mgr.TargetPoint(p.x, p.y, w?.first, w?.second)
+                    com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint(p.x, p.y, w?.first, w?.second)
                 }
 
                 TacticalState.TaskType.SIEGE_SYNC -> pickedSiegePoints.firstOrNull()?.let { p ->
                     // 攻城是集火单一城池，只保留第一座
-                    listOf(mgr.TargetPoint(p.x, p.y, pickedSiegeWorld?.first, pickedSiegeWorld?.second))
+                    listOf(com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint(p.x, p.y, pickedSiegeWorld?.first, pickedSiegeWorld?.second))
                 } ?: emptyList()
 
                 else -> emptyList()
@@ -1615,7 +1617,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
      * 坐标可以这样做的前提：捕获面本身就是**虚拟画布尺寸**，
      * 因此 OCR 的 boxPoint 与 `UiAnchors` 的矩形在同一坐标系里，无需换算。
      */
-    private fun semanticTextExcludingHud(ocr: com.stzb.assistant.ocr.OcrResult?): String {
+    private fun semanticTextExcludingHud(ocr: com.benjaminwan.ocrlibrary.OcrResult?): String {
         if (ocr == null) return ""
         val hud = UiAnchors.rect(UiAnchors.RectKey.HUD_WORLD_COORD)
         val sb = StringBuilder()
@@ -1745,6 +1747,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                         rectCalibCorner = null
                     }
                 }
+            }
+            PickTarget.BUTTON_TEMPLATE -> {
+                // 模板标定的实际处理在下方 when（要先恢复面板，再进入框选）
             }
             null -> {}
         }

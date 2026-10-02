@@ -287,8 +287,8 @@ class MainActivity : AppCompatActivity() {
         val state = gate.state(this)
         tvLicenseStatus.text = gate.describe(this)
         val colorRes = when (state) {
-            gate.State.DEV_OPEN -> R.color.warning
-            gate.State.LICENSED -> R.color.success
+            com.stzb.assistant.license.LicenseGate.State.DEV_OPEN -> R.color.warning
+            com.stzb.assistant.license.LicenseGate.State.LICENSED -> R.color.success
             else -> R.color.danger
         }
         tvLicenseStatus.setTextColor(ContextCompat.getColor(this, colorRes))

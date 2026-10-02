@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.coroutines.coroutineContext
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -158,7 +159,9 @@ object AutoPilot {
     private suspend fun loop(pipeline: TacticalPipeline, intentsProvider: () -> Intents) {
         emit(pipeline, "INFO", "🛡️ 无人托管已启动：持续感知战场 → 自动收起干扰 → 自主执行已配置目标。")
 
-        while (isActive && isRunning) {
+        // loop 是独立的 suspend 函数，不继承 launch 的 CoroutineScope 接收者，
+        // 因此这里用 coroutineContext.isActive（suspend 函数内可用）而非裸 isActive。
+        while (coroutineContext.isActive && isRunning) {
             try {
                 val intents = intentsProvider()
                 val state = EngineBridge.detectGameState()
