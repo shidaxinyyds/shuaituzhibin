@@ -589,9 +589,31 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 append("\n— 识别原文: ")
                 append(decreeText.take(120))
             }
-            // 原实现写死「耗时: 18ms | 内存: < 85MB」，两个数字从未被测量过。
-            // 现在如实说明这条链路是规则引擎，没有神经网络推理参与。
-            tvAdvisorMetrics?.text = "状态: 文本解析完成（规则引擎，无神经网络推理）"
+            val brainDesc = edgeSlmEngine.getBrainDescription()
+            tvAdvisorMetrics?.text = "状态: 军令解析完成 ($brainDesc)"
+
+            // 若云端大模型处于激活状态，异步获取军师深度战略提炼
+            if (com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.isCloudAiActive(context)) {
+                com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.interpretAllianceDecree(
+                    context = context,
+                    decreeText = decreeText,
+                    parsedTargetName = order.targetName,
+                    parsedCoord = order.targetCoord,
+                    parsedTimeMs = order.targetTime
+                ) { success, cloudInterpretation ->
+                    if (success) {
+                        mainHandler.post {
+                            tvAdvisorStream?.text = buildString {
+                                append("📜【诸葛军师 · 云端战略洞察】\n")
+                                append(cloudInterpretation).append("\n\n")
+                                append("▶ 战术指令: 目标【${order.targetName}】")
+                                append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
+                                append(order.advisorThinking)
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         root.findViewById<Button>(R.id.btnAdvisorDiagnose)?.setOnClickListener {
@@ -609,8 +631,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             val reportText = semanticTextExcludingHud(ocrResult)
 
             if (reportText.isBlank()) {
-                // 原实现无论画面是什么都把一段写死的战报样本送去"会诊"，
-                // 连"我军伤亡2300"都是模板常量，属于"读死样本、吐死结论"。
                 tvAdvisorStream?.text = buildString {
                     append("⚠️ 未能从当前画面读到战报文字，会诊已中止。\n")
                     if (rawReport.isNotEmpty()) {
@@ -626,12 +646,23 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 return@setOnClickListener
             }
 
-            val diagnosis = edgeSlmEngine.diagnoseBattleReport(reportText)
-            tvAdvisorStream?.text = buildString {
-                append(diagnosis.militaryCommentary)
-                append("\n— 识别原文: ")
-                append(reportText.take(120))
+            tvAdvisorMetrics?.text = "状态: 战报会诊分析中..."
+            tvAdvisorStream?.text = "📜 正在结合 RAG 向量底座与军师大脑推演战报克制机制，请稍候..."
+
+            edgeSlmEngine.diagnoseBattleReportAsync(reportText) { diagnosis ->
+                mainHandler.post {
+                    tvAdvisorStream?.text = buildString {
+                        append(diagnosis.militaryCommentary)
+                        append("\n— 识别原文: ")
+                        append(reportText.take(120))
+                    }
+                    tvAdvisorMetrics?.text = "状态: 战报会诊完成 (${edgeSlmEngine.getBrainDescription()})"
+                }
             }
+        }
+
+        root.findViewById<Button>(R.id.btnAdvisorAskAi)?.setOnClickListener {
+            showAskAdvisorDialog()
         }
 
         // 7. 定时任务：计划完全由用户编排，工程内不预置任何任务
@@ -1458,6 +1489,74 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             .create()
         applyOverlayWindowType(dialog)
         dialog.show()
+    }
+
+    private fun showAskAdvisorDialog() {
+        val quickQueries = arrayOf(
+            "⚔️ 开荒配将与低损开地攻略",
+            "🛡️ 战报复盘：如何针对性变阵调优",
+            "🎯 同盟攻城：主力与拆迁压秒触城时机",
+            "⚡ 面对反计战必法刀，如何选队伍克制",
+            "✍️ 自定义战机问策 (手动输入)"
+        )
+
+        val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("💬 问策诸葛军师")
+            .setItems(quickQueries) { _, which ->
+                if (which == quickQueries.size - 1) {
+                    showCustomQueryInputDialog()
+                } else {
+                    val cleanQuery = quickQueries[which].substring(2).trim()
+                    submitAdvisorQuery(cleanQuery)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .create()
+        applyOverlayWindowType(dialog)
+        dialog.show()
+    }
+
+    private fun showCustomQueryInputDialog() {
+        val pad = dp(16)
+        val form = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+        val et = EditText(context).apply {
+            hint = "向军师提问 (如: 周瑜陆逊吕蒙怎么配战法？)"
+            isSingleLine = false
+            maxLines = 4
+        }
+        form.addView(et)
+
+        val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("✍️ 军机问策")
+            .setView(form)
+            .setPositiveButton("推演") { _, _ ->
+                val q = et.text.toString().trim()
+                if (q.isNotBlank()) {
+                    submitAdvisorQuery(q)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .create()
+        applyOverlayWindowType(dialog)
+        dialog.show()
+    }
+
+    private fun submitAdvisorQuery(query: String) {
+        val tvAdvisorStream = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
+        val tvAdvisorMetrics = dashboardView?.findViewById<TextView>(R.id.tvAdvisorMetrics)
+
+        tvAdvisorMetrics?.text = "状态: 军师推演中..."
+        tvAdvisorStream?.text = "📜 诸葛军师正在调阅端侧 RAG 兵书并推演天机，请稍候...\n\n问策要点：$query"
+
+        edgeSlmEngine.askAdvisor(query) { answer ->
+            mainHandler.post {
+                tvAdvisorStream?.text = answer
+                tvAdvisorMetrics?.text = "状态: 军师推演完成 (${edgeSlmEngine.getBrainDescription()})"
+            }
+        }
     }
 
     private fun setupDashboardDrag() {

@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
 import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -65,6 +66,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvOcrStatus: TextView
     private lateinit var btnOcrDiagnostics: MaterialButton
 
+    // 诸葛军师 AI 大脑
+    private lateinit var tvAdvisorEngineStatus: TextView
+    private lateinit var btnConfigAiBrain: MaterialButton
+    private lateinit var btnTestAiBrain: MaterialButton
+
     /**
      * OCR 初始化在 `App` 里是**异步预热**的，刚进界面时可能还没出结果。
      * 用它延迟补刷，避免界面一直停在"正在初始化…"。
@@ -99,6 +105,7 @@ class MainActivity : AppCompatActivity() {
         // 把授权状态明确摆到界面上：当前工程处于"开发模式（无鉴权）"，
         // 这件事必须在发布前被看见，而不是只躺在代码注释里。
         refreshLicenseUi()
+        refreshAdvisorBrainUi()
         // OCR 状态：先立即读一次，再延迟补刷两次（App 里是异步预热的）
         refreshOcrUi()
         uiHandler.postDelayed({ refreshOcrUi() }, 1500L)
@@ -110,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         checkPermissions()
         refreshKnowledgeUi()
         refreshLicenseUi()
+        refreshAdvisorBrainUi()
         refreshOcrUi()
     }
 
@@ -140,6 +148,10 @@ class MainActivity : AppCompatActivity() {
 
         tvOcrStatus = findViewById(R.id.tvOcrStatus)
         btnOcrDiagnostics = findViewById(R.id.btnOcrDiagnostics)
+
+        tvAdvisorEngineStatus = findViewById(R.id.tvAdvisorEngineStatus)
+        btnConfigAiBrain = findViewById(R.id.btnConfigAiBrain)
+        btnTestAiBrain = findViewById(R.id.btnTestAiBrain)
     }
 
     private fun setupButtons() {
@@ -207,6 +219,10 @@ class MainActivity : AppCompatActivity() {
 
         // 文字识别（OCR）
         btnOcrDiagnostics.setOnClickListener { showOcrDiagnostics() }
+
+        // 诸葛军师 AI 大脑
+        btnConfigAiBrain.setOnClickListener { showAiBrainConfigDialog() }
+        btnTestAiBrain.setOnClickListener { showQuickTestAiDialog() }
     }
 
     // ==========================================================
@@ -524,6 +540,128 @@ class MainActivity : AppCompatActivity() {
             contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ) ?: return false
         return enabled.split(':').any { it.equals(svcName, ignoreCase = true) }
+    }
+
+    private fun refreshAdvisorBrainUi() {
+        val active = com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.isCloudAiActive(this)
+        val config = com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.loadConfig(this)
+        if (active) {
+            tvAdvisorEngineStatus.text = "军师大脑：端云双脑已激活 (${config.model} 大模型接入)"
+            tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.success))
+        } else {
+            tvAdvisorEngineStatus.text = "军师大脑：端侧 RAG 向量底座 (100% 离线模式)"
+            tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.text_secondary))
+        }
+    }
+
+    private fun showAiBrainConfigDialog() {
+        val config = com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.loadConfig(this)
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+
+        val cbEnable = androidx.appcompat.widget.SwitchCompat(this).apply {
+            text = "启用云端大模型 (DeepSeek / 通义千问)"
+            isChecked = config.enabled
+        }
+        form.addView(cbEnable)
+
+        val tvKeyLabel = TextView(this).apply {
+            text = "API Key 密钥 (如 sk-xxx)"
+            setPadding(0, (12 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
+        }
+        form.addView(tvKeyLabel)
+
+        val etKey = EditText(this).apply {
+            hint = "请输入大模型 API 密钥 (支持 DeepSeek/千问/硅基流动)"
+            setText(config.apiKey)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        form.addView(etKey)
+
+        val tvEndpointLabel = TextView(this).apply {
+            text = "API 端点地址"
+            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
+        }
+        form.addView(tvEndpointLabel)
+
+        val etEndpoint = EditText(this).apply {
+            hint = "默认: https://api.deepseek.com/chat/completions"
+            setText(config.endpoint)
+        }
+        form.addView(etEndpoint)
+
+        val tvModelLabel = TextView(this).apply {
+            text = "模型名称 (如 deepseek-chat, qwen-plus)"
+            setPadding(0, (8 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
+        }
+        form.addView(tvModelLabel)
+
+        val etModel = EditText(this).apply {
+            hint = "默认: deepseek-chat"
+            setText(config.model)
+        }
+        form.addView(etModel)
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("⚙️ 诸葛军师 AI 大脑配置")
+            .setView(form)
+            .setPositiveButton("保存配置") { _, _ ->
+                com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.saveConfig(
+                    context = this,
+                    enabled = cbEnable.isChecked,
+                    endpoint = etEndpoint.text.toString().trim(),
+                    apiKey = etKey.text.toString().trim(),
+                    model = etModel.text.toString().trim()
+                )
+                refreshAdvisorBrainUi()
+                Toast.makeText(this, "军师 AI 配置已保存", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("预置 DeepSeek 默认") { _, _ ->
+                com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.saveConfig(
+                    context = this,
+                    enabled = true,
+                    endpoint = com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.DEFAULT_ENDPOINT,
+                    apiKey = etKey.text.toString().trim(),
+                    model = com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.DEFAULT_MODEL
+                )
+                refreshAdvisorBrainUi()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showQuickTestAiDialog() {
+        val quickQueries = arrayOf(
+            "⚔️ 开荒如何实现低损打5级地？",
+            "🛡️ 遇到敌军神兵大赏法刀，我军该如何防范？",
+            "🎯 攻城时主力与拆迁压秒的最佳时机是什么？",
+            "⚡ 周瑜陆逊吕蒙队伍该怎么搭配战法？"
+        )
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("💬 快速战术问策 (诸葛军师)")
+            .setItems(quickQueries) { _, which ->
+                val q = quickQueries[which].substring(2).trim()
+                val progress = androidx.appcompat.app.AlertDialog.Builder(this)
+                    .setTitle("军师推演中")
+                    .setMessage("诸葛军师正在调阅端侧 RAG 兵书并推演天机，请稍候...")
+                    .setCancelable(false)
+                    .show()
+
+                com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.askAdvisor(this, q) { success, reply ->
+                    progress.dismiss()
+                    androidx.appcompat.app.AlertDialog.Builder(this)
+                        .setTitle("📜 诸葛军师策论")
+                        .setMessage(reply)
+                        .setPositiveButton("我知道了", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("返回", null)
+            .show()
     }
 
     private fun log(message: String) {

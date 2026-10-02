@@ -103,12 +103,14 @@ class EdgeSlmEngine(private val context: Context) {
         // 6. 提取战术意图类型
         val intent = deduceIntent(cleanText, targetName)
 
-        // 7. 结合 RAG 向量检索丰富战术操作指南与应急预案
-        val ragMatch = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanText)
-        val fullContingency = if (contingency != "常规执行") "$contingency | RAG战术提示: ${ragMatch.executionTimingAdvice}" else ragMatch.executionTimingAdvice
+        // 7. 提取应急预案 (如抢跑/被抢城皮)
+        val contingency = extractContingency(cleanText)
 
-        // 8. 实时生成军师思考推演流
-        val thinking = generateThinkingStream(intent, targetName, targetCoord, targetTime, advanceSeconds, fullContingency)
+        // 8. 结合 RAG 向量检索丰富战术操作指南与应急预案
+        val ragMatch = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanText)
+
+        // 9. 实时生成军师思考推演流
+        val thinking = generateThinkingStream(intent, targetName, targetCoord, targetTime, advanceSeconds, contingency, ragMatch.executionTimingAdvice)
 
         return TacticalOrder(
             orderId = "ORD-" + UUID.randomUUID().toString().substring(0, 8).uppercase(),
@@ -118,7 +120,7 @@ class EdgeSlmEngine(private val context: Context) {
             targetTime = targetTime,
             advanceSeconds = advanceSeconds,
             assignedTeams = assignedTeams,
-            contingencyPlan = fullContingency,
+            contingencyPlan = contingency,
             advisorThinking = thinking,
             confidence = if (targetName != "未明目标") 0.96f else 0.82f,
             rawDecreeText = cleanText
@@ -181,6 +183,57 @@ class EdgeSlmEngine(private val context: Context) {
             strategicCounterAdvice = ragDiag.counterStrategy,
             militaryCommentary = commentary
         )
+    }
+
+    /**
+     * 核心接口 2.1：战报异步大模型深度会诊 (端云双脑协同)
+     */
+    fun diagnoseBattleReportAsync(
+        reportText: String,
+        callback: (BattleDiagnosis) -> Unit
+    ) {
+        val syncDiag = diagnoseBattleReport(reportText)
+        if (!com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.isCloudAiActive(context)) {
+            callback(syncDiag)
+            return
+        }
+
+        com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.diagnoseBattleReport(
+            context = context,
+            reportText = reportText,
+            detectedSkills = syncDiag.keySkillsDetected
+        ) { success, cloudResponse ->
+            if (success) {
+                callback(
+                    syncDiag.copy(
+                        militaryCommentary = cloudResponse,
+                        strategicCounterAdvice = "【云端大模型复盘】已生成"
+                    )
+                )
+            } else {
+                callback(syncDiag)
+            }
+        }
+    }
+
+    /**
+     * 核心接口 4：向军师问策（自由战术对话，端侧 RAG + 云端大模型）
+     */
+    fun askAdvisor(
+        query: String,
+        callback: (response: String) -> Unit
+    ) {
+        com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.askAdvisor(
+            context = context,
+            userQuery = query
+        ) { _, response ->
+            callback(response)
+        }
+    }
+
+    /** 获取当前军师大脑激活模式描述 */
+    fun getBrainDescription(): String {
+        return com.stzb.assistant.ai.advisor.MilitaryAdvisorCloudBridge.getEngineDisplayName(context)
     }
 
     /**
@@ -331,14 +384,17 @@ class EdgeSlmEngine(private val context: Context) {
         coord: Pair<Int, Int>?,
         timeMs: Long,
         advanceSec: Int,
-        contingency: ContingencyAction?
+        contingency: ContingencyAction?,
+        tacticalAdvice: String = ""
     ): String {
         val timeFormatted = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timeMs))
         val coordDesc = if (coord != null) "坐标(${coord.first}, ${coord.second})" else "地图定位中"
+        val adviceDesc = if (tacticalAdvice.isNotBlank()) "\n▶ 兵法指引: $tacticalAdvice" else ""
         return "【诸葛军师·方略推演】：已参透同盟法令【${intent.desc}】。" +
                 "目标锁定于【$targetName】($coordDesc)，总攻时刻定于 $timeFormatted。" +
                 "制定两阶段协同战术：先遣队于 $advanceSec 秒前压秒铺路，主力队分秒不差触城。" +
-                "已挂载应急策略：${contingency?.actionName ?: "战况异常停机保全"}。"
+                adviceDesc +
+                "\n▶ 应急策略：${contingency?.actionName ?: "战况异常停机保全"}。"
     }
 
     private fun fallbackEmptyOrder(reason: String): TacticalOrder {
