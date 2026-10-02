@@ -437,7 +437,7 @@ class MainActivity : AppCompatActivity(), TacticalState.TacticalEventListener {
         try {
             val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
                 putExtra(
-                    Settings.EXTRA_FRAGMENT_ARG_KEY,
+                    ":settings:fragment_args_key",
                     "$packageName/${AutoTouchService::class.java.name}"
                 )
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
