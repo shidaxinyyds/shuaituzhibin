@@ -162,7 +162,7 @@ class DualTrackSafetyGate(private val context: Context) {
 
                 OrderIntent.STAMINA_RECOVERY -> {
                     pipeline.stopCurrentTask()
-                    callback?.onExecutionDispatched(TacticalState.TaskType.IDLE, "休整养精蓄锐，已暂停主动进军任务")
+                    callback?.onExecutionDispatched(TacticalState.TaskType.STAMINA_ROTATION, "休整养精蓄锐，已暂停主动进军任务")
                 }
             }
             return true

@@ -56,14 +56,17 @@ class YoloDetector(private val context: Context) {
                 val sigmaX = max(2f, rect.width() * 0.12f)
                 val sigmaY = max(2f, rect.height() * 0.12f)
 
+                val jRandom = java.util.Random()
                 val boundX = rect.width() * 0.35f
                 val boundY = rect.height() * 0.35f
-                val rawX = (Random.nextGaussian() * sigmaX).toFloat()
-                val rawY = (Random.nextGaussian() * sigmaY).toFloat()
+                val rawX = (jRandom.nextGaussian() * sigmaX).toFloat()
+                val rawY = (jRandom.nextGaussian() * sigmaY).toFloat()
                 val offsetX = rawX.coerceIn(-boundX, boundX)
                 val offsetY = rawY.coerceIn(-boundY, boundY)
 
-                return PointF(cx + offsetX, cy + offsetY)
+                val targetX: Float = cx + offsetX
+                val targetY: Float = cy + offsetY
+                return PointF(targetX, targetY)
             }
     }
 
