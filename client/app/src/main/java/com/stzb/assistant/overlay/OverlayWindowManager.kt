@@ -86,8 +86,27 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         PAVING, IMMUNITY, SIEGE
     }
 
+    private val profileChangeListener = object : com.stzb.assistant.knowledge.KnowledgeBaseManager.ProfileChangeListener {
+        override fun onProfileChanged(newProfile: com.stzb.assistant.knowledge.GameProfile) {
+            mainHandler.post {
+                dashboardView?.findViewById<TextView>(R.id.tvDashboardTitle)?.text =
+                    "${newProfile.gameName} · 战术总控"
+            }
+        }
+    }
+
+    private val scheduleChangeListener = object : com.stzb.assistant.tactics.ScheduledTaskManager.TaskChangeListener {
+        override fun onTasksUpdated(taskList: List<com.stzb.assistant.tactics.ScheduledTaskManager.ScheduledTask>) {
+            mainHandler.post { refreshScheduleDisplay() }
+        }
+    }
+
     init {
         pipeline.registerListener(this)
+        com.stzb.assistant.knowledge.KnowledgeBaseManager.registerListener(profileChangeListener)
+        com.stzb.assistant.tactics.ScheduledTaskManager.registerListener(scheduleChangeListener)
+        com.stzb.assistant.tactics.ScheduledTaskManager.init(context, pipeline)
+
         initLayoutParams()
         createCapsuleView()
         createDashboardView()
@@ -110,7 +129,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = 20
-            y = 200
+            y = 120
         }
 
         dashboardParams = WindowManager.LayoutParams(
@@ -122,7 +141,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = (context.resources.displayMetrics.widthPixels - 356) / 2
-            y = 140
+            y = 35 // 靠近顶部放置，避免遮挡游戏底部主力队伍栏与操作菜单
         }
 
         pickerParams = WindowManager.LayoutParams(
@@ -210,6 +229,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val tabSiege = dashboardView?.findViewById<Button>(R.id.tabSiege)
         val tabPatrol = dashboardView?.findViewById<Button>(R.id.tabPatrol)
         val tabAdvisor = dashboardView?.findViewById<Button>(R.id.tabAdvisor)
+        val tabSchedule = dashboardView?.findViewById<Button>(R.id.tabSchedule)
         val tabLogs = dashboardView?.findViewById<Button>(R.id.tabLogs)
 
         val panelPaving = dashboardView?.findViewById<LinearLayout>(R.id.panelPaving)
@@ -217,16 +237,20 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val panelSiege = dashboardView?.findViewById<LinearLayout>(R.id.panelSiege)
         val panelPatrol = dashboardView?.findViewById<LinearLayout>(R.id.panelPatrol)
         val panelAdvisor = dashboardView?.findViewById<LinearLayout>(R.id.panelAdvisor)
+        val panelSchedule = dashboardView?.findViewById<LinearLayout>(R.id.panelSchedule)
         val panelLogs = dashboardView?.findViewById<LinearLayout>(R.id.panelLogs)
 
-        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabLogs)
-        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelLogs)
+        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabSchedule, tabLogs)
+        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelSchedule, panelLogs)
 
         fun switchTab(index: Int) {
             panels.forEachIndexed { i, p -> p?.visibility = if (i == index) View.VISIBLE else View.GONE }
             tabs.forEachIndexed { i, t ->
                 t?.setBackgroundResource(if (i == index) R.drawable.bg_tab_active else R.drawable.bg_tab_inactive)
                 t?.setTextColor(if (i == index) Color.WHITE else 0xFFB0BEC5.toInt())
+            }
+            if (index == 5) {
+                refreshScheduleDisplay()
             }
         }
 
@@ -235,7 +259,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         tabSiege?.setOnClickListener { switchTab(2) }
         tabPatrol?.setOnClickListener { switchTab(3) }
         tabAdvisor?.setOnClickListener { switchTab(4) }
-        tabLogs?.setOnClickListener { switchTab(5) }
+        tabSchedule?.setOnClickListener { switchTab(5) }
+        tabLogs?.setOnClickListener { switchTab(6) }
 
         switchTab(0)
 
@@ -393,14 +418,43 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             tvAdvisorStream?.text = diagnosis.militaryCommentary
         }
 
-        root.findViewById<Button>(R.id.btnAdvisorAutoExec)?.setOnClickListener {
-            if (!ensureEngineReady()) return@setOnClickListener
-            val order = lastExtractedOrder
-            if (order == null) {
-                Toast.makeText(context, "请先点击【识别军令】提取战术方略", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
+        // 7. 定时任务 (Scheduled Tasks)
+        root.findViewById<Button>(R.id.btnAddScheduleTask)?.setOnClickListener {
+            val nextMin = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(System.currentTimeMillis() + 5 * 60 * 1000L))
+            com.stzb.assistant.tactics.ScheduledTaskManager.addTask(
+                context,
+                "战役常规定时巡防",
+                nextMin,
+                TacticalState.TaskType.RAID_DEFENSE
+            )
+            refreshScheduleDisplay()
+            Toast.makeText(context, "已新增 5 分钟后触发的定时巡查任务 ($nextMin)", Toast.LENGTH_SHORT).show()
+        }
+
+        root.findViewById<Button>(R.id.btnResetScheduleDefaults)?.setOnClickListener {
+            com.stzb.assistant.tactics.ScheduledTaskManager.resetToDefaults(context)
+            refreshScheduleDisplay()
+            Toast.makeText(context, "已恢复黄金作息默认定时任务", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun refreshScheduleDisplay() {
+        val root = dashboardView ?: return
+        val tvStatus = root.findViewById<TextView>(R.id.tvScheduleSummary)
+        val tvList = root.findViewById<TextView>(R.id.tvScheduleTasksDisplay)
+
+        val tasks = com.stzb.assistant.tactics.ScheduledTaskManager.getTasks()
+        tvStatus?.text = "⏰ 定时时钟心跳轮询中 (每15秒轮询 · 计划共 ${tasks.size} 项)"
+
+        if (tasks.isEmpty()) {
+            tvList?.text = "暂无配置的定时任务，可点击下方「+ 快速添加定时」进行添加。"
+        } else {
+            val sb = StringBuilder()
+            tasks.forEachIndexed { index, task ->
+                val statusTag = if (task.isEnabled) "【已开启】" else "【已暂停】"
+                sb.append("${index + 1}. [${task.timeStr}] ${task.name}\n   类型: ${task.taskType.displayName} $statusTag\n")
             }
-            safetyGate.verifyAndDispatch(order, currentStamina = 95)
+            tvList?.text = sb.toString().trimEnd()
         }
     }
 
@@ -531,28 +585,32 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
     private fun commitPicks() {
         val pts = tempPickPoints.toList()
+        val formatPoints = { list: List<PointF> ->
+            if (list.isEmpty()) "尚未点选"
+            else list.joinToString("; ") { "(%.0f, %.0f)".format(it.x, it.y) }
+        }
         when (currentPickTarget) {
             PickTarget.PAVING -> {
                 pickedPavingPoints.clear(); pickedPavingPoints.addAll(pts)
                 dashboardView?.findViewById<TextView>(R.id.tvPavingCoord)?.text =
-                    if (pts.isEmpty()) "目标地块：尚未点选" else "已选 ${pts.size} 块地块（虚拟坐标）"
+                    if (pts.isEmpty()) "目标地块：尚未点选" else "目标地块(${pts.size}块): ${formatPoints(pts)}"
             }
             PickTarget.IMMUNITY -> {
                 pickedImmunityPoints.clear(); pickedImmunityPoints.addAll(pts)
                 dashboardView?.findViewById<TextView>(R.id.tvImmunityCoord)?.text =
-                    if (pts.isEmpty()) "卡免地块：尚未选择" else "已锁定免战地块 ${pts.size} 点"
+                    if (pts.isEmpty()) "卡免地块：尚未选择" else "卡免地块: ${formatPoints(pts)}"
             }
             PickTarget.SIEGE -> {
                 pickedSiegePoints.clear(); pickedSiegePoints.addAll(pts)
                 dashboardView?.findViewById<TextView>(R.id.tvSiegeCoord)?.text =
-                    if (pts.isEmpty()) "集火城池：尚未点选" else "已锁定集火城池 ${pts.size} 点"
+                    if (pts.isEmpty()) "集火城池：尚未点选" else "集火城池: ${formatPoints(pts)}"
             }
             null -> {}
         }
         clearTempPicks()
         stopCrosshairPicker()
         showDashboard()
-        Toast.makeText(context, "已确认 ${pts.size} 个地块坐标", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "已确认 ${pts.size} 个地块虚拟坐标", Toast.LENGTH_SHORT).show()
     }
 
     private fun startCrosshairPicker(target: PickTarget) {
@@ -637,7 +695,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
     private fun updateSenseUi(state: StzbUiMatcher.GameState, time: String) {
         val metrics = dashboardView?.findViewById<TextView>(R.id.tvAdvisorMetrics)
-        val stream = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
         val (desc, action) = when (state) {
             StzbUiMatcher.GameState.MAIN_MAP -> Pair("大地图主界面", "局势平稳，保持巡查；若有军令可自动派发。")
             StzbUiMatcher.GameState.TILE_ACTION_MENU -> Pair("地块操作菜单已展开", "识别到出征/扫荡轮盘，流水线正在推进。")
@@ -648,8 +705,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             StzbUiMatcher.GameState.ALERT_RAID_ACTIVE -> Pair("敌袭告警", "⚠️ 检测到敌袭，建议开启巡检反击守护。")
             else -> Pair("过渡/未知画面", "等待界面稳定后继续感知。")
         }
-        metrics?.text = "[$time] 感知场景: $desc"
-        stream?.text = "【军师自动感知】当前处于「$desc」。$action"
+        // 仅在 metrics 显示感知场景和战术建议，禁止覆盖 tvAdvisorStream，保证军令和战报文字持久留存
+        metrics?.text = "[$time] 感知场景: $desc | 建议: $action"
     }
 
     // ==========================================
@@ -670,9 +727,11 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             capsuleView?.findViewById<TextView>(R.id.tvCapsuleTitle)?.text = "$statusEmoji ${taskType.displayName}"
             capsuleView?.findViewById<TextView>(R.id.tvCapsuleSubtitle)?.text = detail
 
-            if (!isAutoSenseEnabled) {
+            // 保持军师面板文本的持久性，仅在状态变化时更新 metrics 状态，不抹除军令与战报诊断流
+            val stream = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
+            if (stream?.text.isNullOrBlank()) {
                 val advisorThought = edgeSlmEngine.generateAdvisorLiveStream(detail, lastExtractedOrder)
-                dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)?.text = advisorThought
+                stream?.text = "【军师推演】$advisorThought"
             }
         }
     }

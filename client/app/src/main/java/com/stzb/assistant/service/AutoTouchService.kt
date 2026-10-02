@@ -59,8 +59,8 @@ class AutoTouchService : AccessibilityService() {
         // 1. 转换为真实屏幕物理像素
         val realPoint = CoordinateTransformer.toReal(virtualX, virtualY)
 
-        // 2. 叠加 2D 双变量高斯离散坐标微抖动
-        val jittered = KineticTouchEngine.generateJitteredPoint(realPoint.x, realPoint.y, 6f)
+        // 2. 叠加 2D 双变量高斯离散坐标微抖动 (精准控制在 1.0px 以内)
+        val jittered = KineticTouchEngine.generateJitteredPoint(realPoint.x, realPoint.y, 1.0f)
 
         val path = Path().apply {
             moveTo(jittered.x, jittered.y)

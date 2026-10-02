@@ -79,7 +79,8 @@ object EngineBridge {
      * 优先采用 Shizuku 系统底层注入；若无则平滑降级走无障碍
      */
     suspend fun tap(virtualX: Float, virtualY: Float): Boolean {
-        val jitteredVirtual = com.stzb.assistant.antiban.AntiBanCoordinator.randomizePoint(virtualX, virtualY, 5f)
+        // 微量高斯拟人微扰动 (控制在 1.0px 以内，误差 < ±5dp)
+        val jitteredVirtual = com.stzb.assistant.antiban.AntiBanCoordinator.randomizePoint(virtualX, virtualY, 1.0f)
         return if (ShizukuTouchManager.hasPermission()) {
             val realPoint = CoordinateTransformer.toReal(jitteredVirtual.x, jitteredVirtual.y)
             ShizukuTouchManager.clickReal(realPoint.x, realPoint.y)

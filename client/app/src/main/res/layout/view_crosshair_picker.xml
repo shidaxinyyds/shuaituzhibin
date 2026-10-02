@@ -23,7 +23,7 @@
             android:layout_width="6dp"
             android:layout_height="6dp"
             android:layout_gravity="center"
-            android:background="#00E676" />
+            android:background="#804CAF50" />
     </FrameLayout>
 
     <!-- 顶部说明条 -->
@@ -31,10 +31,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="#CC1A237E"
+        android:background="#D9182232"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="12dp">
+        android:padding="10dp">
 
         <TextView
             android:id="@+id/tvPickerHint"
@@ -43,17 +43,17 @@
             android:layout_weight="1"
             android:text="🎯 逐一点选目标地块，可连续点多块，完成后点“确认”"
             android:textColor="#FFFFFF"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textStyle="bold" />
 
         <TextView
             android:id="@+id/tvPickerCount"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginEnd="10dp"
+            android:layout_marginEnd="8dp"
             android:text="已选 0"
             android:textColor="#80D8FF"
-            android:textSize="13sp"
+            android:textSize="12sp"
             android:textStyle="bold" />
     </LinearLayout>
 
@@ -62,10 +62,10 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="#CC1A237E"
+        android:background="#D9182232"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="12dp">
+        android:padding="10dp">
 
         <Button
             android:id="@+id/btnCancelPicker"

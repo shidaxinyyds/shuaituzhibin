@@ -56,19 +56,24 @@
                 android:text="1. 启动屏幕捕获" />
 
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnAccessibilityPermission"
-                style="@style/Btn.Permission"
-                android:text="2. 开启无障碍触控通道" />
-
-            <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnOverlayPermission"
                 style="@style/Btn.Permission"
-                android:text="3. 授予悬浮窗权限" />
+                android:text="2. 授予悬浮窗权限" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnShizukuPermission"
+                style="@style/Btn.Permission"
+                android:text="3. 授权 Shizuku 触控" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnAccessibilityPermission"
+                style="@style/Btn.Permission"
+                android:text="4. 开启无障碍服务通道" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnToggleOverlay"
                 style="@style/Btn.Primary"
-                android:text="4. 显示游戏悬浮胶囊" />
+                android:text="5. 显示游戏悬浮胶囊" />
         </LinearLayout>
 
         <!-- 游戏知识库 -->

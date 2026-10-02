@@ -46,9 +46,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvKnowledgeMessage: TextView
 
     private lateinit var tvLog: TextView
-    private lateinit var btnOverlay: MaterialButton
-    private lateinit var btnAccessibility: MaterialButton
     private lateinit var btnCapture: MaterialButton
+    private lateinit var btnOverlay: MaterialButton
+    private lateinit var btnShizuku: MaterialButton
+    private lateinit var btnAccessibility: MaterialButton
     private lateinit var btnToggleOverlay: MaterialButton
 
     private var isOverlayShown = false
@@ -97,13 +98,14 @@ class MainActivity : AppCompatActivity() {
 
         tvLog = findViewById(R.id.tvLogOutput)
         btnCapture = findViewById(R.id.btnScreenCapturePermission)
-        btnAccessibility = findViewById(R.id.btnAccessibilityPermission)
         btnOverlay = findViewById(R.id.btnOverlayPermission)
+        btnShizuku = findViewById(R.id.btnShizukuPermission)
+        btnAccessibility = findViewById(R.id.btnAccessibilityPermission)
         btnToggleOverlay = findViewById(R.id.btnToggleOverlay)
     }
 
     private fun setupButtons() {
-        // 一键直达：屏幕捕获（每次会话核心动作）
+        // 1. 一键直达：屏幕捕获
         btnCapture.setOnClickListener {
             if (ScreenCaptureService.isCapturing.get()) {
                 val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
@@ -118,12 +120,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 一键直达：无障碍触控
-        btnAccessibility.setOnClickListener {
-            openAccessibilitySettings()
-        }
-
-        // 一键直达：悬浮窗权限
+        // 2. 一键直达：悬浮窗权限
         btnOverlay.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
                 startActivity(
@@ -137,9 +134,44 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // 3. 一键直达：Shizuku 触控通道
+        btnShizuku.setOnClickListener {
+            when {
+                ShizukuTouchManager.hasPermission() -> {
+                    Toast.makeText(this, "Shizuku 触控通道已就绪，状态极佳 ✓", Toast.LENGTH_SHORT).show()
+                }
+                ShizukuTouchManager.isShizukuAvailable() -> {
+                    ShizukuTouchManager.requestPermission(this)
+                    Toast.makeText(this, "正在请求 Shizuku 底层授权...", Toast.LENGTH_SHORT).show()
+                }
+                else -> {
+                    // 尝试拉起 Shizuku 应用
+                    val shizukuIntent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
+                    if (shizukuIntent != null) {
+                        startActivity(shizukuIntent)
+                        Toast.makeText(this, "正在打开 Shizuku，请启动服务后返回", Toast.LENGTH_LONG).show()
+                    } else {
+                        // 一键直达系统开发者选项（无线调试）
+                        try {
+                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
+                            Toast.makeText(this, "未检测到 Shizuku，已直达开发者选项 (开启无线调试)；亦可直接开启第 4 项无障碍服务", Toast.LENGTH_LONG).show()
+                        } catch (e: Exception) {
+                            Toast.makeText(this, "建议安装 Shizuku，或直接开启下方第 4 项无障碍服务", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. 一键直达：无障碍服务通道
+        btnAccessibility.setOnClickListener {
+            openAccessibilitySettings()
+        }
+
+        // 5. 展开 / 隐藏悬浮胶囊
         btnToggleOverlay.setOnClickListener {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                Toast.makeText(this, "请先授予悬浮窗权限", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "请先授予第 2 项悬浮窗权限", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
 
@@ -147,12 +179,12 @@ class MainActivity : AppCompatActivity() {
             if (isOverlayShown) {
                 stopService(intent)
                 isOverlayShown = false
-                btnToggleOverlay.text = "4. 显示游戏悬浮胶囊"
+                btnToggleOverlay.text = "5. 显示游戏悬浮胶囊"
                 log("悬浮胶囊已关闭。")
             } else {
                 startService(intent)
                 isOverlayShown = true
-                btnToggleOverlay.text = "4. 隐藏游戏悬浮胶囊"
+                btnToggleOverlay.text = "5. 隐藏游戏悬浮胶囊"
                 log("🟢 悬浮胶囊已显示，单击它即可展开战术总控面板。")
             }
         }
@@ -264,22 +296,22 @@ class MainActivity : AppCompatActivity() {
         btnCapture.text = if (hasCapture) "1. 屏幕捕获  运行中 ✓" else "1. 启动屏幕捕获"
         markReady(btnCapture, hasCapture)
 
-        // 2. 触控通道（无障碍 / Shizuku）
-        val hasAccessibility = AutoTouchService.isConnected || isAccessibilityServiceEnabled()
-        val hasShizuku = ShizukuTouchManager.hasPermission()
-        btnAccessibility.text = when {
-            hasShizuku -> "2. 触控通道  Shizuku 已就绪 ✓"
-            hasAccessibility -> "2. 触控通道  无障碍已开启 ✓"
-            else -> "2. 开启无障碍触控通道"
-        }
-        markReady(btnAccessibility, hasAccessibility || hasShizuku)
-
-        // 3. 悬浮窗
+        // 2. 悬浮窗权限
         val hasOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(this)
         } else true
-        btnOverlay.text = if (hasOverlay) "3. 悬浮窗权限  已授予 ✓" else "3. 授予悬浮窗权限"
+        btnOverlay.text = if (hasOverlay) "2. 悬浮窗权限  已授予 ✓" else "2. 授予悬浮窗权限"
         markReady(btnOverlay, hasOverlay)
+
+        // 3. Shizuku 触控
+        val hasShizuku = ShizukuTouchManager.hasPermission()
+        btnShizuku.text = if (hasShizuku) "3. Shizuku 触控  已授权 ✓" else "3. 授权 Shizuku 触控"
+        markReady(btnShizuku, hasShizuku)
+
+        // 4. 无障碍服务通道
+        val hasAccessibility = AutoTouchService.isConnected || isAccessibilityServiceEnabled()
+        btnAccessibility.text = if (hasAccessibility) "4. 无障碍服务  已开启 ✓" else "4. 开启无障碍服务通道"
+        markReady(btnAccessibility, hasAccessibility)
     }
 
     /**

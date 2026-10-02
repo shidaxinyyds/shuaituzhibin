@@ -86,9 +86,10 @@ object StzbUiMatcher {
             return GameState.DEFENDER_INFO_DIALOG
         }
 
-        // 3. 判断是否处于“地块操作菜单展开”
-        val hasTileActions = fullText.contains("出征") || fullText.contains("扫荡") || fullText.contains("驻守") || fullText.contains("屯田")
-        if (hasTileActions && !fullText.contains("部队一") && !fullText.contains("部队二")) {
+        // 3. 判断是否处于“地块操作菜单展开” (必须至少出现2个动作关键字，防止大地图常驻顶部“出征”顶栏按钮误判)
+        val actionKeywords = listOf("出征", "扫荡", "驻守", "屯田", "练兵")
+        val matchCount = actionKeywords.count { fullText.contains(it) }
+        if (matchCount >= 2 && !fullText.contains("部队一") && !fullText.contains("部队二")) {
             return GameState.TILE_ACTION_MENU
         }
 
@@ -108,6 +109,25 @@ object StzbUiMatcher {
         }
 
         return GameState.UNKNOWN
+    }
+
+    /**
+     * 从游戏大地图右上角提取当前镜头所对准的世界沙盘坐标 (如 "(229, 131)")
+     */
+    fun extractGameWorldCenterCoord(fullFrame: Bitmap): Pair<Int, Int>? {
+        val ocrResult = OcrManager.detect(fullFrame) ?: return null
+        val p = java.util.regex.Pattern.compile("(?:[\\(（\\[])?\\s*(\\d{2,4})\\s*[,，\\s]\\s*(\\d{2,4})\\s*(?:[\\)）\\]])?")
+        for (block in ocrResult.textBlocks) {
+            val m = p.matcher(block.text)
+            if (m.find()) {
+                val x = m.group(1)?.toIntOrNull() ?: continue
+                val y = m.group(2)?.toIntOrNull() ?: continue
+                if (x in 1..1500 && y in 1..1500) {
+                    return Pair(x, y)
+                }
+            }
+        }
+        return null
     }
 
     /**
@@ -140,14 +160,14 @@ object StzbUiMatcher {
                     val maxY = block.boxPoint.maxOf { it.y }
                     val rect = Rect(minX, minY, maxX, maxY)
 
-                    // 拟人化安全点击点：在按钮中心周围 25% 范围内做高斯随机扰动，绝不点击死板几何中心
+                    // 拟人化安全点击点：严控高斯抖动在 ±8% (±2dp以内)，严格保证命中按钮有效响应区
                     val width = (maxX - minX).toFloat()
                     val height = (maxY - minY).toFloat()
                     val centerX = minX + width / 2f
                     val centerY = minY + height / 2f
 
-                    val jitterX = centerX + (Random.nextFloat() - 0.5f) * width * 0.35f
-                    val jitterY = centerY + (Random.nextFloat() - 0.5f) * height * 0.35f
+                    val jitterX = centerX + (Random.nextFloat() - 0.5f) * width * 0.08f
+                    val jitterY = centerY + (Random.nextFloat() - 0.5f) * height * 0.08f
 
                     val btnResult = ButtonResult(
                         type = type,

@@ -110,9 +110,12 @@ class DualTrackSafetyGate(private val context: Context) {
      */
     private fun dispatchToPipeline(order: TacticalOrder): Boolean {
         try {
-            val targetX = order.targetCoord?.first?.toFloat() ?: 640f
-            val targetY = order.targetCoord?.second?.toFloat() ?: 360f
-            val targetPoint = PointF(targetX, targetY)
+            // 确保大地图沙盘世界坐标与屏幕虚拟像素严格解耦：
+            // 若为自然语言军令提取的世界坐标 (1..1500)，大地图寻路后目标默认对齐在镜头中央区域；
+            // 屏幕操作点固定使用各机型自适应的标准屏幕中心安全区
+            val screenCenterX = com.stzb.assistant.service.CoordinateTransformer.virtualWidth / 2f
+            val screenCenterY = com.stzb.assistant.service.CoordinateTransformer.virtualHeight / 2f
+            val targetPoint = PointF(screenCenterX, screenCenterY)
 
             when (order.intent) {
                 OrderIntent.ALLIANCE_SIEGE -> {
