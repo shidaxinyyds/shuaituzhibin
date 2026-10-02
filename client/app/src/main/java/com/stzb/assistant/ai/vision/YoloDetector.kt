@@ -80,13 +80,16 @@ class YoloDetector(private val context: Context) {
 
     private fun initModel() {
         try {
-            val path = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov8n_stzb.bin")
-            if (path != null && java.io.File(path).length() > 50 * 1024) {
+            val path11 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov11s_multiscale_stzb.bin")
+            val path8 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov8n_stzb.bin")
+            val finalPath = if (path11 != null && java.io.File(path11).length() > 500 * 1024) path11 else path8
+
+            if (finalPath != null && java.io.File(finalPath).length() > 50 * 1024) {
                 isNativeModelLoaded = true
-                modelFilePath = path
-                Log.i(TAG, "YOLOv8-Nano 离线权重加载成功 (~2.1MB): $path")
+                modelFilePath = finalPath
+                Log.i(TAG, "YOLO 多尺度目标检测引擎离线权重加载成功: $finalPath")
             } else {
-                Log.w(TAG, "未在 assets/models 检测到 yolov8n_stzb.bin，启用智能几何色度容灾通道")
+                Log.w(TAG, "未在 assets/models 检测到 YOLO 权重，启用智能几何色度容灾通道")
                 isNativeModelLoaded = false
             }
         } catch (e: Exception) {

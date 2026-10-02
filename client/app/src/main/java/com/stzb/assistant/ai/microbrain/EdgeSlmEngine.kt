@@ -24,7 +24,9 @@ import java.util.regex.Pattern
 class EdgeSlmEngine(private val context: Context) {
 
     private var isModelWeightLoaded = false
+    private var isRagLoaded = false
     private var modelPath: String? = null
+    private var ragPath: String? = null
 
     init {
         checkModelAvailability()
@@ -32,17 +34,32 @@ class EdgeSlmEngine(private val context: Context) {
 
     private fun checkModelAvailability() {
         try {
-            val path = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_135m.bin")
-            if (path != null && java.io.File(path).length() > 10 * 1024 * 1024) {
+            // 优先探测 190MB 方案核心：SmolLM2-360M (~110MB)
+            val path360 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_360m.bin")
+            val path135 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_135m.bin")
+
+            if (path360 != null && java.io.File(path360).length() > 20 * 1024 * 1024) {
                 isModelWeightLoaded = true
-                modelPath = path
-                Log.i(TAG, "检测到端侧微脑量化权重 (~75MB)，端侧大模型通道已就绪: $path")
+                modelPath = path360
+                Log.i(TAG, "检测到 360M 旗舰端侧微脑量化权重 (~110MB)，深度自回归通道已就绪: $path360")
+            } else if (path135 != null && java.io.File(path135).length() > 10 * 1024 * 1024) {
+                isModelWeightLoaded = true
+                modelPath = path135
+                Log.i(TAG, "检测到 135M 端侧微脑量化权重 (~75MB)，端侧大模型通道已就绪: $path135")
             } else {
-                Log.i(TAG, "未放置 ~75MB 外部权重，启用端侧超轻量军令语义提取内核")
+                Log.i(TAG, "启用端侧超轻量军令语义提取内核")
                 isModelWeightLoaded = false
             }
+
+            // 探测 25MB 向量检索 RAG 库
+            val ragP = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slg_knowledge_vector_hnsw.bin")
+            if (ragP != null && java.io.File(ragP).length() > 5 * 1024 * 1024) {
+                isRagLoaded = true
+                ragPath = ragP
+                Log.i(TAG, "检测到端侧 HNSW 战法向量检索模型库 (~25MB)，RAG 零幻觉通道已就绪: $ragP")
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "检查端侧微脑模型状态: ${e.message}")
+            Log.w(TAG, "检查端侧微脑与 RAG 状态: ${e.message}")
             isModelWeightLoaded = false
         }
     }
