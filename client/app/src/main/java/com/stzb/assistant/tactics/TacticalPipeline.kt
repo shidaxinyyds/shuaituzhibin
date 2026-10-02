@@ -87,9 +87,29 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     }
 
     /**
-     * 安全停止当前执行的任务
+     * 仅停止当前正在执行的任务（不影响其它已登记的后台守护）
      */
     fun stopCurrentTask() {
+        val prev = activeTaskType
+        when (prev) {
+            TacticalState.TaskType.ROAD_PAVING -> roadPavingFlow.stop()
+            TacticalState.TaskType.IMMUNITY_BREAK -> immunityBreakFlow.stop()
+            TacticalState.TaskType.SIEGE_SYNC -> siegeSyncFlow.stop()
+            TacticalState.TaskType.RAID_DEFENSE -> raidDefenseFlow.stop()
+            else -> {}
+        }
+        currentJob?.cancel()
+        currentJob = null
+        activeTaskType = null
+        if (prev != null) {
+            onStatusChanged(prev, TacticalState.Status.INTERRUPTED, "当前任务已停止。")
+        }
+    }
+
+    /**
+     * 停止全部任务、后台守护与报警（总控急停）
+     */
+    fun stopAll() {
         roadPavingFlow.stop()
         immunityBreakFlow.stop()
         siegeSyncFlow.stop()
@@ -102,7 +122,7 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         val prev = activeTaskType
         activeTaskType = null
         if (prev != null) {
-            onStatusChanged(prev, TacticalState.Status.INTERRUPTED, "当前战术流水线已由总控停止。")
+            onStatusChanged(prev, TacticalState.Status.INTERRUPTED, "全部战术流水线已由总控停止。")
         }
     }
 

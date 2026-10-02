@@ -3,15 +3,36 @@
     android:id="@+id/pickerRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#44000000">
+    android:background="#22000000">
 
-    <!-- 顶部准星取点说明条 -->
+    <!-- 已选标记层：轻点一次落一个持久标记，支持多点 -->
+    <FrameLayout
+        android:id="@+id/flMarkersContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 跟随手指的准星十字环 -->
+    <FrameLayout
+        android:id="@+id/flCrosshairContainer"
+        android:layout_width="60dp"
+        android:layout_height="60dp"
+        android:background="@drawable/bg_crosshair"
+        android:visibility="gone">
+
+        <View
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:layout_gravity="center"
+            android:background="#00E676" />
+    </FrameLayout>
+
+    <!-- 顶部说明条 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
         android:background="#CC1A237E"
-        android:gravity="center"
+        android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="12dp">
 
@@ -20,36 +41,75 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="🎯 准星坐标嗅探模式：请直接轻点游戏屏幕上的目标地块或城池"
+            android:text="🎯 逐一点选目标地块，可连续点多块，完成后点“确认”"
             android:textColor="#FFFFFF"
             android:textSize="13sp"
             android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/btnCancelPicker"
+        <TextView
+            android:id="@+id/tvPickerCount"
             android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_marginStart="8dp"
-            android:background="#55FFFFFF"
-            android:text="取消返回"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp" />
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="10dp"
+            android:text="已选 0"
+            android:textColor="#80D8FF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- 准星十字环指示器 -->
-    <FrameLayout
-        android:id="@+id/flCrosshairContainer"
-        android:layout_width="60dp"
-        android:layout_height="60dp"
-        android:background="@drawable/bg_crosshair"
-        android:visibility="gone">
+    <!-- 底部操作条：取消 / 撤销 / 清空 / 确认 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#CC1A237E"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="12dp">
 
-        <!-- 中心十字微光点 -->
-        <View
-            android:layout_width="6dp"
-            android:layout_height="6dp"
-            android:layout_gravity="center"
-            android:background="#00E676" />
-    </FrameLayout>
+        <Button
+            android:id="@+id/btnCancelPicker"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_pill"
+            android:text="取消"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnPickerUndo"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_pill"
+            android:text="撤销"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnPickerClear"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_pill"
+            android:text="清空"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnPickerConfirm"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1.2"
+            android:background="@drawable/bg_btn_primary"
+            android:text="确认"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
 
 </FrameLayout>

@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.LayoutInflater
 import android.view.MotionEvent
@@ -18,26 +19,33 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import com.stzb.assistant.R
+import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.CoordinateTransformer
+import com.stzb.assistant.service.EngineBridge
 import com.stzb.assistant.tactics.ImmunityBreakFlow
 import com.stzb.assistant.tactics.RaidDefenseFlow
 import com.stzb.assistant.tactics.RoadPavingFlow
 import com.stzb.assistant.tactics.SiegeSyncFlow
 import com.stzb.assistant.tactics.TacticalPipeline
 import com.stzb.assistant.tactics.TacticalState
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 游戏内常驻悬浮 UI 总控管理器 (OverlayWindowManager)
- * 
- * 核心特性与架构：
- *   1. 【极简迷你药丸胶囊 (Capsule)】：
- *      平时吸附在屏幕边缘，支持任意拖拽，手指抬起时自动平滑吸边；
- *      实时显示战术任务状态（绿色就绪/蓝色执行/黄色卡秒/红色敌袭警报）；
- *   2. 【全功能展开式战术控制面板 (Dashboard)】：
- *      单击胶囊瞬间展开深色半透明 HUD，支持铺路、卡免、攻城、巡检与实时游戏内日志流水；
- *   3. 【准星取点与坐标交互浮层 (Crosshair Picker)】：
- *      点击“准星嗅探取点”进入全屏透明层，玩家轻点屏幕任意地块，自动抓取并换算为 720p 归一化虚拟坐标！
+ *
+ *   1. 【极简药丸胶囊】：吸附边缘、任意拖拽、实时状态色；
+ *   2. 【战术控制面板】：固定尺寸内容区，切 Tab 不再突变大小；军师前置于日志；停止拆分为“当前/全部”；
+ *   3. 【准星多点取点】：逐一点选地块并落持久标记，撤销/清空/确认，确认后才回填并返回，坐标统一为点击引擎所用的 720p 归一化虚拟坐标。
  */
 class OverlayWindowManager(private val context: Context) : TacticalState.TacticalEventListener {
 
@@ -45,28 +53,34 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pipeline = TacticalPipeline.getInstance(context)
 
-    // 视图实例
     private var capsuleView: View? = null
     private var dashboardView: View? = null
     private var pickerView: View? = null
 
-    // 胶囊 Window 属性
     private lateinit var capsuleParams: WindowManager.LayoutParams
     private lateinit var dashboardParams: WindowManager.LayoutParams
     private lateinit var pickerParams: WindowManager.LayoutParams
 
-    // 交互暂存坐标 (720p 归一化虚拟坐标)
-    private var pickedPavingCoord: PointF? = null
-    private var pickedImmunityCoord: PointF? = null
-    private var pickedSiegeCoord: PointF? = null
+    // 各战术已确认的目标地块（720p 归一化虚拟坐标序列）
+    private val pickedPavingPoints = mutableListOf<PointF>()
+    private val pickedImmunityPoints = mutableListOf<PointF>()
+    private val pickedSiegePoints = mutableListOf<PointF>()
 
     // 端侧认知微脑与双轨安全守门员
     private val edgeSlmEngine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(context)
     private val safetyGate = com.stzb.assistant.ai.decision.DualTrackSafetyGate(context)
     private var lastExtractedOrder: com.stzb.assistant.ai.microbrain.TacticalOrder? = null
 
-    // 取点回调路由
+    // 自动感知派单
+    private val senseScope = CoroutineScope(Dispatchers.Default)
+    private var senseJob: Job? = null
+    private var isAutoSenseEnabled = false
+    private val dispatchedOrderIds = mutableSetOf<String>()
+
+    // 取点回调路由与临时取点态
     private var currentPickTarget: PickTarget? = null
+    private val tempPickPoints = mutableListOf<PointF>()
+    private val tempPickMarkers = mutableListOf<View>()
 
     enum class PickTarget {
         PAVING, IMMUNITY, SIEGE
@@ -87,7 +101,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        // 1. 胶囊布局参数 (不抢焦点)
         capsuleParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -100,7 +113,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             y = 200
         }
 
-        // 2. 控制台面板参数 (可获焦点以支持输入，默认居中偏上，支持拖拽自由移动)
         dashboardParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -113,7 +125,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             y = 140
         }
 
-        // 3. 准星全屏取点层参数 (拦截全屏轻点，取点完成后立即销毁)
         pickerParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -126,7 +137,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     }
 
     // ==========================================
-    // 1. 迷你药丸胶囊 (Capsule) 构建与吸边交互
+    // 1. 迷你药丸胶囊 (Capsule)
     // ==========================================
 
     private fun createCapsuleView() {
@@ -152,22 +163,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
-                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-                        isDragging = true
-                    }
+                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) isDragging = true
                     capsuleParams.x = initialX + dx
                     capsuleParams.y = initialY + dy
                     windowManager.updateViewLayout(capsuleView, capsuleParams)
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (isDragging) {
-                        // 自动吸附屏幕左右边缘
-                        snapCapsuleToEdge()
-                    } else {
-                        // 单击：展开战术控制面板
-                        showDashboard()
-                    }
+                    if (isDragging) snapCapsuleToEdge() else showDashboard()
                     true
                 }
                 else -> false
@@ -189,39 +192,35 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     }
 
     // ==========================================
-    // 2. 展开式战术控制面板 (Dashboard) 构建
+    // 2. 展开式战术控制面板 (Dashboard)
     // ==========================================
 
     private fun createDashboardView() {
         val inflater = LayoutInflater.from(context)
         dashboardView = inflater.inflate(R.layout.view_floating_dashboard, null)
 
-        val tvTitle = dashboardView?.findViewById<TextView>(R.id.tvDashboardTitle)
-        tvTitle?.text = "${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName} · 战术总控"
+        dashboardView?.findViewById<TextView>(R.id.tvDashboardTitle)?.text =
+            "${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName} · 战术总控"
+        dashboardView?.findViewById<TextView>(R.id.tvCloseDashboard)?.setOnClickListener { hideDashboard() }
 
-        val tvClose = dashboardView?.findViewById<TextView>(R.id.tvCloseDashboard)
-        tvClose?.setOnClickListener { hideDashboard() }
-
-        // 顶部标题栏拖拽：按住可在屏幕任意位置自由移动控制面板
         setupDashboardDrag()
 
-        // Tab 切换
         val tabPaving = dashboardView?.findViewById<Button>(R.id.tabPaving)
         val tabImmunity = dashboardView?.findViewById<Button>(R.id.tabImmunity)
         val tabSiege = dashboardView?.findViewById<Button>(R.id.tabSiege)
         val tabPatrol = dashboardView?.findViewById<Button>(R.id.tabPatrol)
-        val tabLogs = dashboardView?.findViewById<Button>(R.id.tabLogs)
         val tabAdvisor = dashboardView?.findViewById<Button>(R.id.tabAdvisor)
+        val tabLogs = dashboardView?.findViewById<Button>(R.id.tabLogs)
 
         val panelPaving = dashboardView?.findViewById<LinearLayout>(R.id.panelPaving)
         val panelImmunity = dashboardView?.findViewById<LinearLayout>(R.id.panelImmunity)
         val panelSiege = dashboardView?.findViewById<LinearLayout>(R.id.panelSiege)
         val panelPatrol = dashboardView?.findViewById<LinearLayout>(R.id.panelPatrol)
-        val panelLogs = dashboardView?.findViewById<LinearLayout>(R.id.panelLogs)
         val panelAdvisor = dashboardView?.findViewById<LinearLayout>(R.id.panelAdvisor)
+        val panelLogs = dashboardView?.findViewById<LinearLayout>(R.id.panelLogs)
 
-        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabLogs, tabAdvisor)
-        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelLogs, panelAdvisor)
+        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabLogs)
+        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelLogs)
 
         fun switchTab(index: Int) {
             panels.forEachIndexed { i, p -> p?.visibility = if (i == index) View.VISIBLE else View.GONE }
@@ -235,27 +234,24 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         tabImmunity?.setOnClickListener { switchTab(1) }
         tabSiege?.setOnClickListener { switchTab(2) }
         tabPatrol?.setOnClickListener { switchTab(3) }
-        tabLogs?.setOnClickListener { switchTab(4) }
-        tabAdvisor?.setOnClickListener { switchTab(5) }
+        tabAdvisor?.setOnClickListener { switchTab(4) }
+        tabLogs?.setOnClickListener { switchTab(5) }
 
-        // 默认选中首个 Tab，统一圆角选中样式
         switchTab(0)
 
-        // 按钮事件接入
         setupDashboardActions()
     }
 
     private fun setupDashboardActions() {
         val root = dashboardView ?: return
 
-        // 引擎就绪守卫：未开启捕获/触控时给出明确提示，避免“点击无响应”
         val ensureEngineReady = {
             when {
-                !com.stzb.assistant.service.EngineBridge.isCaptureReady -> {
+                !EngineBridge.isCaptureReady -> {
                     Toast.makeText(context, "请先在主程序开启屏幕捕获", Toast.LENGTH_SHORT).show()
                     false
                 }
-                !com.stzb.assistant.service.EngineBridge.isTouchReady -> {
+                !EngineBridge.isTouchReady -> {
                     Toast.makeText(context, "请先开启无障碍触控通道", Toast.LENGTH_SHORT).show()
                     false
                 }
@@ -263,16 +259,21 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             }
         }
 
-        // 1. 铺路面板
+        // 1. 铺路（多点）
         root.findViewById<Button>(R.id.btnPickPavingTile)?.setOnClickListener {
             startCrosshairPicker(PickTarget.PAVING)
         }
         root.findViewById<Button>(R.id.btnExecPaving)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val target = pickedPavingCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f + 80f, 360f)
+            val targets = if (pickedPavingPoints.isEmpty()) {
+                val cx = CoordinateTransformer.virtualWidth / 2f + 80f
+                listOf(PointF(cx, 360f), PointF(cx + 80f, 360f))
+            } else {
+                pickedPavingPoints.toList()
+            }
             pipeline.startRoadPaving(
                 RoadPavingFlow.PavingConfig(
-                    targetTileList = listOf(target, PointF(target.x + 80f, target.y)),
+                    targetTileList = targets,
                     candidateTroopSlots = listOf(1, 2, 3),
                     minMoraleThreshold = 100
                 )
@@ -280,13 +281,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             hideDashboard()
         }
 
-        // 2. 卡免面板
+        // 2. 卡免
         root.findViewById<Button>(R.id.btnPickImmunityTile)?.setOnClickListener {
             startCrosshairPicker(PickTarget.IMMUNITY)
         }
         root.findViewById<Button>(R.id.btnExecBreakImmunity)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val target = pickedImmunityCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
+            val target = pickedImmunityPoints.firstOrNull()
+                ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
             pipeline.startImmunityBreak(
                 ImmunityBreakFlow.ImmunityConfig(
                     mode = ImmunityBreakFlow.ImmunityMode.BREAK_IMMUNITY,
@@ -297,13 +299,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             hideDashboard()
         }
 
-        // 3. 攻城面板
+        // 3. 攻城
         root.findViewById<Button>(R.id.btnPickSiegeCity)?.setOnClickListener {
             startCrosshairPicker(PickTarget.SIEGE)
         }
         root.findViewById<Button>(R.id.btnExecSiegeSync)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val target = pickedSiegeCoord ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
+            val target = pickedSiegePoints.firstOrNull()
+                ?: PointF(CoordinateTransformer.virtualWidth / 2f, 360f)
             pipeline.startSiegeSync(
                 SiegeSyncFlow.SiegeConfig(
                     cityVirtualCoord = target,
@@ -328,13 +331,18 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             hideDashboard()
         }
 
-        // 5. 急停按钮
-        root.findViewById<Button>(R.id.btnEmergencyStop)?.setOnClickListener {
+        // 5. 停止当前 / 停止全部
+        root.findViewById<Button>(R.id.btnStopCurrent)?.setOnClickListener {
             pipeline.stopCurrentTask()
-            Toast.makeText(context, "战术流水线已急停", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "已停止当前任务", Toast.LENGTH_SHORT).show()
+        }
+        root.findViewById<Button>(R.id.btnEmergencyStop)?.setOnClickListener {
+            pipeline.stopAll()
+            stopAutoSense()
+            Toast.makeText(context, "已停止全部任务与守护", Toast.LENGTH_SHORT).show()
         }
 
-        // 6. 诸葛军师 · 端侧认知微脑与双轨安全守门员
+        // 6. 诸葛军师
         val tvAdvisorStream = root.findViewById<TextView>(R.id.tvAdvisorStream)
         val tvAdvisorMetrics = root.findViewById<TextView>(R.id.tvAdvisorMetrics)
 
@@ -358,19 +366,23 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             }
         })
 
+        root.findViewById<Button>(R.id.btnAdvisorAutoSense)?.setOnClickListener { toggleAutoSense() }
+
         root.findViewById<Button>(R.id.btnAdvisorScanDecree)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val screenshot = com.stzb.assistant.service.EngineBridge.captureFrame()
+            val screenshot = EngineBridge.captureFrame()
             val textToParse = if (screenshot != null) {
                 val ocrResult = com.stzb.assistant.ocr.OcrManager.detect(screenshot)
-                if (!ocrResult?.strRes.isNullOrBlank()) ocrResult!!.strRes else "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
+                if (!ocrResult?.strRes.isNullOrBlank()) ocrResult!!.strRes
+                else "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
             } else {
                 "今晚20:00全员集火虎牢关(782,451)，先锋提前5分钟铺路压秒，主力触城驻守！"
             }
 
             val order = edgeSlmEngine.parseAllianceDecree(textToParse)
             lastExtractedOrder = order
-            tvAdvisorStream?.text = "📜【军令已解析】: 目标【${order.targetName}】(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n${order.advisorThinking}"
+            tvAdvisorStream?.text =
+                "📜【军令已解析】: 目标【${order.targetName}】(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n${order.advisorThinking}"
             tvAdvisorMetrics?.text = "状态: 纯端侧微脑推理完成 | 耗时: 18ms | 内存: < 85MB"
         }
 
@@ -385,16 +397,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             if (!ensureEngineReady()) return@setOnClickListener
             val order = lastExtractedOrder
             if (order == null) {
-                Toast.makeText(context, "请先点击【识别全屏军令】提取战术方略", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "请先点击【识别军令】提取战术方略", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             safetyGate.verifyAndDispatch(order, currentStamina = 95)
         }
     }
 
-    /**
-     * 为控制面板顶部标题栏安装拖拽监听，支持拖到屏幕任意位置。
-     */
     private fun setupDashboardDrag() {
         val header = dashboardView?.findViewById<View>(R.id.dashboardHeader) ?: return
         var initX = 0
@@ -447,7 +456,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     }
 
     // ==========================================
-    // 3. 准星全屏取点交互 (Crosshair Picker)
+    // 3. 准星多点取点 (Crosshair Picker)
     // ==========================================
 
     private fun createPickerView() {
@@ -455,28 +464,101 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         pickerView = inflater.inflate(R.layout.view_crosshair_picker, null)
 
         val flCrosshair = pickerView?.findViewById<FrameLayout>(R.id.flCrosshairContainer)
-        val btnCancel = pickerView?.findViewById<Button>(R.id.btnCancelPicker)
+        val flMarkers = pickerView?.findViewById<FrameLayout>(R.id.flMarkersContainer)
+        val tvCount = pickerView?.findViewById<TextView>(R.id.tvPickerCount)
 
-        btnCancel?.setOnClickListener {
+        pickerView?.findViewById<Button>(R.id.btnCancelPicker)?.setOnClickListener {
+            clearTempPicks()
             stopCrosshairPicker()
             showDashboard()
         }
+        pickerView?.findViewById<Button>(R.id.btnPickerUndo)?.setOnClickListener {
+            if (tempPickMarkers.isNotEmpty()) {
+                val last = tempPickMarkers.removeAt(tempPickMarkers.size - 1)
+                flMarkers?.removeView(last)
+                tempPickPoints.removeAt(tempPickPoints.size - 1)
+                tvCount?.text = "已选 ${tempPickPoints.size}"
+            }
+        }
+        pickerView?.findViewById<Button>(R.id.btnPickerClear)?.setOnClickListener {
+            clearTempPicks()
+            tvCount?.text = "已选 0"
+        }
+        pickerView?.findViewById<Button>(R.id.btnPickerConfirm)?.setOnClickListener {
+            commitPicks()
+        }
 
         pickerView?.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) {
-                flCrosshair?.visibility = View.VISIBLE
-                flCrosshair?.x = event.rawX - (flCrosshair?.width ?: 60) / 2f
-                flCrosshair?.y = event.rawY - (flCrosshair?.height ?: 60) / 2f
-            } else if (event.action == MotionEvent.ACTION_UP) {
-                // 用户抬手确认点选！
-                handlePointSelected(event.rawX, event.rawY)
+            when (event.action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    flCrosshair?.visibility = View.VISIBLE
+                    val cw = flCrosshair?.width?.takeIf { it > 0 } ?: dp(60)
+                    val ch = flCrosshair?.height?.takeIf { it > 0 } ?: dp(60)
+                    flCrosshair?.x = event.rawX - cw / 2f
+                    flCrosshair?.y = event.rawY - ch / 2f
+                }
+                MotionEvent.ACTION_UP -> {
+                    addPickPoint(event.rawX, event.rawY)
+                }
             }
             true
         }
     }
 
+    private fun addPickPoint(rawX: Float, rawY: Float) {
+        val virtualPoint = CoordinateTransformer.toVirtual(rawX, rawY)
+        tempPickPoints.add(virtualPoint)
+
+        val flMarkers = pickerView?.findViewById<FrameLayout>(R.id.flMarkersContainer)
+        val size = dp(18)
+        val marker = View(context)
+        marker.background = ContextCompat.getDrawable(context, R.drawable.bg_pick_marker)
+        val lp = FrameLayout.LayoutParams(size, size)
+        lp.leftMargin = (rawX - size / 2f).toInt()
+        lp.topMargin = (rawY - size / 2f).toInt()
+        flMarkers?.addView(marker, lp)
+        tempPickMarkers.add(marker)
+
+        pickerView?.findViewById<TextView>(R.id.tvPickerCount)?.text = "已选 ${tempPickPoints.size}"
+    }
+
+    private fun clearTempPicks() {
+        val flMarkers = pickerView?.findViewById<FrameLayout>(R.id.flMarkersContainer)
+        tempPickMarkers.forEach { flMarkers?.removeView(it) }
+        tempPickMarkers.clear()
+        tempPickPoints.clear()
+    }
+
+    private fun commitPicks() {
+        val pts = tempPickPoints.toList()
+        when (currentPickTarget) {
+            PickTarget.PAVING -> {
+                pickedPavingPoints.clear(); pickedPavingPoints.addAll(pts)
+                dashboardView?.findViewById<TextView>(R.id.tvPavingCoord)?.text =
+                    if (pts.isEmpty()) "目标地块：尚未点选" else "已选 ${pts.size} 块地块（虚拟坐标）"
+            }
+            PickTarget.IMMUNITY -> {
+                pickedImmunityPoints.clear(); pickedImmunityPoints.addAll(pts)
+                dashboardView?.findViewById<TextView>(R.id.tvImmunityCoord)?.text =
+                    if (pts.isEmpty()) "卡免地块：尚未选择" else "已锁定免战地块 ${pts.size} 点"
+            }
+            PickTarget.SIEGE -> {
+                pickedSiegePoints.clear(); pickedSiegePoints.addAll(pts)
+                dashboardView?.findViewById<TextView>(R.id.tvSiegeCoord)?.text =
+                    if (pts.isEmpty()) "集火城池：尚未点选" else "已锁定集火城池 ${pts.size} 点"
+            }
+            null -> {}
+        }
+        clearTempPicks()
+        stopCrosshairPicker()
+        showDashboard()
+        Toast.makeText(context, "已确认 ${pts.size} 个地块坐标", Toast.LENGTH_SHORT).show()
+    }
+
     private fun startCrosshairPicker(target: PickTarget) {
         currentPickTarget = target
+        clearTempPicks()
+        pickerView?.findViewById<TextView>(R.id.tvPickerCount)?.text = "已选 0"
         hideDashboard()
         if (pickerView?.parent == null) {
             try {
@@ -498,36 +580,80 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         }
     }
 
-    private fun handlePointSelected(realX: Float, realY: Float) {
-        val virtualPoint = CoordinateTransformer.toVirtual(realX, realY)
-        Log.i(TAG, "🎯 准星嗅探成功: 物理=($realX, $realY) -> 自适应虚拟=(${virtualPoint.x.toInt()}, ${virtualPoint.y.toInt()})")
+    private fun dp(value: Int): Int = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), context.resources.displayMetrics
+    ).toInt()
 
-        when (currentPickTarget) {
-            PickTarget.PAVING -> {
-                pickedPavingCoord = virtualPoint
-                dashboardView?.findViewById<TextView>(R.id.tvPavingCoord)?.text =
-                    "已锁定目标地块: 虚拟(${virtualPoint.x.toInt()}, ${virtualPoint.y.toInt()})"
-            }
-            PickTarget.IMMUNITY -> {
-                pickedImmunityCoord = virtualPoint
-                dashboardView?.findViewById<TextView>(R.id.tvImmunityCoord)?.text =
-                    "已锁定免战地块: 虚拟(${virtualPoint.x.toInt()}, ${virtualPoint.y.toInt()})"
-            }
-            PickTarget.SIEGE -> {
-                pickedSiegeCoord = virtualPoint
-                dashboardView?.findViewById<TextView>(R.id.tvSiegeCoord)?.text =
-                    "已锁定集火城池: 虚拟(${virtualPoint.x.toInt()}, ${virtualPoint.y.toInt()})"
-            }
-            null -> {}
+    // ==========================================
+    // 4. 军师自动感知场景 + 智能派发
+    // ==========================================
+
+    private fun toggleAutoSense() {
+        isAutoSenseEnabled = !isAutoSenseEnabled
+        val btn = dashboardView?.findViewById<Button>(R.id.btnAdvisorAutoSense)
+        if (isAutoSenseEnabled) {
+            btn?.text = "自动感知派单：开"
+            startAutoSense()
+            Toast.makeText(context, "军师已开始感知战场", Toast.LENGTH_SHORT).show()
+        } else {
+            stopAutoSense()
+            btn?.text = "自动感知派单：关"
         }
+    }
 
-        stopCrosshairPicker()
-        showDashboard()
-        Toast.makeText(context, "已锁定地块坐标: (${virtualPoint.x.toInt()}, ${virtualPoint.y.toInt()})", Toast.LENGTH_SHORT).show()
+    private fun startAutoSense() {
+        senseJob?.cancel()
+        senseJob = senseScope.launch {
+            while (isActive) {
+                val frame = EngineBridge.captureFrame()
+                if (frame != null) {
+                    val state = StzbUiMatcher.classifyGameState(frame)
+                    frame.recycle()
+                    val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+                    mainHandler.post { updateSenseUi(state, time) }
+
+                    // 智能派发：大地图待命且已解析军令 → 经安全守门员校验后自动下发（每道军令仅一次）
+                    if (state == StzbUiMatcher.GameState.MAIN_MAP) {
+                        val order = lastExtractedOrder
+                        if (order != null && order.orderId !in dispatchedOrderIds &&
+                            EngineBridge.isCaptureReady && EngineBridge.isTouchReady
+                        ) {
+                            dispatchedOrderIds.add(order.orderId)
+                            safetyGate.verifyAndDispatch(order, currentStamina = 95)
+                        }
+                    }
+                }
+                delay(4000)
+            }
+        }
+    }
+
+    private fun stopAutoSense() {
+        isAutoSenseEnabled = false
+        senseJob?.cancel()
+        senseJob = null
+        dashboardView?.findViewById<Button>(R.id.btnAdvisorAutoSense)?.text = "自动感知派单：关"
+    }
+
+    private fun updateSenseUi(state: StzbUiMatcher.GameState, time: String) {
+        val metrics = dashboardView?.findViewById<TextView>(R.id.tvAdvisorMetrics)
+        val stream = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
+        val (desc, action) = when (state) {
+            StzbUiMatcher.GameState.MAIN_MAP -> Pair("大地图主界面", "局势平稳，保持巡查；若有军令可自动派发。")
+            StzbUiMatcher.GameState.TILE_ACTION_MENU -> Pair("地块操作菜单已展开", "识别到出征/扫荡轮盘，流水线正在推进。")
+            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG -> Pair("出征选队面板", "等待选队与确认出征。")
+            StzbUiMatcher.GameState.DEFENDER_INFO_DIALOG -> Pair("守军信息面板", "正在评估守军难度。")
+            StzbUiMatcher.GameState.COORDINATE_SEARCH_DIALOG -> Pair("坐标检索面板", "可输入目标坐标跳转。")
+            StzbUiMatcher.GameState.FORTRESS_BUILD_DIALOG -> Pair("筑城/要塞面板", "建设流程进行中。")
+            StzbUiMatcher.GameState.ALERT_RAID_ACTIVE -> Pair("敌袭告警", "⚠️ 检测到敌袭，建议开启巡检反击守护。")
+            else -> Pair("过渡/未知画面", "等待界面稳定后继续感知。")
+        }
+        metrics?.text = "[$time] 感知场景: $desc"
+        stream?.text = "【军师自动感知】当前处于「$desc」。$action"
     }
 
     // ==========================================
-    // 4. 战术流水线事件联动 (Capsule 与 In-Game Logs)
+    // 5. 战术流水线事件联动
     // ==========================================
 
     override fun onStatusChanged(taskType: TacticalState.TaskType, status: TacticalState.Status, detail: String) {
@@ -544,9 +670,10 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             capsuleView?.findViewById<TextView>(R.id.tvCapsuleTitle)?.text = "$statusEmoji ${taskType.displayName}"
             capsuleView?.findViewById<TextView>(R.id.tvCapsuleSubtitle)?.text = detail
 
-            // 联动更新 AI 诸葛军师思考流
-            val advisorThought = edgeSlmEngine.generateAdvisorLiveStream(detail, lastExtractedOrder)
-            dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)?.text = advisorThought
+            if (!isAutoSenseEnabled) {
+                val advisorThought = edgeSlmEngine.generateAdvisorLiveStream(detail, lastExtractedOrder)
+                dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)?.text = advisorThought
+            }
         }
     }
 
@@ -560,7 +687,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
     fun destroy() {
         pipeline.unregisterListener(this)
+        stopAutoSense()
         hideDashboard()
+        clearTempPicks()
         stopCrosshairPicker()
         if (capsuleView?.parent != null) {
             try {
