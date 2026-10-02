@@ -103,10 +103,13 @@ namespace {
                                cv::BORDER_CONSTANT, cv::Scalar(114, 114, 114));
             cv::cvtColor(padded, rgb, cv::COLOR_BGR2RGB);
 
-            std::vector<float> mean_vals;                        // YOLOv8 不减均值
-            std::vector<float> norm_vals = {1.f / 255.f, 1.f / 255.f, 1.f / 255.f};
+            // ncnn::Mat::from_pixels 只负责把像素转成 CHW Mat，不做归一化；
+            // 归一化必须建完 Mat 后用 substract_mean_normalize 单独做。
+            // YOLOv8 不减均值，仅把 RGB 从 [0,255] 缩放到 [0,1]。
             ncnn::Mat in = ncnn::Mat::from_pixels(
-                    rgb.data, ncnn::Mat::PIXEL_RGB, target, target, mean_vals, norm_vals);
+                    rgb.data, ncnn::Mat::PIXEL_RGB, target, target);
+            const float norm_vals[3] = {1.f / 255.f, 1.f / 255.f, 1.f / 255.f};
+            in.substract_mean_normalize(0, norm_vals);
 
             ncnn::Extractor ex = net.create_extractor();
             ex.input(kInputBlob, in);
