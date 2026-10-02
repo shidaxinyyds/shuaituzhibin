@@ -209,9 +209,9 @@ class EdgeSlmEngine(private val context: Context) {
         val response = buildString {
             append("【诸葛军师 · 端侧离线推演】\n")
             append("主公，臣已调阅端侧兵书（SLG-RAG 向量底座）。针对“$cleanQuery”的研判如下：\n\n")
+            append("▶ 战术意图: ").append(ragAdvice.intentSummary).append("\n")
             append("▶ 核心兵法: ").append(ragAdvice.executionTimingAdvice).append("\n")
-            append("▶ 阵容克制: ").append(ragAdvice.teamRoleRequirement).append("\n")
-            append("▶ 战机机变: ").append(ragAdvice.contingencyPlan).append("\n\n")
+            append("▶ 风险提示: ").append(ragAdvice.riskWarning).append("\n\n")
             append("💡 本地军师锦囊：\n")
             when {
                 cleanQuery.contains("开荒") || cleanQuery.contains("5级地") || cleanQuery.contains("打地") -> {
