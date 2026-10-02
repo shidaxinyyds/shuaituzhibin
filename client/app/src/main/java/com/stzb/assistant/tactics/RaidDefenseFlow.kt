@@ -6,6 +6,7 @@ import android.util.Log
 import com.stzb.assistant.ocr.RaidRadarDetector
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.EngineBridge
+import com.stzb.assistant.service.UiAnchors
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -153,28 +154,32 @@ class RaidDefenseFlow(
             }
         }
 
-        // 2. 点击【出征】发起反击
-        val attackSuccess = EngineBridge.clickButton(StzbUiMatcher.ButtonType.ATTACK)
-        if (!attackSuccess) {
-            logWarn("敌方跳板地出征按键未点亮或不可点击。")
+        // 2+3. 点击【出征】发起反击，并当场确认选队面板弹出
+        val attack = EngineBridge.clickAndExpect(
+            StzbUiMatcher.ButtonType.ATTACK,
+            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+            timeoutMs = 3000L,
+            attempts = 2
+        )
+        if (!attack.ok) {
+            logWarn("敌方跳板地未能进入出征面板：${attack.detail}")
             return false
         }
-
-        // 3. 等待出征面板
-        val dialogOpened = EngineBridge.waitForState(StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG, 3000)
-        if (!dialogOpened) return false
 
         // 4. 切换至高机动拆迁骑兵队
         clickTroopSlotTab(squadSlot)
         EngineBridge.humanDelay(300, 500)
 
         // 5. 点击【确定出征】
-        val confirmSuccess = EngineBridge.clickButton(StzbUiMatcher.ButtonType.CONFIRM)
+        val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
+        if (!confirm.clicked) {
+            logWarn("反击时未能点击【确定出征】：${confirm.detail}")
+        }
         EngineBridge.humanDelay(800, 1200)
 
         // 6. 恢复大地图
         WatchdogRecovery.recoverToMainMap()
-        return confirmSuccess
+        return confirm.clicked
     }
 
     /**
@@ -186,25 +191,34 @@ class RaidDefenseFlow(
         EngineBridge.tap(playerBasePoint.x, playerBasePoint.y)
         EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2000)
 
-        // 点击【驻守】按键
-        val defendClicked = EngineBridge.clickButton(StzbUiMatcher.ButtonType.DEFEND)
-        if (!defendClicked) return false
+        // 点击【驻守】并当场确认选队面板弹出
+        val defend = EngineBridge.clickAndExpect(
+            StzbUiMatcher.ButtonType.DEFEND,
+            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+            timeoutMs = 2500L,
+            attempts = 2
+        )
+        if (!defend.ok) {
+            logWarn("驻守时未能进入出征选队面板：${defend.detail}")
+            return false
+        }
 
-        EngineBridge.waitForState(StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG, 2500)
         clickTroopSlotTab(squadSlot)
         EngineBridge.humanDelay(300, 500)
 
-        val confirmSuccess = EngineBridge.clickButton(StzbUiMatcher.ButtonType.CONFIRM)
+        val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
+        if (!confirm.clicked) {
+            logWarn("驻守时未能点击【确定出征】：${confirm.detail}")
+        }
         EngineBridge.humanDelay(800, 1200)
         WatchdogRecovery.recoverToMainMap()
-        return confirmSuccess
+        return confirm.clicked
     }
 
     private suspend fun clickTroopSlotTab(slot: Int) {
-        val stepX = 140f
-        val startX = 220f
-        val targetX = startX + (slot - 1) * stepX
-        EngineBridge.tap(targetX, 160f)
+        // 统一锚点表，不再按 1280 宽画布写死 220/140/160
+        val p = UiAnchors.troopTab(slot)
+        EngineBridge.tap(p.x, p.y)
     }
 
     private fun logInfo(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.RAID_DEFENSE, "INFO", msg))

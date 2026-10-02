@@ -2,6 +2,7 @@ package com.stzb.assistant.tactics
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -30,6 +31,13 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     private val listeners = CopyOnWriteArrayList<TacticalState.TacticalEventListener>()
     private val logHistory = CopyOnWriteArrayList<TacticalState.TacticalLog>()
 
+    /**
+     * 当前正在执行的任务类型；null 表示空闲。
+     * 无人托管用它判断"要不要下发新任务"，避免与正在跑的流水线抢控制权。
+     */
+    val currentTaskType: TacticalState.TaskType?
+        get() = activeTaskType
+
     fun registerListener(listener: TacticalState.TacticalEventListener) {
         if (!listeners.contains(listener)) {
             listeners.add(listener)
@@ -43,12 +51,66 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     fun getLogHistory(): List<TacticalState.TacticalLog> = logHistory
 
     /**
+     * 统一的"启动一个受管任务"入口。
+     *
+     * ## 为什么必须有这个函数
+     * 原先四个 `startXxx()` 各自写成：
+     * ```
+     * stopCurrentTask()
+     * activeTaskType = <TYPE>
+     * currentJob = scope.launch { ...flow... }
+     * ```
+     * 问题在于**任务正常结束后 `activeTaskType` 永远不会被复位**——
+     * 没有任何完成回调去清它。于是 `currentTaskType` 会永久停留在一个非 null 值上。
+     *
+     * 这会直接掐死「无人托管」：AutoPilot 用 `currentTaskType != null` 判断
+     * "是否有任务在跑"，一旦第一个任务跑完，它就**永远认为还在忙**，
+     * 此后再也不下发第二个任务，只是不断打印"保持观察"。
+     *
+     * 现在所有启动路径都必须走这里：任务结束（正常/异常/被取消）时由
+     * [Job.invokeOnCompletion] 复位状态与广播，并**用 Job 身份做校验**，
+     * 避免把后续新任务的状态误清掉。
+     *
+     * @param block 任务主体，内部需自行处理异常（本函数也会兜底记录并广播 FAILED）
+     */
+    private fun launchTask(type: TacticalState.TaskType, block: suspend () -> Unit) {
+        stopCurrentTask()
+        activeTaskType = type
+
+        val job = scope.launch {
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e // 主动取消不算异常
+            } catch (e: Exception) {
+                Log.e(TAG, "任务 [${type.displayName}] 异常退出: ${e.message}", e)
+                onStatusChanged(type, TacticalState.Status.FAILED, "异常退出: ${e.message}")
+            }
+        }
+        currentJob = job
+
+        job.invokeOnCompletion { cause ->
+            // 只有"当前登记的仍是这个 Job"时才复位；
+            // 若期间已经启动了新任务，currentJob 已被替换，这里必须让位。
+            synchronized(this) {
+                if (currentJob === job) {
+                    currentJob = null
+                    val finished = activeTaskType
+                    activeTaskType = null
+                    if (cause == null && finished != null) {
+                        // 正常跑完：广播一次，让胶囊与日志状态归位（此前完全没有这一步）
+                        onStatusChanged(finished, TacticalState.Status.COMPLETED, "任务流程已结束。")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * 启动自动铺路任务
      */
     fun startRoadPaving(config: RoadPavingFlow.PavingConfig) {
-        stopCurrentTask()
-        activeTaskType = TacticalState.TaskType.ROAD_PAVING
-        currentJob = scope.launch {
+        launchTask(TacticalState.TaskType.ROAD_PAVING) {
             roadPavingFlow.startPaving(config)
         }
     }
@@ -57,9 +119,7 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      * 启动极限卡免 / 压秒破免任务
      */
     fun startImmunityBreak(config: ImmunityBreakFlow.ImmunityConfig) {
-        stopCurrentTask()
-        activeTaskType = TacticalState.TaskType.IMMUNITY_BREAK
-        currentJob = scope.launch {
+        launchTask(TacticalState.TaskType.IMMUNITY_BREAK) {
             immunityBreakFlow.execute(config)
         }
     }
@@ -68,9 +128,7 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      * 启动同盟集火攻城卡秒排队任务
      */
     fun startSiegeSync(config: SiegeSyncFlow.SiegeConfig) {
-        stopCurrentTask()
-        activeTaskType = TacticalState.TaskType.SIEGE_SYNC
-        currentJob = scope.launch {
+        launchTask(TacticalState.TaskType.SIEGE_SYNC) {
             siegeSyncFlow.execute(config)
         }
     }
@@ -79,9 +137,7 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      * 启动深夜敌袭巡检与决策 C 自动反击守护任务
      */
     fun startRaidDefense(config: RaidDefenseFlow.DefenseConfig) {
-        stopCurrentTask()
-        activeTaskType = TacticalState.TaskType.RAID_DEFENSE
-        currentJob = scope.launch {
+        launchTask(TacticalState.TaskType.RAID_DEFENSE) {
             raidDefenseFlow.startPatrol(config)
         }
     }

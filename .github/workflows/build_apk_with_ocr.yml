@@ -1,0 +1,277 @@
+name: Build APK with Real OCR (ncnn + OpenCV)
+
+# ============================================================================
+# 为什么需要这个独立工作流
+#
+# 主工作流 `build_apk.yml` **不**提供 ncnn / OpenCV，因此 CMake 会走空桩分支，
+# 编出的 APK 里 OCR 是 `OcrStub.cpp`——初始化会明确失败，文字识别不可用。
+# 这保证了主流程始终能出包，但也就意味着"识别不了"这件事在主流程里无法被修好。
+#
+# 本工作流专门用来尝试**真正编译 OCR 引擎**。它只有手动触发，
+# 因此即便这里失败，也不会影响主工作流的出包。
+#
+# ⚠️ 诚实声明：本工作流**未经实机验证**。ncnn / OpenCV 的发布包命名与内部目录
+#    结构会随版本变化，因此这里对多个候选资产名做了**依次尝试**，尽量降低首次
+#    运行就失败的概率；若仍失败，请按日志里的候选列表补上正确名字。
+#
+# 关于 OpenCV 的 .so 为什么**不**手动打包（这里踩过一次坑）
+#
+# `client/app/build.gradle` 已经有依赖 `com.quickbirdstudios:opencv:4.5.3.0`，
+# 这个 AAR 自己就带 `libopencv_java4.so`。CMake 链接 OpenCV 的共享库之后，
+# `libRapidOcr.so` 会在运行时动态加载 `libopencv_java4.so`——**由 AAR 提供即可**。
+# 如果再把 SDK 里的同名 .so 复制进 `jniLibs`，APK 打包阶段会因为
+# "More than one file was found with OS independent path 'lib/arm64-v8a/libopencv_java4.so'"
+# 直接失败。所以这里只做校验，不做复制。
+#
+# ncnn 则不同：它的 android 包多数是静态库（libncnn.a），不需要额外 .so；
+# 但 `-shared` 变体需要，因此对 ncnn 采取"有 .so 就打包"的方式。
+#
+# 目标产物：一个 native OCR 真实可用（非空桩）的 APK。
+# 验证方式：安装后看 logcat
+#     adb logcat | grep -E "OcrManager|RapidOcr"
+#   出现「RapidOCR 引擎初始化成功（native 推理已就绪）」才算真的可用。
+# ============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      ncnn_version:
+        description: 'ncnn 发布版本号 (如 20240410)'
+        required: false
+        default: '20240410'
+      opencv_version:
+        description: 'OpenCV Android SDK 版本 (如 4.9.0)'
+        required: false
+        default: '4.9.0'
+
+permissions:
+  contents: read
+
+jobs:
+  build-with-ocr:
+    name: Build Release APK with real OCR engine
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Android NDK & CMake
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+
+      - name: Provision ncnn (discover release assets via GitHub API)
+        id: ncnn
+        run: |
+          set -e
+          VER="${{ github.event.inputs.ncnn_version }}"
+          API="https://api.github.com/repos/Tencent/ncnn/releases/tags/${VER}"
+          echo "查询 ncnn 发布资产: $API"
+          if ! curl -fsSL -o ncnn_release.json "$API"; then
+            echo "::error::无法获取 ncnn ${VER} 的发布信息。请确认版本号存在。"
+            echo "可用版本列表: https://api.github.com/repos/Tencent/ncnn/releases"
+            exit 1
+          fi
+
+          echo "该版本的全部资产（便于失败时人工核对）:"
+          jq -r '.assets[].name' ncnn_release.json | sed 's/^/  - /' || true
+
+          # 按优先级挑选：静态包优先（不需要额外 .so），再退到带 vulkan / 任意 android 包。
+          # 用 API 查询而不是硬编码文件名 —— 硬编码本质是在猜，API 是查事实。
+          URL=""
+          for PAT in '^ncnn-.*-android\.zip$' '^ncnn-.*-android-vulkan\.zip$' '^ncnn-.*-android.*\.zip$'; do
+            URL=$(jq -r --arg p "$PAT" \
+              '.assets[] | select(.name | test($p)) | .browser_download_url' \
+              ncnn_release.json | head -n 1)
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              echo "命中资产模式 $PAT -> $URL"
+              break
+            fi
+            URL=""
+          done
+          if [ -z "$URL" ]; then
+            echo "::error::ncnn ${VER} 的资产里没有可用的 android 包（已列出全部资产名）。"
+            exit 1
+          fi
+
+          echo "下载: $URL"
+          curl -fL --retry 3 -o ncnn.zip "$URL"
+          unzip -q ncnn.zip
+
+          NCNN_DIR=$(find . -maxdepth 6 -type d -path "*arm64-v8a/lib/cmake/ncnn" | head -n 1)
+          if [ -z "$NCNN_DIR" ]; then
+            echo "::error::在 ncnn 包内找不到 arm64-v8a/lib/cmake/ncnn，请检查包结构"
+            find . -maxdepth 5 -type d | head -60
+            exit 1
+          fi
+          echo "ncnn_DIR=$PWD/$NCNN_DIR" >> $GITHUB_OUTPUT
+          echo "已定位 ncnn_DIR=$PWD/$NCNN_DIR"
+
+          # 若该变体带共享库，收集起来稍后打包
+          mkdir -p /tmp/ocr-sos
+          find . -type f -name "*.so" -path "*arm64-v8a*" -exec cp -v {} /tmp/ocr-sos/ \; || true
+          ls -la /tmp/ocr-sos || true
+
+      - name: Provision OpenCV (discover release assets via GitHub API)
+        id: opencv
+        run: |
+          set -e
+          VER="${{ github.event.inputs.opencv_version }}"
+          API="https://api.github.com/repos/opencv/opencv/releases/tags/${VER}"
+          echo "查询 OpenCV 发布资产: $API"
+          if ! curl -fsSL -o opencv_release.json "$API"; then
+            echo "::error::无法获取 OpenCV ${VER} 的发布信息。请确认版本号存在（形如 4.9.0）。"
+            exit 1
+          fi
+
+          echo "该版本的全部资产:"
+          jq -r '.assets[].name' opencv_release.json | sed 's/^/  - /' || true
+
+          URL=$(jq -r \
+            '.assets[] | select(.name | test("^opencv-.*-android-sdk\\.zip$")) | .browser_download_url' \
+            opencv_release.json | head -n 1)
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "::error::OpenCV ${VER} 的资产里没有 android-sdk 包（已列出全部资产名）。"
+            exit 1
+          fi
+          echo "下载: $URL"
+          curl -fL --retry 3 -o opencv.zip "$URL"
+          unzip -q opencv.zip
+
+          OCV_DIR=$(find . -maxdepth 6 -type d -path "*sdk/native/jni" | head -n 1)
+          if [ -z "$OCV_DIR" ]; then
+            echo "::error::在 OpenCV 包内找不到 sdk/native/jni"
+            find . -maxdepth 5 -type d | head -60
+            exit 1
+          fi
+          echo "OpenCV_DIR=$PWD/$OCV_DIR" >> $GITHUB_OUTPUT
+          echo "已定位 OpenCV_DIR=$PWD/$OCV_DIR"
+          echo "OpenCV 共享库（由 AAR 在运行时提供，无需手动打包）:"
+          ls -la "$OCV_DIR/../libs/arm64-v8a/" | head -20
+
+      - name: Stage ncnn shared library into jniLibs (only if the package ships one)
+        run: |
+          set -e
+          DEST="client/app/src/main/jniLibs/arm64-v8a"
+          mkdir -p "$DEST"
+          count=$(ls -1 /tmp/ocr-sos/*.so 2>/dev/null | wc -l || echo 0)
+          if [ "$count" -eq 0 ]; then
+            echo "ncnn 为静态包（无 .so），无需打包；OpenCV 的 .so 由 AAR 提供。"
+            rmdir "$DEST" 2>/dev/null || true
+          else
+            cp -v /tmp/ocr-sos/*.so "$DEST"/
+            echo "已打包的 ncnn 共享库:"
+            ls -la "$DEST"
+          fi
+
+      - name: Grant Execute Permission & Pre-create Keystore
+        run: |
+          chmod +x client/gradlew
+          keytool -genkey -v -keystore client/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+
+      - name: Verify bundled OCR assets
+        run: |
+          for f in ch_PP-OCRv3_det_infer.param ch_PP-OCRv3_det_infer.bin \
+                   ch_PP-OCRv3_rec_infer.param ch_PP-OCRv3_rec_infer.bin \
+                   ppocr_keys_v1.txt ; do
+            if [ ! -s "client/app/src/main/assets/$f" ]; then
+              echo "::error::缺少 OCR 资产: $f"
+              exit 1
+            fi
+          done
+          echo "OCR 资产齐全。"
+
+      - name: Build Release APK with native OCR
+        id: build
+        run: |
+          cd client
+          ./gradlew assembleRelease --stacktrace --no-daemon \
+            -PncnnDir="${{ steps.ncnn.outputs.ncnn_DIR }}" \
+            -PopencvDir="${{ steps.opencv.outputs.OpenCV_DIR }}" \
+            2>&1 | tee ocr_build_log.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Verify built APK contents
+        if: success()
+        run: |
+          APK=$(find client/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then echo "::error::未找到 APK"; exit 1; fi
+          echo "APK: $APK"
+          echo "大小: $(du -h "$APK" | cut -f1)"
+          echo "=== APK 内 native 库 ==="
+          unzip -l "$APK" | grep -E "lib/arm64-v8a/.*\.so" || echo "（无）"
+          echo "=== APK 内 OCR 资产 ==="
+          unzip -l "$APK" | grep -E "assets/ch_PP-OCRv3|assets/ppocr_keys|assets/models" || echo "（无）"
+          {
+            echo "### APK 内容校验"
+            echo '```text'
+            unzip -l "$APK" | grep -E "lib/arm64-v8a/.*\.so|assets/ch_PP-OCRv3|assets/ppocr_keys|assets/models" || true
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+          # libRapidOcr.so 在运行时要动态加载 libopencv_java4.so，
+          # 后者由 OpenCV 的 AAR 提供 —— 必须在 APK 里，否则一加载就崩。
+          if unzip -l "$APK" | grep -q "libopencv_java4.so"; then
+            echo "✅ APK 内含 libopencv_java4.so（AAR 提供），运行时依赖可满足。"
+          else
+            echo "::error::APK 内缺少 libopencv_java4.so，安装后加载 native 库会 UnsatisfiedLinkError。"
+            exit 1
+          fi
+          if unzip -l "$APK" | grep -q "libRapidOcr.so"; then
+            echo "✅ APK 内含 libRapidOcr.so。"
+          else
+            echo "::error::APK 内缺少 libRapidOcr.so。"
+            exit 1
+          fi
+          # 空桩场景下 APK 会异常小、且没有任何模型资产，这里顺带提示
+          if unzip -l "$APK" | grep -q "assets/models/.*\.bin"; then
+            echo "ℹ️ 检测到 assets/models 下有 .bin 资产。"
+          fi
+
+      - name: Report native build outcome
+        if: always()
+        run: |
+          cd client
+          {
+            echo "## OCR 原生构建结果"
+            echo ""
+            if grep -q "Compiling complete native OCR vision engine" ocr_build_log.txt 2>/dev/null; then
+              echo "✅ CMake 找到了 ncnn 与 OpenCV，**真实 OCR 引擎已参与编译**。"
+            elif grep -q "未找到 ncnn/OpenCV" ocr_build_log.txt 2>/dev/null; then
+              echo "❌ CMake 仍未找到 ncnn/OpenCV，本次产物里的 OCR 依然是空桩。"
+              echo "请检查上面的 ncnn_DIR / OpenCV_DIR 路径与下载地址。"
+            else
+              echo "⚠️ 无法从日志判断 native 分支，请查看下面的编译输出。"
+            fi
+            echo ""
+            echo "### 已打包进 APK 的 native 库"
+            find ../app/src/main/jniLibs -name "*.so" -printf '%10s  %p\n' 2>/dev/null || echo "（无）"
+            echo ""
+            echo '```text'
+            grep -iE "ncnn|opencv|RapidOcr|OcrStub|CMake (Error|Warning)" ocr_build_log.txt 2>/dev/null | tail -60 || true
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-build-log
+          path: client/ocr_build_log.txt
+
+      - name: Upload APK (if built)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RateOfLand-OCR-Release
+          path: client/app/build/outputs/apk/release/*.apk
+          retention-days: 30

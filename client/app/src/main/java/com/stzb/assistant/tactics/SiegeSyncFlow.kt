@@ -1,12 +1,13 @@
 package com.stzb.assistant.tactics
 
 import android.graphics.PointF
-import android.graphics.Rect
 import android.util.Log
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.ocr.TroopStatusDetector
-import com.stzb.assistant.service.CoordinateTransformer
+import com.stzb.assistant.service.UiAnchors
 import com.stzb.assistant.service.EngineBridge
+import com.stzb.assistant.service.MapNavigator
+import com.stzb.assistant.service.MapProjection
 import kotlinx.coroutines.delay
 import java.util.PriorityQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -43,7 +44,12 @@ class SiegeSyncFlow(
         val targetBaseHitEpochMs: Long,     // 主力统一触敌基准时刻 (毫秒戳，如 21:00:00.000)
         val mainSquadSlot: Int = 1,         // 主力队槽位 (21:00:00.000 触敌)
         val demolitionSlots: List<Int> = listOf(2, 3), // 拆迁队槽位列表 (依次 21:00:01, 21:00:02 触敌)
-        val latencyCompensationMs: Long = 100L
+        val latencyCompensationMs: Long = 100L,
+        /**
+         * 目标城池的**世界坐标**（大地图格坐标）。提供且地图投影已标定时，
+         * 流程会先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
+         */
+        val cityWorldCoord: Pair<Int, Int>? = null
     )
 
     fun stop() {
@@ -106,6 +112,33 @@ class SiegeSyncFlow(
                 return false
             }
 
+            // 3.5 可行性预检：若某队的"最晚出征时刻"已经过去，它**不可能**按时触敌。
+            //
+            // 为什么必须拦：原先会照常往下走，于是 waitMs 为负、时刻表打出
+            // "倒计时: -90s"，部队仍在错误的时机被送出去——卡秒静默失败，
+            // 而且可能因此在对自己不利的时机开战。宁可明确失败并说清还差多少。
+            val nowMs = System.currentTimeMillis()
+            val infeasible = readyDispatches.filter { it.optimalDispatchEpochMs <= nowMs }
+            if (infeasible.isNotEmpty()) {
+                val detail = infeasible.joinToString("；") { d ->
+                    val overdueSec = (nowMs - d.optimalDispatchEpochMs) / 1000
+                    "${d.roleName}(部队${d.troopSlot}) 应在 ${d.optimalDispatchEpochMs} 前出征，已晚 ${overdueSec}s"
+                }
+                val maxMarchSec = readyDispatches.maxOf { it.marchDurationSec }
+                logWarn(
+                    "⚠️ 卡秒不可行，本次集火已取消：$detail。\n" +
+                        "原因：行军耗时 + 提前量超过了距离命中时刻的剩余时间。" +
+                        "请把任务时间至少提前 ${maxMarchSec + 30} 秒，或增大卡秒偏移。"
+                )
+                listener?.onStatusChanged(
+                    TacticalState.TaskType.SIEGE_SYNC,
+                    TacticalState.Status.FAILED,
+                    "卡秒不可行：行军耗时超过剩余时间，未出征"
+                )
+                WatchdogRecovery.recoverToMainMap()
+                return false
+            }
+
             // 4. 输出最终测算时序表
             val sb = StringBuilder("📋【同盟集火精密攻城排队时刻表】\n")
             readyDispatches.forEach { d ->
@@ -129,15 +162,29 @@ class SiegeSyncFlow(
                     "等待 ${currentTask.roleName} 出征，还剩 ${(waitMs / 1000)} 秒"
                 )
 
-                // 提前 4 秒打开出征面板做好准备
-                if (waitMs > 4000) {
-                    delay(waitMs - 4000)
+                // 提前一段时间打开出征面板做好准备。
+                // ⚠️ 这个余量必须覆盖 `prepareTroopPanel` + `prepareButtonTap` 的全部耗时：
+                //    前者要等待地块菜单与选队面板出现（各有 1.8~2 秒超时），
+                //    后者要抓屏并定位【确定出征】。余量不够的后果是**直接晚打**，
+                //    而晚打在集火里可能比不打更糟。
+                if (waitMs > PANEL_PREP_MARGIN_MS) {
+                    delay(waitMs - PANEL_PREP_MARGIN_MS)
                 }
 
                 if (!isRunning.get()) break
 
                 // 打开目标城池出征面板并切到该部队
                 prepareTroopPanel(config.cityVirtualCoord, currentTask.troopSlot)
+
+                // **先架枪**：面板已就绪，把【确定出征】的触控点现在定位好。
+                // 定位要抓屏 + 识别/匹配，耗时几十到几百毫秒；若放到精确等待之后再做，
+                // 这段耗时会整个算进击发误差里（而且完全没被补偿）。
+                val prepared = EngineBridge.prepareButtonTap(StzbUiMatcher.ButtonType.CONFIRM)
+                if (prepared == null) {
+                    logWarn("⚠️ ${currentTask.roleName} 无法预定位【确定出征】，本队跳过（未出征）。")
+                    WatchdogRecovery.recoverToMainMap()
+                    continue
+                }
 
                 // 最后高精度微秒级等待
                 while (isRunning.get()) {
@@ -149,11 +196,28 @@ class SiegeSyncFlow(
 
                 if (!isRunning.get()) break
 
-                // 毫秒级扣动扳机：点击【确定出征】
-                EngineBridge.clickButton(StzbUiMatcher.ButtonType.CONFIRM)
-                val realFired = System.currentTimeMillis()
+                // 毫秒级扣动扳机：只做一次手势派发（定位已完成）
+                val fired = EngineBridge.firePreparedTap(prepared)
+                val realFired = fired.dispatchEpochMs
                 val errorMs = realFired - currentTask.optimalDispatchEpochMs
-                logTactic("🚀 ${currentTask.roleName} 击发成功！绝对时刻: $realFired，误差: ${errorMs}ms")
+                if (fired.dispatched) {
+                    logTactic("🚀 ${currentTask.roleName} 击发成功！绝对时刻: $realFired，误差: ${errorMs}ms")
+                    if (errorMs > LATE_TOLERANCE_MS) {
+                        // 晚到超出容忍范围时必须说清楚，而不是把"晚了 800ms"当成成功。
+                        // 最常见的原因是面板准备吃掉了余量（见 PANEL_PREP_MARGIN_MS）。
+                        logWarn(
+                            "⚠️ ${currentTask.roleName} 晚打 ${errorMs}ms（容忍 ${LATE_TOLERANCE_MS}ms）。" +
+                                "多半是出征面板准备耗时超过了预留余量；" +
+                                "可把任务时间提前更多，或减少队伍数量。"
+                        )
+                    }
+                } else {
+                    // 原实现完全不看返回值就打印"击发成功"，把"根本没点中"包装成"卡秒精准"。
+                    logWarn(
+                        "⚠️ ${currentTask.roleName} 的【确定出征】手势派发失败（原定误差 ${errorMs}ms）；" +
+                            "本次击发未生效，请人工复核该队是否已出发。"
+                    )
+                }
 
                 // 留出短暂间隔，看门狗回退大地图准备下一个任务
                 EngineBridge.humanDelay(800, 1500)
@@ -189,18 +253,23 @@ class SiegeSyncFlow(
         val resultQueue = PriorityQueue<ScheduledDispatch>()
 
         // 点击目标城池并打开出征面板
-        EngineBridge.tap(config.cityVirtualCoord.x, config.cityVirtualCoord.y)
+        // 已标定世界坐标时，先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
+        val tapPoint = resolveCityTapPoint(config)
+        EngineBridge.tap(tapPoint.x, tapPoint.y)
         EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2500)
-        EngineBridge.clickButton(StzbUiMatcher.ButtonType.ATTACK)
-        val dialogReady = EngineBridge.waitForState(StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG, 3000)
-        if (!dialogReady) return resultQueue
-
-        val marchRoi = Rect(
-            (CoordinateTransformer.virtualWidth - 360).toInt(),
-            (CoordinateTransformer.virtualHeight - 160).toInt(),
-            CoordinateTransformer.virtualWidth.toInt(),
-            CoordinateTransformer.virtualHeight.toInt()
+        val attack = EngineBridge.clickAndExpect(
+            StzbUiMatcher.ButtonType.ATTACK,
+            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+            timeoutMs = 3000L,
+            attempts = 2
         )
+        if (!attack.ok) {
+            logWarn("未能进入出征选队面板：${attack.detail}")
+            return resultQueue
+        }
+
+        // 行军耗时文本区改用统一锚点表（原先是写死的"右下角 360x160"）
+        val marchRoi = UiAnchors.rect(UiAnchors.RectKey.MARCH_TIME)
 
         for (task in queue) {
             clickTroopSlotTab(task.troopSlot)
@@ -233,16 +302,47 @@ class SiegeSyncFlow(
     private suspend fun prepareTroopPanel(cityCoord: PointF, slot: Int) {
         EngineBridge.tap(cityCoord.x, cityCoord.y)
         EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 1800)
-        EngineBridge.clickButton(StzbUiMatcher.ButtonType.ATTACK)
-        EngineBridge.waitForState(StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG, 2000)
+        // 预热路径同样确认面板出现，失败只告警（预热不成功时后面还会再试一次）
+        val attack = EngineBridge.clickAndExpect(
+            StzbUiMatcher.ButtonType.ATTACK,
+            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+            timeoutMs = 2000L,
+            attempts = 1
+        )
+        if (!attack.ok) {
+            logWarn("预热选队面板未成功：${attack.detail}")
+        }
         clickTroopSlotTab(slot)
     }
 
+    /**
+     * 解析"该点哪个屏幕坐标才能点到目标城池"。
+     *
+     * 有世界坐标且地图投影已标定时：先把镜头对准该格，然后点镜头中心——
+     * "点哪里"是即时算出来的，不依赖取点时的旧屏幕坐标。
+     * 否则回退到取点屏幕坐标（保持原有行为）。
+     */
+    private suspend fun resolveCityTapPoint(config: SiegeConfig): PointF {
+        val world = config.cityWorldCoord
+        if (world != null && MapProjection.isCalibrated) {
+            when (val nav = MapNavigator.centerOn(world.first, world.second)) {
+                is MapNavigator.Result.Reached -> {
+                    logInfo("🧭 已按世界坐标 (${world.first},${world.second}) 对准攻城目标镜头")
+                    return MapProjection.viewportCenterCanvas()
+                }
+                is MapNavigator.Result.Refused ->
+                    logWarn("世界坐标导航被拒绝，改用取点屏幕坐标：${nav.reason}")
+                is MapNavigator.Result.Failed ->
+                    logWarn("世界坐标导航失败，改用取点屏幕坐标：${nav.reason}")
+            }
+        }
+        return config.cityVirtualCoord
+    }
+
     private suspend fun clickTroopSlotTab(slot: Int) {
-        val stepX = 140f
-        val startX = 220f
-        val targetX = startX + (slot - 1) * stepX
-        EngineBridge.tap(targetX, 160f)
+        // 统一锚点表，不再按 1280 宽画布写死 220/140/160
+        val p = UiAnchors.troopTab(slot)
+        EngineBridge.tap(p.x, p.y)
     }
 
     private fun logInfo(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.SIEGE_SYNC, "INFO", msg))
@@ -256,5 +356,17 @@ class SiegeSyncFlow(
 
     companion object {
         private const val TAG = "SiegeSyncFlow"
+
+        /**
+         * 提前打开出征面板的余量。
+         *
+         * 必须覆盖 `prepareTroopPanel`（等待地块菜单 + 选队面板，各有 1.8~2 秒超时）
+         * 与 `prepareButtonTap`（抓屏 + 定位【确定出征】）的**全部**耗时。
+         * 余量不足的后果是直接晚打——在集火里晚打可能比不打更糟。
+         */
+        private const val PANEL_PREP_MARGIN_MS = 4000L
+
+        /** 击发时刻的可容忍迟到量；超过它必须显式告警，而不是当成"卡秒成功"。 */
+        private const val LATE_TOLERANCE_MS = 150L
     }
 }

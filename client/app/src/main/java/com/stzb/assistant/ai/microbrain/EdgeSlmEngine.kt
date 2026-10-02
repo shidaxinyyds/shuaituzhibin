@@ -10,58 +10,69 @@ import java.util.UUID
 import java.util.regex.Pattern
 
 /**
- * 端侧认知微脑推理引擎 (EdgeSlmEngine)
- * 
- * 专为 ~75MB 级端侧微型语言模型 (如 SmolLM2-135M / RWKV-160M / TinyInt4) 设计的推理中枢。
- * 
- * 核心特性：
- *   1. 【超轻量低功耗】：仅在收到军令/触发战报时运行 100~200ms，平时 0% CPU 占用；
- *   2. 【事件驱动双通道推理】：
- *      - 主通道：加载端侧 INT4 GGUF/MNN 权重，进行多步条件因果生成；
- *      - 极速内建通道：若设备尚未加载大权重，自动无缝切换至端侧特制语义提取器，覆盖 99% 的率土军令语法；
- *   3. 【军师思考流生成】：实时输出生动、拟人化的文言战术推演日志，为悬浮窗注入灵魂。
+ * 端侧军令语义提取器 (EdgeSlmEngine)
+ *
+ * ## 诚实说明（重要）
+ * 这个类**不是**语言模型推理引擎，三个公开方法
+ * （[parseAllianceDecree] / [diagnoseBattleReport] / [generateAdvisorLiveStream]）
+ * 全部是**正则 + 关键词提取**实现，没有任何权重参与推理。
+ *
+ * 本类的 KDoc 曾声称"主通道加载端侧 INT4 GGUF/MNN 权重做多步条件因果生成，
+ * 无权重时自动切换"，并配套维护 `isModelWeightLoaded` / `modelPath` 等字段。
+ * 实际情况是：那些字段**从未被任何代码读取**，而 `ModelAssetManager` 的诚实报告
+ * 也已写明"需 GGUF/MNN 运行时；当前 EdgeSlmEngine 为纯正则实现，权重从未参与推理"。
+ * 因此这里删除了那套字段，并把启动日志改成如实汇报探测结果——
+ * 探测到权重也只是"文件在"，不代表存在能跑它的推理后端。
+ *
+ * 之所以保留探测逻辑：一旦将来真的接入 GGUF/MNN 运行时，这里是唯一的接入点。
+ * 但在那之前，它只输出事实，不宣称能力。
  */
 class EdgeSlmEngine(private val context: Context) {
 
-    private var isModelWeightLoaded = false
-    private var isRagLoaded = false
-    private var modelPath: String? = null
-    private var ragPath: String? = null
-
     init {
-        checkModelAvailability()
+        probeOptionalAssets()
     }
 
-    private fun checkModelAvailability() {
+    /**
+     * 探测可选的权重资产，并**如实**汇报。
+     *
+     * 注意措辞：这里只说"发现文件"，不说"通道已就绪"——
+     * 因为工程内没有任何加载 GGUF/MNN 并进行推理的实现，
+     * 说"就绪"会让日志读者以为模型真的在参与决策。
+     */
+    private fun probeOptionalAssets() {
         try {
-            // 优先探测 190MB 方案核心：SmolLM2-360M (~110MB)
-            val path360 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_360m.bin")
-            val path135 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slm_microbrain_135m.bin")
+            val slm360 = probeAsset("slm_microbrain_360m.bin", 20L * 1024 * 1024)
+            val slm135 = probeAsset("slm_microbrain_135m.bin", 10L * 1024 * 1024)
+            val hnsw = probeAsset("slg_knowledge_vector_hnsw.bin", 5L * 1024 * 1024)
 
-            if (path360 != null && java.io.File(path360).length() > 20 * 1024 * 1024) {
-                isModelWeightLoaded = true
-                modelPath = path360
-                Log.i(TAG, "检测到 360M 旗舰端侧微脑量化权重 (~110MB)，深度自回归通道已就绪: $path360")
-            } else if (path135 != null && java.io.File(path135).length() > 10 * 1024 * 1024) {
-                isModelWeightLoaded = true
-                modelPath = path135
-                Log.i(TAG, "检测到 135M 端侧微脑量化权重 (~75MB)，端侧大模型通道已就绪: $path135")
-            } else {
-                Log.i(TAG, "启用端侧超轻量军令语义提取内核")
-                isModelWeightLoaded = false
+            val found = buildList {
+                if (slm360) add("slm_microbrain_360m.bin")
+                if (slm135) add("slm_microbrain_135m.bin")
+                if (hnsw) add("slg_knowledge_vector_hnsw.bin")
             }
-
-            // 探测 25MB 向量检索 RAG 库
-            val ragP = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "slg_knowledge_vector_hnsw.bin")
-            if (ragP != null && java.io.File(ragP).length() > 5 * 1024 * 1024) {
-                isRagLoaded = true
-                ragPath = ragP
-                Log.i(TAG, "检测到端侧 HNSW 战法向量检索模型库 (~25MB)，RAG 零幻觉通道已就绪: $ragP")
+            if (found.isEmpty()) {
+                Log.i(
+                    TAG,
+                    "未发现端侧权重资产，军令/战报解析由内建正则语义提取器完成（这是当前唯一实现，非降级）。"
+                )
+            } else {
+                Log.w(
+                    TAG,
+                    "发现权重资产 ${found.joinToString()}，但工程内**没有**加载并推理它们的实现，" +
+                        "因此解析仍走正则通道，这些文件不影响任何行为。"
+                )
             }
         } catch (e: Exception) {
-            Log.w(TAG, "检查端侧微脑与 RAG 状态: ${e.message}")
-            isModelWeightLoaded = false
+            Log.w(TAG, "探测端侧权重资产异常: ${e.message}")
         }
+    }
+
+    /** 资产是否存在且达到最小体积。返回 true 仅代表"文件在"，不代表可推理。 */
+    private fun probeAsset(name: String, minBytes: Long): Boolean {
+        val p = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, name)
+            ?: return false
+        return java.io.File(p).length() > minBytes
     }
 
     /**
@@ -174,14 +185,34 @@ class EdgeSlmEngine(private val context: Context) {
 
     /**
      * 核心接口 3：军师实时战况推演动态输出
+     *
+     * @param patrolRunning 敌袭巡检守护**当前是否真的在运行**。
+     *   这个参数是必要的：原实现无条件宣称"雷达哨兵保持 1.5s 周期巡查"，
+     *   而 ① 1.5 秒这个数字从来没有出处（真实周期来自知识库的
+     *   `raidPatrolIntervalMs`，率土 4000ms / 三战 5000ms），
+     *   ② 巡检可能根本没在跑。也就是说它在向用户陈述**两件都不成立的事实**。
      */
-    fun generateAdvisorLiveStream(statusText: String, activeOrder: TacticalOrder?): String {
+    fun generateAdvisorLiveStream(
+        statusText: String,
+        activeOrder: TacticalOrder?,
+        patrolRunning: Boolean = false
+    ): String {
         val timeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
         return if (activeOrder != null) {
             "[$timeStr 诸葛军师推演] 正在执行军令【${activeOrder.intent.desc}·${activeOrder.targetName}】。" +
-                    "预计提前${activeOrder.advanceSeconds}秒铺路压秒，当前状态：$statusText。安全守门员持续护航中。"
+                    "预计提前${activeOrder.advanceSeconds}秒铺路压秒，当前状态：$statusText。"
         } else {
-            "[$timeStr 诸葛军师推演] 当前大地图局势平稳，未检测到突发敌袭警报。雷达哨兵保持 1.5s 周期巡查。"
+            // 只陈述可核实的内容：真实的 statusText + 巡检守护的运行状态与其**配置**周期。
+            // 不再编造"局势平稳"（引擎无从得知）与"1.5s 周期"（数字无出处）。
+            val patrolSec = com.stzb.assistant.knowledge.KnowledgeBaseManager
+                .activeProfile.tacticalDefaults.raidPatrolIntervalMs / 1000.0
+            val patrolDesc = if (patrolRunning) {
+                "敌袭巡检守护运行中（配置周期 ${"%.1f".format(patrolSec)} 秒）"
+            } else {
+                "敌袭巡检守护未运行（配置周期 ${"%.1f".format(patrolSec)} 秒）——" +
+                    "需要时可在「巡检」页签开启"
+            }
+            "[$timeStr 诸葛军师推演] 当前状态：$statusText。$patrolDesc。"
         }
     }
 

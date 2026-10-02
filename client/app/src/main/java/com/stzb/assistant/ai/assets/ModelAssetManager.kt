@@ -5,26 +5,31 @@ import android.util.Log
 import java.io.File
 
 /**
- * 端侧 190MB 终极满血 AI 资产协同矩阵管理器 (ModelAssetManager)
- * 
- * 统一管理端侧四位一体 AI 核心的本地权重文件：
- *   1. YOLOv11s-MultiScale 多尺度目标检测引擎 (~14.5 MB)
- *   2. PP-OCRv4 Enhanced 专精离线字符引擎 (~12.5 MB)
- *   3. SLG Mobile-Embedding 向量检索知识库 HNSW (~25.0 MB)
- *   4. SmolLM2-360M / RWKV-250M 认知微脑大参数量化权重 (~110.0 MB)
- * 
- * 总模型资产：约 162.0 MB | 总 APK 体积：约 190.0 MB (严格卡位在微信 200MB 直发红线之内)
+ * 端侧模型资产可用性管理器 (ModelAssetManager)
+ *
+ * ## 事实澄清（重要）
+ * 本类原先对外宣称「190MB 四位一体满血 AI 矩阵」，并且在资产缺失时把**降级路径**
+ * 描述成"XX 通道就绪"，使"一个权重文件都没有"在界面上表现为"全部就绪"。
+ * 把失败伪装成成功比功能缺失更有害：它会让人把故障归因到别处。
+ *
+ * 已核实的现状：
+ *   * `assets/models/` 下**只有一份 README.md**；YOLO / RAG / 微脑三类权重
+ *     一个都不存在。仓库自带的 CI 工作流曾用 `os.urandom()` 生成同尺寸随机字节
+ *     来"补齐"它们，于是产物里的"190MB 模型"是纯噪声（该步骤已删除）。
+ *   * 工程里**真实存在**的模型资产只有三套 PP-OCRv3 ncnn 模型，位于 `assets/` 根目录：
+ *     `ch_PP-OCRv3_det_infer.param/.bin`、`ch_PP-OCRv3_rec_infer.param/.bin`、
+ *     `ch_ppocr_mobile_v2.0_cls_infer.param/.bin`，以及字典 `ppocr_keys_v1.txt`。
+ *   * **但「文件存在」不等于「能识别」**：`OcrEngine` 走 JNI，需要构建期链接
+ *     ncnn + OpenCV 才会编出真正的推理实现；否则编译的是 `OcrStub.cpp` 空桩，
+ *     它会静默返回空文本。本类无法代替构建期判断，因此额外提供
+ *     [OcrManager 侧的运行期探针]与 `describeAvailability()` 的显式提示。
+ *
+ * 本类现在的职责只有一条：**如实回答「有没有、多大、缺什么」**，
+ * 不再存在任何「降级即就绪」的措辞。
  */
 object ModelAssetManager {
 
     private const val TAG = "ModelAssetManager"
-
-    data class ModelStatus(
-        val modelName: String,
-        val targetSizeDesc: String,
-        val isReady: Boolean,
-        val localPath: String?
-    )
 
     fun getModelsDirectory(context: Context): File {
         val dir = File(context.filesDir, "models")
@@ -35,112 +40,178 @@ object ModelAssetManager {
     }
 
     /**
-     * 检查端侧视觉 YOLO 目标检测器权重 (优先探测 v11s 多尺度，兼容 v8n)
+     * 一项能力的资产判定条件。
+     *
+     * @param displayName 展示名
+     * @param alternatives 备选组合：每个组合内的**所有** assets 相对路径都必须存在，
+     *                     任一组合全部满足即视为该能力资产齐备
+     * @param purpose 该能力负责什么
+     * @param buildRequirement 除文件之外的构建期前置条件（没有就写 null）
      */
-    fun isYoloReady(context: Context): Boolean {
-        val dir = getModelsDirectory(context)
-        val file11 = File(dir, "yolov11s_multiscale_stzb.bin")
-        val file8 = File(dir, "yolov8n_stzb.bin")
-        if ((file11.exists() && file11.length() > 500 * 1024) || (file8.exists() && file8.length() > 100 * 1024)) return true
+    private data class Capability(
+        val displayName: String,
+        val alternatives: List<List<String>>,
+        val purpose: String,
+        val buildRequirement: String?
+    )
 
-        return try {
-            val assets = context.assets.list("models")
-            assets?.any { it.contains("yolo") } == true
-        } catch (e: Exception) {
-            false
+    /**
+     * OCR 资产。注意路径差异：
+     *   - PP-OCRv3 是工程内真实存在的资产，放在 `assets/` **根目录**
+     *     （`OcrEngine.kt` 传的是基名，native 侧自行拼 `.param`/`.bin`）；
+     *   - PP-OCRv4 是历史宣传里的命名，若将来补入则放在 `assets/models/`。
+     */
+    private val OCR = Capability(
+        displayName = "OCR 文本识别 (PP-OCR DBNet + CRNN)",
+        alternatives = listOf(
+            listOf(
+                "ch_PP-OCRv3_det_infer.param", "ch_PP-OCRv3_det_infer.bin",
+                "ch_PP-OCRv3_rec_infer.param", "ch_PP-OCRv3_rec_infer.bin"
+            ),
+            listOf("models/ch_PP-OCRv4_det.bin", "models/ch_PP-OCRv4_rec.bin")
+        ),
+        purpose = "体力/士气/坐标/倒计时/按键文字识别——所有依赖文字的判断都建立在其之上",
+        buildRequirement = "构建期必须提供 ncnn + OpenCV 给 CMake，否则 native 走空桩、识别恒为空"
+    )
+
+    private val YOLO = Capability(
+        displayName = "YOLO 视觉目标检测",
+        alternatives = listOf(
+            listOf("models/yolov11s_multiscale_stzb.bin"),
+            listOf("models/yolov8n_stzb.bin")
+        ),
+        purpose = "出征/驻守/确定等按键与行军红线的视觉检测",
+        buildRequirement = "需实现 C++ 推理与 JNI 绑定；当前 YoloDetector 的 native 通道是空实现"
+    )
+
+    private val RAG = Capability(
+        displayName = "战法向量检索库 (HNSW)",
+        alternatives = listOf(listOf("models/slg_knowledge_vector_hnsw.bin")),
+        purpose = "战法/武将语义检索",
+        buildRequirement = "需配套 embedding 模型与检索代码，当前工程内无任何检索实现"
+    )
+
+    private val SLM = Capability(
+        displayName = "端侧认知微脑 (GGUF)",
+        alternatives = listOf(
+            listOf("models/slm_microbrain_360m.bin"),
+            listOf("models/slm_microbrain_135m.bin")
+        ),
+        purpose = "军令自然语言推理与战报诊断",
+        buildRequirement = "需 GGUF/MNN 运行时；当前 EdgeSlmEngine 为纯正则实现，权重从未参与推理"
+    )
+
+    private val CAPABILITIES = listOf(OCR, YOLO, RAG, SLM)
+
+    data class ModelStatus(
+        val modelName: String,
+        val isReady: Boolean,
+        val detail: String
+    )
+
+    /** 判定单个能力，返回命中的那组资产路径；未命中返回 null。 */
+    private fun locate(context: Context, cap: Capability): List<String>? {
+        for (group in cap.alternatives) {
+            val allPresent = group.all { assetSize(context, it) > 0L }
+            if (allPresent) return group
         }
+        return null
     }
 
     /**
-     * 检查端侧 RapidOCR 离线模型文件
+     * 读取 assets 中文件的真实字节数；不存在返回 -1。
+     *
+     * `openFd` 只对未压缩资产有效，`build.gradle` 已对 bin/param/gguf/tflite/onnx
+     * 关闭压缩，因此正常路径走 `openFd`；失败时退回 `available()`。
      */
-    fun isOcrReady(context: Context): Boolean {
-        val dir = getModelsDirectory(context)
-        val det = File(dir, "ch_PP-OCRv4_det.bin")
-        val rec = File(dir, "ch_PP-OCRv4_rec.bin")
-        if (det.exists() && rec.exists()) return true
-
+    private fun assetSize(context: Context, assetPath: String): Long {
         return try {
-            val assets = context.assets.list("models")
-            assets?.contains("ch_PP-OCRv4_det.bin") == true
+            context.assets.openFd(assetPath).use { it.length }
         } catch (e: Exception) {
-            false
+            try {
+                context.assets.open(assetPath).use { it.available().toLong() }
+            } catch (e2: Exception) {
+                -1L
+            }
         }
     }
 
-    /**
-     * 检查端侧战法向量 RAG 检索模型库
-     */
-    fun isRagVectorReady(context: Context): Boolean {
-        val dir = getModelsDirectory(context)
-        val rag = File(dir, "slg_knowledge_vector_hnsw.bin")
-        if (rag.exists() && rag.length() > 5 * 1024 * 1024) return true
+    fun isOcrReady(context: Context): Boolean = locate(context, OCR) != null
 
-        return try {
-            val assets = context.assets.list("models")
-            assets?.contains("slg_knowledge_vector_hnsw.bin") == true
-        } catch (e: Exception) {
-            false
-        }
-    }
+    fun isYoloReady(context: Context): Boolean = locate(context, YOLO) != null
+
+    fun isRagVectorReady(context: Context): Boolean = locate(context, RAG) != null
+
+    fun isMicroBrainReady(context: Context): Boolean = locate(context, SLM) != null
 
     /**
-     * 检查端侧认知微脑 (优先探测 360M 大参数模型，兼容 135M)
-     */
-    fun isMicroBrainReady(context: Context): Boolean {
-        val dir = getModelsDirectory(context)
-        val slm360 = File(dir, "slm_microbrain_360m.bin")
-        val slm135 = File(dir, "slm_microbrain_135m.bin")
-        if ((slm360.exists() && slm360.length() > 20 * 1024 * 1024) ||
-            (slm135.exists() && slm135.length() > 10 * 1024 * 1024)) return true
-
-        return try {
-            val assets = context.assets.list("models")
-            assets?.any { it.contains("slm") || it.contains("smollm") || it.contains("rwkv") } == true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * 获取全系统端侧模型部署体检报告 (四位一体全满血矩阵)
+     * 诚实的资产体检报告。缺失时明确写「缺失」，
+     * 不再出现「智能空间几何容灾通道就绪」这类伪装就绪的措辞。
      */
     fun getFullDiagnosticReport(context: Context): List<ModelStatus> {
-        val yoloReady = isYoloReady(context)
-        val ocrReady = isOcrReady(context)
-        val ragReady = isRagVectorReady(context)
-        val slmReady = isMicroBrainReady(context)
-
-        return listOf(
-            ModelStatus(
-                modelName = "YOLOv11s 多尺度视觉感知引擎",
-                targetSizeDesc = "约 14.5 MB (多尺度FPN)",
-                isReady = yoloReady,
-                localPath = if (yoloReady) "已就绪 (大地图全缩放感知)" else "智能空间几何容灾通道就绪"
-            ),
-            ModelStatus(
-                modelName = "PP-OCRv4 Enhanced 专精离线字符引擎",
-                targetSizeDesc = "约 12.5 MB (INT8高精字库)",
-                isReady = ocrReady,
-                localPath = if (ocrReady) "已就绪 (99.9% 战报识别率)" else "RapidOcr Native 通道就绪"
-            ),
-            ModelStatus(
-                modelName = "SLG Mobile-Embedding 向量检索知识库 (RAG)",
-                targetSizeDesc = "约 25.0 MB (HNSW 5ms 秒检)",
-                isReady = ragReady,
-                localPath = if (ragReady) "已就绪 (500武将800战法零幻觉)" else "本地规则树通道就绪"
-            ),
-            ModelStatus(
-                modelName = "SmolLM2-360M 端侧认知战术微脑",
-                targetSizeDesc = "约 110.0 MB (INT4 GGUF)",
-                isReady = slmReady,
-                localPath = if (slmReady) "已就绪 (2.7倍参数跃升/多步长链推演)" else "高精军令语义提取引擎就绪"
-            )
-        )
+        return CAPABILITIES.map { cap ->
+            val hit = locate(context, cap)
+            val detail = if (hit != null) {
+                val total = hit.sumOf { assetSize(context, it).coerceAtLeast(0L) }
+                buildString {
+                    append("✅ 资产齐备 (${hit.joinToString(", ")}，共 ${formatBytes(total)})")
+                    if (cap.buildRequirement != null) {
+                        append("；注意：${cap.buildRequirement}")
+                    }
+                }
+            } else {
+                buildString {
+                    append("❌ 资产缺失 — ${cap.purpose}")
+                    append("；期望路径：")
+                    append(cap.alternatives.joinToString(" 或 ") { it.joinToString(" + ") })
+                    if (cap.buildRequirement != null) {
+                        append("；${cap.buildRequirement}")
+                    }
+                }
+            }
+            ModelStatus(modelName = cap.displayName, isReady = hit != null, detail = detail)
+        }
     }
 
     /**
-     * 获取指定模型的本地可执行路径（优先使用 App 私有沙盒，若无则从 Assets 自动解压映射）
+     * 把 assets 中 `models/` 下的候选权重预解压到沙盒，返回**实际成功**的项数。
+     *
+     * 旧实现把每个 `getOrExtractModelPath` 的返回值直接丢弃，于是"一个文件都没有"
+     * 与"162MB 全部解压成功"在调用方看来毫无区别。
+     */
+    fun preloadAllBuiltinModels(context: Context): Int {
+        var extracted = 0
+        for (cap in CAPABILITIES) {
+            for (group in cap.alternatives) {
+                for (path in group) {
+                    if (!path.startsWith("models/")) continue
+                    val name = path.removePrefix("models/")
+                    if (getOrExtractModelPath(context, name) != null) {
+                        extracted++
+                    }
+                }
+            }
+        }
+        Log.i(TAG, "模型预解压完成：成功 $extracted 个文件。")
+        return extracted
+    }
+
+    /**
+     * 生成可直接打进 logcat 的可用性摘要。
+     * 用户报「识别不了」时，先看这一行即可判断是模型缺失、还是构建期没链接 ncnn。
+     */
+    fun describeAvailability(context: Context): String {
+        preloadAllBuiltinModels(context)
+        val report = getFullDiagnosticReport(context)
+        val ready = report.count { it.isReady }
+        val sb = StringBuilder("模型资产: $ready/${report.size} 项资产齐备")
+        report.forEach { sb.append("\n  ").append(it.detail) }
+        return sb.toString()
+    }
+
+    /**
+     * 获取指定模型的本地可执行路径（优先 App 私有沙盒，其次从 `assets/models/` 解压）。
+     * 资产不存在时返回 null —— 调用方必须处理 null，不要假定"总是可用"。
      */
     fun getOrExtractModelPath(context: Context, modelName: String): String? {
         val targetFile = File(getModelsDirectory(context), modelName)
@@ -157,7 +228,7 @@ object ModelAssetManager {
                     input.copyTo(output)
                 }
             }
-            Log.i(TAG, "从 assets/models 成功提取模型: $modelName (大小: ${targetFile.length()} 字节)")
+            Log.i(TAG, "从 assets/models 提取模型: $modelName (${targetFile.length()} 字节)")
             targetFile.absolutePath
         } catch (e: Exception) {
             Log.e(TAG, "从 assets 提取模型 $modelName 失败: ${e.message}")
@@ -165,21 +236,11 @@ object ModelAssetManager {
         }
     }
 
-    /**
-     * 自动解压并就绪所有内置模型 (190MB 终极四位一体矩阵)
-     */
-    fun preloadAllBuiltinModels(context: Context) {
-        val models = listOf(
-            "yolov11s_multiscale_stzb.bin",
-            "yolov8n_stzb.bin",
-            "ch_PP-OCRv4_det.bin",
-            "ch_PP-OCRv4_rec.bin",
-            "slg_knowledge_vector_hnsw.bin",
-            "slm_microbrain_360m.bin",
-            "slm_microbrain_135m.bin"
-        )
-        for (m in models) {
-            getOrExtractModelPath(context, m)
+    private fun formatBytes(bytes: Long): String {
+        return when {
+            bytes >= 1024L * 1024 -> "%.1f MB".format(bytes / 1024.0 / 1024.0)
+            bytes >= 1024L -> "%.1f KB".format(bytes / 1024.0)
+            else -> "$bytes B"
         }
     }
 }

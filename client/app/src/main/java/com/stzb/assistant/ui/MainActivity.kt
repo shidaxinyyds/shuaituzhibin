@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -21,7 +22,6 @@ import com.stzb.assistant.R
 import com.stzb.assistant.service.AutoTouchService
 import com.stzb.assistant.service.FloatOverlayService
 import com.stzb.assistant.service.ScreenCaptureService
-import com.stzb.assistant.service.ShizukuTouchManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -30,9 +30,14 @@ import kotlinx.coroutines.launch
  * 商业化主控台 (MainActivity)
  *
  * 仅保留普通用户真正需要的两块能力：
- *   1. 运行环境：三项权限一键直达系统设置，开启后实时变绿；
+ *   1. 运行环境：四项权限/服务一键直达系统设置，开启后实时变绿；
  *   2. 游戏知识库：切换/热更/打地指南。
  * 全部战术执行入口收敛到游戏内悬浮控制面板，主界面不再暴露调试/流水线按钮。
+ *
+ * 触控通道：**仅保留系统无障碍手势通道**。原先并列的 Shizuku 通道已彻底移除——
+ * 它要求用户额外安装 Shizuku 并开启无线调试，授权后又会独占点击链路
+ * （`EngineBridge` 一旦检测到 Shizuku 权限就不再回退无障碍），
+ * 属于典型的"用户看不见却左右行为"的坑，且与商业化开箱即用的目标冲突。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -46,13 +51,25 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvKnowledgeMessage: TextView
 
     private lateinit var tvLog: TextView
-    private lateinit var btnCapture: MaterialButton
     private lateinit var btnOverlay: MaterialButton
-    private lateinit var btnShizuku: MaterialButton
     private lateinit var btnAccessibility: MaterialButton
     private lateinit var btnToggleOverlay: MaterialButton
+    private lateinit var btnCapture: MaterialButton
 
-    private var isOverlayShown = false
+    // 授权与激活
+    private lateinit var tvLicenseStatus: TextView
+    private lateinit var btnActivateLicense: MaterialButton
+    private lateinit var btnResetLicense: MaterialButton
+
+    // 文字识别（OCR）状态
+    private lateinit var tvOcrStatus: TextView
+    private lateinit var btnOcrDiagnostics: MaterialButton
+
+    /**
+     * OCR 初始化在 `App` 里是**异步预热**的，刚进界面时可能还没出结果。
+     * 用它延迟补刷，避免界面一直停在"正在初始化…"。
+     */
+    private val uiHandler = android.os.Handler(android.os.Looper.getMainLooper())
 
     private val captureLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -79,12 +96,27 @@ class MainActivity : AppCompatActivity() {
         setupButtons()
         checkPermissions()
         refreshKnowledgeUi()
+        // 把授权状态明确摆到界面上：当前工程处于"开发模式（无鉴权）"，
+        // 这件事必须在发布前被看见，而不是只躺在代码注释里。
+        refreshLicenseUi()
+        // OCR 状态：先立即读一次，再延迟补刷两次（App 里是异步预热的）
+        refreshOcrUi()
+        uiHandler.postDelayed({ refreshOcrUi() }, 1500L)
+        uiHandler.postDelayed({ refreshOcrUi() }, 4000L)
     }
 
     override fun onResume() {
         super.onResume()
         checkPermissions()
         refreshKnowledgeUi()
+        refreshLicenseUi()
+        refreshOcrUi()
+    }
+
+    override fun onDestroy() {
+        // 及时摘掉延迟任务，避免 Activity 已销毁后仍持有引用
+        uiHandler.removeCallbacksAndMessages(null)
+        super.onDestroy()
     }
 
     private fun initViews() {
@@ -97,15 +129,59 @@ class MainActivity : AppCompatActivity() {
         tvKnowledgeMessage = findViewById(R.id.tvKnowledgeMessage)
 
         tvLog = findViewById(R.id.tvLogOutput)
-        btnCapture = findViewById(R.id.btnScreenCapturePermission)
         btnOverlay = findViewById(R.id.btnOverlayPermission)
-        btnShizuku = findViewById(R.id.btnShizukuPermission)
         btnAccessibility = findViewById(R.id.btnAccessibilityPermission)
         btnToggleOverlay = findViewById(R.id.btnToggleOverlay)
+        btnCapture = findViewById(R.id.btnScreenCapturePermission)
+
+        tvLicenseStatus = findViewById(R.id.tvLicenseStatus)
+        btnActivateLicense = findViewById(R.id.btnActivateLicense)
+        btnResetLicense = findViewById(R.id.btnResetLicense)
+
+        tvOcrStatus = findViewById(R.id.tvOcrStatus)
+        btnOcrDiagnostics = findViewById(R.id.btnOcrDiagnostics)
     }
 
     private fun setupButtons() {
-        // 1. 一键直达：屏幕捕获
+        // 1. 一键直达：悬浮窗权限
+        btnOverlay.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            } else {
+                Toast.makeText(this, "悬浮窗权限已授予", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // 2. 一键直达：无障碍服务通道（唯一的触控通道，必开）
+        btnAccessibility.setOnClickListener {
+            openAccessibilitySettings()
+        }
+
+        // 3. 展开 / 隐藏悬浮胶囊（以服务生命周期为唯一状态源，不再用易失真的成员变量）
+        btnToggleOverlay.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+                Toast.makeText(this, "请先授予第 1 项悬浮窗权限", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            val intent = Intent(this, FloatOverlayService::class.java)
+            if (FloatOverlayService.isShowing) {
+                stopService(intent)
+                log("悬浮胶囊已关闭。")
+            } else {
+                startService(intent)
+                log("🟢 悬浮胶囊已显示，单击它即可展开战术总控面板。")
+            }
+            // 服务启停是异步的，延后一拍再刷新状态，避免读到中间态。
+            btnToggleOverlay.post { checkPermissions() }
+        }
+
+        // 4. 一键直达：屏幕捕获
         btnCapture.setOnClickListener {
             if (ScreenCaptureService.isCapturing.get()) {
                 val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
@@ -120,79 +196,176 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 2. 一键直达：悬浮窗权限
-        btnOverlay.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                )
-            } else {
-                Toast.makeText(this, "悬浮窗权限已授予", Toast.LENGTH_SHORT).show()
-            }
-        }
-
-        // 3. 一键直达：Shizuku 触控通道
-        btnShizuku.setOnClickListener {
-            when {
-                ShizukuTouchManager.hasPermission() -> {
-                    Toast.makeText(this, "Shizuku 触控通道已就绪，状态极佳 ✓", Toast.LENGTH_SHORT).show()
-                }
-                ShizukuTouchManager.isShizukuAvailable() -> {
-                    ShizukuTouchManager.requestPermission(this)
-                    Toast.makeText(this, "正在请求 Shizuku 底层授权...", Toast.LENGTH_SHORT).show()
-                }
-                else -> {
-                    // 尝试拉起 Shizuku 应用
-                    val shizukuIntent = packageManager.getLaunchIntentForPackage("moe.shizuku.privileged.api")
-                    if (shizukuIntent != null) {
-                        startActivity(shizukuIntent)
-                        Toast.makeText(this, "正在打开 Shizuku，请启动服务后返回", Toast.LENGTH_LONG).show()
-                    } else {
-                        // 一键直达系统开发者选项（无线调试）
-                        try {
-                            startActivity(Intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS))
-                            Toast.makeText(this, "未检测到 Shizuku，已直达开发者选项 (开启无线调试)；亦可直接开启第 4 项无障碍服务", Toast.LENGTH_LONG).show()
-                        } catch (e: Exception) {
-                            Toast.makeText(this, "建议安装 Shizuku，或直接开启下方第 4 项无障碍服务", Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
-            }
-        }
-
-        // 4. 一键直达：无障碍服务通道
-        btnAccessibility.setOnClickListener {
-            openAccessibilitySettings()
-        }
-
-        // 5. 展开 / 隐藏悬浮胶囊
-        btnToggleOverlay.setOnClickListener {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                Toast.makeText(this, "请先授予第 2 项悬浮窗权限", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
-            val intent = Intent(this, FloatOverlayService::class.java)
-            if (isOverlayShown) {
-                stopService(intent)
-                isOverlayShown = false
-                btnToggleOverlay.text = "5. 显示游戏悬浮胶囊"
-                log("悬浮胶囊已关闭。")
-            } else {
-                startService(intent)
-                isOverlayShown = true
-                btnToggleOverlay.text = "5. 隐藏游戏悬浮胶囊"
-                log("🟢 悬浮胶囊已显示，单击它即可展开战术总控面板。")
-            }
-        }
-
         // 游戏知识库
         btnSwitchGame.setOnClickListener { showGameSwitchDialog() }
         btnUpdateKnowledge.setOnClickListener { checkKnowledgeUpdate() }
         btnViewLandGuide.setOnClickListener { showLandGuide() }
+
+        // 授权与激活
+        btnActivateLicense.setOnClickListener { showActivationDialog() }
+        btnResetLicense.setOnClickListener { confirmResetLicense() }
+
+        // 文字识别（OCR）
+        btnOcrDiagnostics.setOnClickListener { showOcrDiagnostics() }
+    }
+
+    // ==========================================================
+    // 文字识别（OCR）状态
+    // ==========================================================
+
+    /**
+     * 刷新 OCR 状态显示。
+     *
+     * 为什么必须摆在主界面：默认构建里 native OCR 是空桩，而在此之前主界面
+     * **完全不显示**这一点——用户只能等某个战术流程莫名失败才发现"识别根本不存在"。
+     * 把这三种状态区分开，才不会把"还没初始化完"误报成"不可用"：
+     *   1. 尚未尝试初始化（异步预热中）→ 正在初始化
+     *   2. 就绪
+     *   3. 失败 → 展示具体原因
+     */
+    private fun refreshOcrUi() {
+        val ocr = com.stzb.assistant.ocr.OcrManager
+        val colorRes: Int
+        when {
+            ocr.isEngineAvailable -> {
+                tvOcrStatus.text = "文字识别（OCR）：✅ 引擎就绪（native 推理可用）"
+                colorRes = R.color.success
+            }
+            ocr.unavailableReason != null -> {
+                tvOcrStatus.text = buildString {
+                    append("文字识别（OCR）：❌ 不可用\n")
+                    append(ocr.unavailableReason)
+                    append("\n→ 场景判定、按键定位、坐标读取都依赖它，")
+                    append("请用带 ncnn/OpenCV 的方式构建后再试。")
+                }
+                colorRes = R.color.danger
+            }
+            else -> {
+                tvOcrStatus.text = "文字识别（OCR）：正在初始化…"
+                colorRes = R.color.text_secondary
+            }
+        }
+        tvOcrStatus.setTextColor(ContextCompat.getColor(this, colorRes))
+    }
+
+    /** 识别环境详情：把资产级的事实一次摊开，便于判断到底缺哪一块。 */
+    private fun showOcrDiagnostics() {
+        val ocr = com.stzb.assistant.ocr.OcrManager
+        val text = buildString {
+            append("【引擎状态】\n")
+            append(if (ocr.isEngineAvailable) "✅ 可用（native 推理已就绪）" else "❌ 不可用")
+            append('\n')
+            ocr.unavailableReason?.let { append("原因：$it\n") }
+            append("\n【资产与能力盘点】\n")
+            append(
+                try {
+                    com.stzb.assistant.ai.assets.ModelAssetManager.describeAvailability(this@MainActivity)
+                } catch (e: Exception) {
+                    "盘点失败: ${e.message}"
+                }
+            )
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("识别环境详情")
+            .setMessage(text)
+            .setPositiveButton("知道了", null)
+            .show()
+    }
+
+    // ==========================================================
+    // 授权与激活
+    // ==========================================================
+
+    /**
+     * 刷新授权状态显示。
+     *
+     * 这里刻意用醒目文案把「开发模式（无鉴权）」摆到界面上：当前工程就处于该状态，
+     * 若只写在代码注释里，很容易在不知情的情况下把没有付费墙的包发出去。
+     */
+    private fun refreshLicenseUi() {
+        val gate = com.stzb.assistant.license.LicenseGate
+        val state = gate.state(this)
+        tvLicenseStatus.text = gate.describe(this)
+        val colorRes = when (state) {
+            gate.State.DEV_OPEN -> R.color.warning
+            gate.State.LICENSED -> R.color.success
+            else -> R.color.danger
+        }
+        tvLicenseStatus.setTextColor(ContextCompat.getColor(this, colorRes))
+    }
+
+    /** 卡密激活对话框。 */
+    private fun showActivationDialog() {
+        val input = EditText(this).apply {
+            hint = "请输入卡密（如 STZB-XXXX-XXXX）"
+            setSingleLine()
+        }
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val container = android.widget.FrameLayout(this).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            addView(
+                input,
+                android.widget.FrameLayout.LayoutParams(
+                    android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+
+        val dialog = androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("激活卡密")
+            .setView(container)
+            .setPositiveButton("激活", null)
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(androidx.appcompat.app.AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener {
+                    val code = input.text.toString().trim()
+                    if (code.isEmpty()) {
+                        Toast.makeText(this, "激活码不能为空", Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    dialog.dismiss()
+                    performActivation(code)
+                }
+        }
+        dialog.show()
+    }
+
+    private fun performActivation(code: String) {
+        log("正在激活卡密: $code ...")
+        CoroutineScope(Dispatchers.Main).launch {
+            val result = com.stzb.assistant.license.LicenseManager.activateOnline(this@MainActivity, code)
+            result.onSuccess { info ->
+                // 注意：当 Supabase 端点仍是 `your-supabase-project` 占位符时，
+                // 这里会走"开发态离线签发"分支，cardType 会明确写着「（非真实授权）」。
+                // 界面上照原样显示，不要把它当成真实激活成功。
+                log("激活返回: ${info.message}")
+                Toast.makeText(this@MainActivity, info.message, Toast.LENGTH_LONG).show()
+            }.onFailure { err ->
+                log("❌ 激活失败: ${err.message}")
+                Toast.makeText(this@MainActivity, err.message ?: "激活失败", Toast.LENGTH_LONG).show()
+            }
+            refreshLicenseUi()
+        }
+    }
+
+    private fun confirmResetLicense() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("重置授权")
+            .setMessage(
+                "将清除本地凭证缓存。\n" +
+                    "· 开发模式下：下次检查会重新签发开发态凭证；\n" +
+                    "· 已关闭开发模式时：需要重新输入卡密才能执行战术动作。"
+            )
+            .setPositiveButton("确认重置") { _, _ ->
+                com.stzb.assistant.license.LicenseManager.clearLicense(this)
+                log("已清除本地授权缓存。")
+                refreshLicenseUi()
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun showGameSwitchDialog() {
@@ -291,27 +464,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissions() {
-        // 1. 屏幕捕获
-        val hasCapture = ScreenCaptureService.isCapturing.get()
-        btnCapture.text = if (hasCapture) "1. 屏幕捕获  运行中 ✓" else "1. 启动屏幕捕获"
-        markReady(btnCapture, hasCapture)
-
-        // 2. 悬浮窗权限
+        // 1. 悬浮窗权限（胶囊与准星取点的前置条件）
         val hasOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             Settings.canDrawOverlays(this)
         } else true
-        btnOverlay.text = if (hasOverlay) "2. 悬浮窗权限  已授予 ✓" else "2. 授予悬浮窗权限"
+        btnOverlay.text = if (hasOverlay) "1. 悬浮窗权限  已授予 ✓" else "1. 授予悬浮窗权限"
         markReady(btnOverlay, hasOverlay)
 
-        // 3. Shizuku 触控
-        val hasShizuku = ShizukuTouchManager.hasPermission()
-        btnShizuku.text = if (hasShizuku) "3. Shizuku 触控  已授权 ✓" else "3. 授权 Shizuku 触控"
-        markReady(btnShizuku, hasShizuku)
-
-        // 4. 无障碍服务通道
+        // 2. 无障碍服务通道（产品现在唯一的触控通道，必须开启）
         val hasAccessibility = AutoTouchService.isConnected || isAccessibilityServiceEnabled()
-        btnAccessibility.text = if (hasAccessibility) "4. 无障碍服务  已开启 ✓" else "4. 开启无障碍服务通道"
+        btnAccessibility.text = if (hasAccessibility) "2. 无障碍服务  已开启 ✓" else "2. 开启无障碍服务通道"
         markReady(btnAccessibility, hasAccessibility)
+
+        // 3. 游戏悬浮胶囊：状态直接取自服务生命周期，进程重建后也不会失真
+        val hasCapsule = FloatOverlayService.isShowing
+        btnToggleOverlay.text = if (hasCapsule) "3. 游戏悬浮胶囊  显示中 ✓" else "3. 显示游戏悬浮胶囊"
+        markReady(btnToggleOverlay, hasCapsule)
+
+        // 4. 屏幕捕获
+        val hasCapture = ScreenCaptureService.isCapturing.get()
+        btnCapture.text = if (hasCapture) "4. 屏幕捕获  运行中 ✓" else "4. 启动屏幕捕获"
+        markReady(btnCapture, hasCapture)
     }
 
     /**

@@ -24,6 +24,56 @@ data class GameProfile(
     val watchdogKeywords: List<String>
 ) {
     /**
+     * 把 "1.10.2" 这类版本号解析成可比较的数字序列。
+     * 非数字段按 0 处理，因此畸形版本号不会抛异常。
+     */
+    private fun versionParts(v: String): List<Int> =
+        v.trim().split('.', '-', '_', ' ').map { it.trim().toIntOrNull() ?: 0 }
+
+    /**
+     * 与 [other] 比较版本号：负数=更旧，0=相同，正数=更新。
+     *
+     * ⚠️ 为什么要专门写这个函数：[profileVersion] 是 `String`，
+     * 直接写 `a >= b` 是**字典序**比较，会得出错误结论：
+     *   `"9" >= "10"`      → true（'9' > '1'）—— 旧缓存压住了新内置版本
+     *   `"1.10.0" < "1.9.0"` → true        —— 真正的新版本反被拒绝
+     * 表现为"明明热更成功了，重启后又变回旧版"，或"怎么都热更不上去"。
+     */
+    fun compareVersion(other: String): Int {
+        val a = versionParts(profileVersion)
+        val b = versionParts(other)
+        for (i in 0 until maxOf(a.size, b.size)) {
+            val x = a.getOrElse(i) { 0 }
+            val y = b.getOrElse(i) { 0 }
+            if (x != y) return if (x > y) 1 else -1
+        }
+        return 0
+    }
+
+    /**
+     * 该知识库是否"看起来真的可用"。
+     *
+     * 为什么必须有这道闸：云端返回的 JSON 即使结构合法，也可能是**空壳**——
+     * [fromJson] 对缺失字段一律用默认值兜底，于是会"成功"解析出一个
+     * 守军库为空、按键表为空的配置。若直接采用并写盘，用户会**静默**失去
+     * 全部战术能力（守军评估没人可评、按键别名全空），而且下次冷启动还会继续用它。
+     *
+     * @return (是否可用, 不可用时的原因)
+     */
+    fun validateFor(expectedGameId: String): Pair<Boolean, String> {
+        if (gameId != expectedGameId) {
+            return false to "game_id 不匹配（内容=$gameId，期望=$expectedGameId）"
+        }
+        if (profileVersion.isBlank()) return false to "profile_version 为空"
+        val heroCount = defenderDb.dangerHeroes.size + defenderDb.hardHeroes.size +
+            defenderDb.moderateHeroes.size + defenderDb.safeHeroes.size
+        if (heroCount == 0) return false to "守军武将库为空（守军评估会完全失效）"
+        if (semanticButtons.isEmpty()) return false to "按键语义表为空（按键定位会退回枚举默认值）"
+        if (targetPackage.isBlank()) return false to "targetPackage 为空（无法判断游戏是否在前台）"
+        return true to "校验通过"
+    }
+
+    /**
      * 将知识库序列化为 JSON 字符串 (便于本地缓存或上传至 Supabase 后端)
      */
     fun toJson(): String {
@@ -46,8 +96,6 @@ data class GameProfile(
                 put("night_window_start_hour", rules.nightWindowStartHour)
                 put("night_window_end_hour", rules.nightWindowEndHour)
                 put("night_stamina_multiplier", rules.nightStaminaMultiplier)
-                put("screen_virtual_width", rules.screenVirtualWidth)
-                put("screen_virtual_height", rules.screenVirtualHeight)
             })
 
             // 2. 按键语义字典
@@ -138,9 +186,7 @@ data class GameProfile(
                 immunityPaddingMs = rObj.optLong("immunity_padding_ms", 1000L),
                 nightWindowStartHour = rObj.optInt("night_window_start_hour", 0),
                 nightWindowEndHour = rObj.optInt("night_window_end_hour", 7),
-                nightStaminaMultiplier = rObj.optDouble("night_stamina_multiplier", 1.0),
-                screenVirtualWidth = rObj.optInt("screen_virtual_width", 1280),
-                screenVirtualHeight = rObj.optInt("screen_virtual_height", 720)
+                nightStaminaMultiplier = rObj.optDouble("night_stamina_multiplier", 1.0)
             )
 
             // 2. Buttons
@@ -248,18 +294,62 @@ data class GameProfile(
  */
 data class GameRules(
     val maxStamina: Int = 120,                // 体力上限 (率土 120, 三战 120)
-    val staminaPerAction: Int = 20,            // 单次出征/行军体力消耗
+    val staminaPerAction: Int = 20,            // 单次出征/行军体力消耗 → 被 requiredStaminaNow() 使用
     val maxMorale: Int = 120,                 // 士气上限 (率土2026征服赛季为 120, 三战为 100)
-    val moraleStandard: Int = 100,            // 基准士气值 (无加成无减损基准)
-    val minMoraleForPaving: Int = 100,        // 铺路最小士气阈值
-    val immunityDurationSec: Int = 3600,       // 占领后免战时长 (默认 60 分钟 = 3600 秒)
-    val immunityPaddingMs: Long = 1000L,       // 00:00:01 破免压秒触敌提前量补偿
-    val nightWindowStartHour: Int = 0,         // 深夜雷达重点布防起始时间 (00:00)
-    val nightWindowEndHour: Int = 7,           // 深夜雷达重点布防结束时间 (07:00)
-    val nightStaminaMultiplier: Double = 1.0,  // 夜间体力消耗倍率 (率土为 1.0, 三战夜战为 2.0)
-    val screenVirtualWidth: Int = 1280,        // 720p 归一化基准宽
-    val screenVirtualHeight: Int = 720         // 720p 归一化基准高
-)
+    /**
+     * 基准士气值（无加成无减损基准）。
+     *
+     * ⚠️ 目前**仅作展示与配置留档**，没有任何决策读取它。
+     * 若将来要做"士气增减益换算"，应当从这里取基准，而不是再写一个 100。
+     */
+    val moraleStandard: Int = 100,
+    val minMoraleForPaving: Int = 100,        // 铺路最小士气阈值 → 被各战术流与无人托管使用
+    /**
+     * 占领后免战时长（默认 60 分钟）。
+     *
+     * ⚠️ 目前**仅作展示与配置留档**：`ImmunityBreakFlow` 的破免时刻是从画面上
+     * OCR 读到的倒计时反推的，并没有用这个配置值去估算。
+     * 留在这里是为了将来"读不到倒计时时用配置值兜底"这类用途。
+     */
+    val immunityDurationSec: Int = 3600,
+    val immunityPaddingMs: Long = 1000L,       // 00:00:01 破免压秒触敌提前量补偿 → 已接入攻城/定时/托管
+    val nightWindowStartHour: Int = 0,         // 夜间窗口起点 → 被 isNightNow() 使用
+    val nightWindowEndHour: Int = 7,           // 夜间窗口终点 → 被 isNightNow() 使用
+    val nightStaminaMultiplier: Double = 1.0  // 夜间体力消耗倍率 → 被 requiredStaminaNow() 使用
+) {
+    /*
+     * 说明：这里刻意**不再**定义 screenVirtualWidth / screenVirtualHeight。
+     *
+     * 它们曾经存在，但从未被任何代码读取——而设计画布尺寸的唯一权威是
+     * `CoordinateTransformer`（它按真实屏幕长宽比动态推导）。留着这两项等于
+     * 留着"第二套基准"，一旦有人误用就会得到与 CoordinateTransformer 不一致的坐标。
+     * 因此直接移除，而不是保留一个看起来能用、实则无人维护的字段。
+     */
+
+    /** 当前是否落在知识库定义的夜间窗口内。 */
+    fun isNightNow(
+        nowHour: Int = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    ): Boolean =
+        if (nightWindowStartHour <= nightWindowEndHour) {
+            nowHour in nightWindowStartHour until nightWindowEndHour
+        } else {
+            // 跨零点窗口，例如 22:00 ~ 07:00
+            nowHour >= nightWindowStartHour || nowHour < nightWindowEndHour
+        }
+
+    /**
+     * 当前这一次出征实际需要的最小体力。
+     *
+     * 单次消耗取自 [staminaPerAction]，夜间按 [nightStaminaMultiplier] 放大
+     * （三战夜战为双倍）。这样这两个字段才真正参与判定，而不是躺在 JSON 里当装饰。
+     */
+    fun requiredStaminaNow(
+        nowHour: Int = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+    ): Int {
+        val mul = if (isNightNow(nowHour)) nightStaminaMultiplier else 1.0
+        return maxOf(1, Math.round(staminaPerAction * mul).toInt())
+    }
+}
 
 /**
  * 语义按键与 OCR 容错别名定义

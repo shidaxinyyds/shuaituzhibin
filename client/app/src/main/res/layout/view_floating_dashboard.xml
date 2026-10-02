@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  展开式战术 HUD 控制台。
+
+  注意：本布局用 `inflate(R.layout.view_floating_dashboard, null)` 加载，
+  根节点不会生成 LayoutParams，所以这里的 layout_width 不会生效——
+  窗口宽度由 OverlayWindowManager 的 dashboardParams 决定
+  （屏宽 × DASHBOARD_WIDTH_RATIO，已按需求收窄三分之一）。
+  这里写 match_parent 是为了如实表达「铺满窗口」，避免再被误读成面板设计宽度。
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/dashboardRoot"
-    android:layout_width="320dp"
+    android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:background="@drawable/bg_dashboard"
     android:orientation="vertical"
@@ -136,6 +145,18 @@
                 android:paddingStart="10dp"
                 android:paddingEnd="10dp"
                 android:text="日志"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabCalibrate"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_tab_inactive"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="标定"
                 android:textColor="#B0BEC5"
                 android:textSize="11sp" />
         </LinearLayout>
@@ -358,10 +379,23 @@
                     android:layout_marginStart="4dp"
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
-                    android:text="智能巡查: 关"
+                    android:text="无人托管：关"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
             </LinearLayout>
+
+            <!-- 守军评估：让"打这块地会不会白送兵"这个能力真正可用。
+                 它此前在代码里是齐的（DefenderEvaluator + EngineBridge.evaluateDefenderPanel），
+                 但**没有任何调用方**——属于"实现了却没人用"。 -->
+            <Button
+                android:id="@+id/btnAdvisorEvaluateDefenders"
+                android:layout_width="match_parent"
+                android:layout_height="30dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/bg_pill"
+                android:text="🛡️ 评估当前守军（先打开「查看守军」面板再点）"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- 6. 定时任务面板 (支持用户可配置的定时计划) -->
@@ -376,7 +410,7 @@
                 android:id="@+id/tvScheduleSummary"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="📅 每日定时战术计划 (到点自动执行)"
+                android:text="📅 定时战术计划（完全由你编排，到点自动执行）"
                 android:textColor="#A7FFEB"
                 android:textSize="10sp" />
 
@@ -396,7 +430,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:fontFamily="monospace"
-                    android:text="加载定时任务中…"
+                    android:text="尚未编排任何定时任务"
                     android:textColor="#B2DFDB"
                     android:textSize="11sp" />
             </ScrollView>
@@ -413,7 +447,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
-                    android:text="+ 快速添加定时"
+                    android:text="＋ 新建定时任务"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
 
@@ -424,7 +458,7 @@
                     android:layout_marginStart="4dp"
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
-                    android:text="恢复默认计划"
+                    android:text="管理任务"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
             </LinearLayout>
@@ -455,6 +489,153 @@
                     android:text="日志就绪…"
                     android:textColor="#81C784"
                     android:textSize="10sp" />
+            </ScrollView>
+        </LinearLayout>
+
+        <!--
+          8. 标定面板
+          这是本项目唯一能让"世界坐标"与"关键 UI 锚点"真正对上的入口。
+          没有它，MapProjection / UiAnchors 的默认值在真机上就只是折算出来的猜测，
+          而"点不准"正是这么来的。内容区高度固定 140dp，因此这里用 ScrollView 承载。
+        -->
+        <LinearLayout
+            android:id="@+id/panelCalibrate"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_pill"
+            android:orientation="vertical"
+            android:padding="6dp"
+            android:visibility="gone">
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:fillViewport="true"
+                android:scrollbars="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/tvCalibrateStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="标定状态加载中…"
+                        android:textColor="#FFE082"
+                        android:textSize="10sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibReadHud"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="① 读取 HUD 坐标并记为基地"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibPickTile"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="② 点选一块地并输入它的坐标"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibTwoPoint"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="③ 两点标定（HUD 读不到时用）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibBlankPoint"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="④ 标定地图空白点（收起浮层用）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibFingerprint"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑤ 记录场景指纹（须站在大地图）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibFingerprintClear"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="清除场景指纹"
+                        android:textColor="#EF9A9A"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibTroopTabs"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑥ 标定出征部队标签（逐个点选）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibRois"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑦ 标定识别区域（先后点左上、右下）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibButtonTemplate"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑧ 登记按键模板（OCR 不可用也能点准）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibTryMatch"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑨ 试匹配已登记按键（当场看能不能定位）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnCalibReset"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="清除全部标定"
+                        android:textColor="#EF9A9A"
+                        android:textSize="11sp" />
+                </LinearLayout>
             </ScrollView>
         </LinearLayout>
 

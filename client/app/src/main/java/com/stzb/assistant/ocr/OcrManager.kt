@@ -18,11 +18,42 @@ object OcrManager {
     private var ocrEngine: OcrEngine? = null
     private var isInitialized = false
 
+    /**
+     * OCR 引擎是否真的可用。
+     *
+     * 为什么需要这个标志：native 层的空桩（`OcrStub.cpp`）过去会"成功初始化并返回空结果"，
+     * 于是"OCR 根本不存在"被伪装成"OCR 正常但暂时没识别到文字"，导致故障长期无法定位。
+     * 现在空桩会让 `init` 失败、构造抛异常，这个标志就会是 false，
+     * UI 与日志都能如实告诉用户"文字识别不可用"，而不是让所有战术流程静默超时。
+     */
+    @Volatile
+    var isEngineAvailable: Boolean = false
+        private set
+
+    /** 引擎不可用的具体原因，供界面与日志直接展示。 */
+    @Volatile
+    var unavailableReason: String? = null
+        private set
+
+    /** 避免每帧都刷同一条"引擎不可用"日志。 */
+    @Volatile
+    private var warnedEngineMissing = false
+
     // 预编译正则，提升极端高频识图性能
     private val PATTERN_STAMINA = Pattern.compile("(\\d{1,3})\\s*/\\s*120")
     private val PATTERN_COORDINATE = Pattern.compile("[Xx][：:\\s]*(\\d{1,4})[\\s,，]+[Yy][：:\\s]*(\\d{1,4})")
     private val PATTERN_COUNTDOWN = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*[:：]\\s*(\\d{2})")
     private val PATTERN_SHORT_COUNTDOWN = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})")
+
+    /**
+     * HUD 右上角「当前大地图坐标」的读数格式。
+     *
+     * 真实格式是 **城池/郡名 + 括号内的 "X,Y"**，例如 `武威 (228,132)`
+     * （取自真机截图）。原先只有 [PATTERN_COORDINATE] 那种
+     * `X: 521, Y: 890` 的写法，与游戏实际 HUD **不符**，所以这条识别从来没成功过，
+     * 世界坐标因此整条链路都是断的。
+     */
+    private val PATTERN_HUD_COORD = Pattern.compile("\\((\\d{1,4})\\s*[,，]\\s*(\\d{1,4})\\)")
 
     /**
      * 引擎初始化，在 Application 启动时异步预热
@@ -32,7 +63,7 @@ object OcrManager {
         if (isInitialized && ocrEngine != null) return true
         return try {
             Log.i(TAG, "正在初始化 RapidOCR 本地离线引擎...")
-            ocrEngine = OcrEngine(context.applicationContext).apply {
+            val engine = OcrEngine(context.applicationContext).apply {
                 padding = 20
                 boxScoreThresh = 0.5f
                 boxThresh = 0.3f
@@ -40,20 +71,42 @@ object OcrManager {
                 doAngle = false // 游戏文字均为标准横排，关闭角度检测提高 40% 速度
                 mostAngle = false
             }
+            ocrEngine = engine
             isInitialized = true
-            Log.i(TAG, "RapidOCR 引擎初始化成功，模型已加载进内存。")
+            isEngineAvailable = true
+            unavailableReason = null
+            warnedEngineMissing = false
+            // 注意措辞：此前这里写「模型已加载进内存」，而在空桩之上它同样会打印，
+            // 属于把"没加载"说成"已加载"。现在只在确认真引擎后才这样陈述。
+            Log.i(TAG, "RapidOCR 引擎初始化成功（native 推理已就绪）。")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "RapidOCR 初始化失败: ${e.message}", e)
+            ocrEngine = null
+            isInitialized = false
+            isEngineAvailable = false
+            unavailableReason =
+                "native OCR 不可用（构建期缺少 ncnn/OpenCV，或模型资产缺失）；" +
+                    "所有依赖文字的识别都会失败。原因: ${e.message}"
+            Log.e(TAG, unavailableReason, e)
             false
         }
     }
 
     /**
-     * 核心全量识别
+     * 核心全量识别。
+     *
+     * 返回 null 表示"引擎不可用/推理异常"——**这与"识别到 0 个文字"是两件事**，
+     * 调用方必须区分：前者应提示用户修复环境，后者才是正常的空画面。
      */
     fun detect(bitmap: Bitmap, maxSideLen: Int = 0): OcrResult? {
-        val engine = ocrEngine ?: return null
+        val engine = ocrEngine
+        if (engine == null) {
+            if (!warnedEngineMissing) {
+                warnedEngineMissing = true
+                Log.w(TAG, unavailableReason ?: "OCR 引擎未初始化，detect() 直接返回 null。")
+            }
+            return null
+        }
         return try {
             val emptyOutput = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
             engine.detect(bitmap, emptyOutput, maxSideLen)
@@ -110,6 +163,31 @@ object OcrManager {
             val m = shortMatcher.group(1)?.toLongOrNull() ?: 0L
             val s = shortMatcher.group(2)?.toLongOrNull() ?: 0L
             return m * 60 + s
+        }
+        return null
+    }
+
+    /**
+     * 从一段文本里解析 HUD 的大地图坐标读数，格式如 `武威 (228,132)`。
+     *
+     * 纯函数，不抓屏、不依赖引擎状态，便于单独验证正则是否正确。
+     *
+     * @return Pair(x, y)；未匹配返回 null。
+     */
+    fun parseHudWorldCoordinate(text: String): Pair<Int, Int>? {
+        if (text.isBlank()) return null
+        val m = PATTERN_HUD_COORD.matcher(text)
+        if (m.find()) {
+            val x = m.group(1)?.toIntOrNull()
+            val y = m.group(2)?.toIntOrNull()
+            if (x != null && y != null) return Pair(x, y)
+        }
+        // 兼容 "X: 521, Y: 890" 这类写法（部分界面/皮肤会这样显示）
+        val legacy = PATTERN_COORDINATE.matcher(text)
+        if (legacy.find()) {
+            val x = legacy.group(1)?.toIntOrNull()
+            val y = legacy.group(2)?.toIntOrNull()
+            if (x != null && y != null) return Pair(x, y)
         }
         return null
     }

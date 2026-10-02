@@ -71,7 +71,6 @@ class YoloDetector(private val context: Context) {
     }
 
     private var isNativeModelLoaded = false
-    private var modelFilePath: String? = null
 
     init {
         // 尝试探测本地存储或 assets 中的模型资产
@@ -86,14 +85,20 @@ class YoloDetector(private val context: Context) {
 
             if (finalPath != null && java.io.File(finalPath).length() > 50 * 1024) {
                 isNativeModelLoaded = true
-                modelFilePath = finalPath
-                Log.i(TAG, "YOLO 多尺度目标检测引擎离线权重加载成功: $finalPath")
+                // 措辞刻意保守：这里只证明"权重文件在"。
+                // 工程内的 runNativeYoloInference() 目前直接返回空列表，
+                // 说"加载成功/引擎就绪"会让人以为检测真的在跑。
+                Log.w(
+                    TAG,
+                    "发现 YOLO 权重文件 $finalPath，但当前没有可用的原生推理实现" +
+                        "（runNativeYoloInference 返回空），检测将走几何色度通道。"
+                )
             } else {
-                Log.w(TAG, "未在 assets/models 检测到 YOLO 权重，启用智能几何色度容灾通道")
+                Log.i(TAG, "未发现 YOLO 权重，目标检测走几何色度通道（这是当前唯一实现，非降级）。")
                 isNativeModelLoaded = false
             }
         } catch (e: Exception) {
-            Log.w(TAG, "初始化 YOLO 检测器: ${e.message}，已就绪智能容灾通道")
+            Log.w(TAG, "初始化 YOLO 检测器: ${e.message}")
             isNativeModelLoaded = false
         }
     }

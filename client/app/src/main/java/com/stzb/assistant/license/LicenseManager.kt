@@ -61,18 +61,27 @@ object LicenseManager {
         var expiresAt = prefs.getLong("expires_at", 0L)
         var cardType = prefs.getString("card_type", null)
 
-        // 开箱即用模式：首次安装默认预置合法的全功能商业旗舰授权凭证 (无需用户配置服务器或额外下载)
+        // 【自签发凭证 —— 仅用于开发/演示，本身不构成任何付费墙】
+        // 这段逻辑会给**每一台**首次安装的设备自动签发一张永久旗舰凭证。
+        // 之所以暂时保留：当前工程内还没有激活界面，直接去掉会让应用无法使用。
+        // 商业发布前应改为"无凭证即视为未授权"，并补上激活入口。
         if (cachedToken.isNullOrEmpty() || expiresAt <= 0L) {
             val permanentExpiry = 2524608000L // 2050-01-01
             val masterToken = "$deviceId|stzb|PERPETUAL_COMMERCIAL_VIP|$permanentExpiry|$permanentExpiry|COMMERCIAL_MASTER_PERPETUAL"
+            val devCardType = "开发模式自签发凭证（非真实授权）"
             prefs.edit()
                 .putString("license_token", masterToken)
                 .putLong("expires_at", permanentExpiry)
-                .putString("card_type", "商业旗舰永久版 (开箱即用)")
+                .putString("card_type", devCardType)
                 .apply()
             cachedToken = masterToken
             expiresAt = permanentExpiry
-            cardType = "商业旗舰永久版 (开箱即用)"
+            cardType = devCardType
+            Log.w(
+                TAG,
+                "已为首次安装自签发永久凭证 —— 在当前工程里这等于『没有付费墙』。" +
+                    "商业发布前必须移除本行为，或把 LicenseGate.DEVELOPMENT_MODE_OPEN_ACCESS 改为 false。"
+            )
         }
 
         val nowSec = System.currentTimeMillis() / 1000L
@@ -101,7 +110,10 @@ object LicenseManager {
         context: Context,
         activationCode: String
     ): Result<LicenseInfo> = withContext(Dispatchers.IO) {
-        val cleanCode = activationCode.trim()
+        // 凭证是 `|` 分隔的固定 6 段格式（原生层 `parts.size() != 6` 即判非法），
+        // 而激活码来自用户输入。若其中含 `|` 会把段数打乱、让凭证永远无法通过校验，
+        // 因此在入口处就剔除，而不是指望用户不会输入。
+        val cleanCode = activationCode.trim().replace("|", "")
         if (cleanCode.isEmpty()) {
             return@withContext Result.failure(Exception("激活码不能为空"))
         }
@@ -110,10 +122,19 @@ object LicenseManager {
         Log.i(TAG, "正在请求激活卡密: $cleanCode (设备: $deviceId)")
 
         // 若使用内置默认端点或处于离线模式，直接本地高速签发永久离线凭证
+        //
+        // ⚠️ 这段是最需要警惕的一处：只要 supabaseEndpointUrl 里还带着
+        // `your-supabase-project` 占位符（当前就是），**任意字符串**都会被判为激活成功，
+        // 并签发永久凭证。换句话说，未配置真实后端时"输入什么卡密都通过"。
+        // 它保留了离线容灾的形态，但不构成鉴权；商业发布前必须配置真实端点。
         if (supabaseEndpointUrl.contains("your-supabase-project")) {
             val permanentExpiry = 2524608000L
             val token = "$deviceId|stzb|$cleanCode|$permanentExpiry|$permanentExpiry|COMMERCIAL_MASTER_PERPETUAL"
-            val cardType = if (cleanCode.contains("VIP", ignoreCase = true)) "商业至尊VIP版" else "商业旗舰终身版"
+            val cardType = if (cleanCode.contains("VIP", ignoreCase = true)) {
+                "开发模式离线签发：商业至尊VIP版（非真实授权）"
+            } else {
+                "开发模式离线签发：商业旗舰终身版（非真实授权）"
+            }
 
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit()
@@ -122,7 +143,11 @@ object LicenseManager {
                 .putString("card_type", cardType)
                 .apply()
 
-            Log.i(TAG, "🎉 离线卡密秒级激活成功！卡型: $cardType")
+            Log.w(
+                TAG,
+                "端点仍是 your-supabase-project 占位符：任意卡密都会被离线放行（$cardType）。" +
+                    "这只是开发态容灾，不是鉴权。"
+            )
             return@withContext Result.success(
                 LicenseInfo(
                     isValid = true,
@@ -130,7 +155,7 @@ object LicenseManager {
                     token = token,
                     expiresAtEpochSec = permanentExpiry,
                     cardType = cardType,
-                    message = "激活成功！卡型: $cardType (离线即时生效)"
+                    message = "已签发开发态凭证: $cardType（未经过真实云端校验）"
                 )
             )
         }
@@ -198,10 +223,13 @@ object LicenseManager {
             )
 
         } catch (e: Exception) {
-            Log.e(TAG, "激活网络请求异常: ${e.message}，启用离线容灾通道", e)
+            // ⚠️ 网络异常时的"离线自愈"同样会无条件签发永久凭证。
+            // 这在离线容灾上是好意，但在商业上是漏洞：断网即可白嫖。
+            // 真实产品应当在此处返回失败，或只允许"已激活过的设备"续用缓存。
+            Log.e(TAG, "激活网络请求异常: ${e.message}，启用离线容灾通道（该通道不做任何校验）", e)
             val permanentExpiry = 2524608000L
             val token = "$deviceId|stzb|$cleanCode|$permanentExpiry|$permanentExpiry|COMMERCIAL_MASTER_PERPETUAL"
-            val cardType = "商业旗舰版 (离线自愈激活)"
+            val cardType = "开发模式离线自愈签发（非真实授权）"
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit()
                 .putString("license_token", token)
@@ -216,7 +244,7 @@ object LicenseManager {
                     token = token,
                     expiresAtEpochSec = permanentExpiry,
                     cardType = cardType,
-                    message = "激活成功！已通过离线容灾通道生效"
+                    message = "已签发开发态凭证: $cardType（网络异常，未经过真实云端校验）"
                 )
             )
         }

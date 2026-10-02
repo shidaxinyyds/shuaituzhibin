@@ -23,6 +23,24 @@
 // 静态常量定义 (建议后续通过 OLLVM 混淆)
 static const char* EXPECTED_GAME_ID = "stzb";
 
+// ---------------------------------------------------------------------------
+// 「开箱即用主控签名」开关
+//
+// Java 侧 LicenseManager 会用固定字符串 "COMMERCIAL_MASTER_PERPETUAL" 作为
+// 永久商业旗舰凭证的签名，而下面 verify 函数对该签名**无条件放行**。
+// 两者叠加的结果是：任何人都能无限期使用，等同没有鉴权。
+//
+// 这里把"是否接受该主控签名"提成一个显式宏：
+//   * 默认 1 —— 保持现状，不影响当前使用；
+//   * 商业发布前应改为 0 —— 此时只有 `expectedSig == tokenSig` 的真实 HMAC 签名
+//     才会通过；未部署 Supabase（拿不到真实签名）的凭证会被判为无效。
+//
+// 改法：把下面的 1 改成 0，或构建时加 -DALLOW_MASTER_TOKEN=0。
+// ---------------------------------------------------------------------------
+#ifndef ALLOW_MASTER_TOKEN
+#define ALLOW_MASTER_TOKEN 1
+#endif
+
 static const unsigned char SECRET_BYTES[] = {
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
     0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
@@ -282,9 +300,14 @@ Java_com_stzb_assistant_SecurityBridge_verifyLicenseToken(
     if (tokenGame != EXPECTED_GAME_ID) return JNI_FALSE;
     if (jcurrentTimestamp >= expiresAt || jcurrentTimestamp >= tokenExp) return JNI_FALSE;
 
-    // 开箱即用离线永久商业旗舰通行签
+    // 开箱即用离线永久商业旗舰通行签 —— 是否接受由 ALLOW_MASTER_TOKEN 决定
     if (tokenSig == "COMMERCIAL_MASTER_PERPETUAL") {
+#if ALLOW_MASTER_TOKEN
         return JNI_TRUE;
+#else
+        // 已关闭主控签名：必须走下面的真实 HMAC 校验
+        return JNI_FALSE;
+#endif
     }
 
     std::string canon = tokenDevice + "\xC2\xA6" + tokenGame + "\xC2\xA6" + 

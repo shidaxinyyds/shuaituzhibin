@@ -24,6 +24,7 @@ class FloatOverlayService : Service() {
         super.onCreate()
         Log.i(TAG, "🟢 正在启动游戏内常驻战术悬浮 UI 体系...")
         overlayManager = OverlayWindowManager(this)
+        isShowing = true
     }
 
     override fun onDestroy() {
@@ -31,9 +32,22 @@ class FloatOverlayService : Service() {
         Log.i(TAG, "⏹️ 销毁游戏内悬浮 UI 体系。")
         overlayManager?.destroy()
         overlayManager = null
+        isShowing = false
     }
 
     companion object {
         private const val TAG = "FloatOverlayService"
+
+        /**
+         * 悬浮胶囊体系是否真的在运行。
+         *
+         * 主界面曾用一个 Activity 成员变量 `isOverlayShown` 来判断，
+         * 但进程被回收或 Activity 重建后该变量必然失真，会出现
+         * 「按钮写着可显示、实际已在显示」的状态错乱。这里以服务生命周期
+         * 作为唯一事实来源，主界面只读不改。
+         */
+        @Volatile
+        var isShowing: Boolean = false
+            private set
     }
 }

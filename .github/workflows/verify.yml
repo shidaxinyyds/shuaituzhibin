@@ -1,0 +1,76 @@
+name: Static Verification
+
+# ============================================================================
+# 本工作流**不需要** JDK / Android SDK / NDK，因此很快，适合每次 push / PR 都跑。
+#
+# 它盯的是那些"编译期不报错、但会在运行期或 CI 里炸"的问题：
+#   * 资源引用一致性（R.id/R.color/R.string/R.drawable/R.layout 与 XML 对账）
+#   * 成员引用一致性（枚举常量、关键对象成员是否真的有声明）
+#   * findViewById<T> 与 XML 元素类型是否兼容（不兼容会抛 ClassCastException）
+#   * 领域不变量（关键状态是否只在统一入口内维护）
+#   * native OCR 构建前置条件（include 路径、链接库、JNI 符号与签名、分支互斥）
+#   * workflow 的 shell 结构（if/fi、循环、case、引号配对）
+# 其中四类校验器还带**反例自测**（故意注入已知缺陷，断言能被抓到），
+# 避免"永远说 OK 的空转校验器"。
+#
+# 真机截图相关的那项（场景指纹实测）在 CI 里会被**跳过并说明**——
+# 真机截图不适合进仓库。要跑它需提供 --fingerprint-map。
+#
+# 注意：这些都是**静态**检查，不能替代真实的 Gradle/NDK 编译与真机验证。
+# ============================================================================
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static-checks:
+    name: Run static verification suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+
+      - name: Run all static checks
+        run: |
+          python tools/run_all_checks.py 2>&1 | tee static_checks.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Summarize results
+        if: always()
+        run: |
+          {
+            echo "## 静态校验结果"
+            echo ""
+            echo '```text'
+            tail -n 30 static_checks.log 2>/dev/null || echo "（无日志）"
+            echo '```'
+            echo ""
+            echo "说明：这些是静态检查，不能替代真实的 Gradle/NDK 编译与真机验证。"
+          } >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: static-checks-log
+          path: static_checks.log
+          retention-days: 14

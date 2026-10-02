@@ -39,60 +39,42 @@ jobs:
           chmod +x client/gradlew
           keytool -genkey -v -keystore client/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
 
-      - name: Provision All-in-One 162MB AI Model Weights (190MB Ultimate Suite)
+      - name: Verify Bundled Model Assets (no fabricated weights)
         run: |
-          mkdir -p client/app/src/main/assets/models
-          python3 -c "
-          import os
+          echo "==================== assets/ 实际内容 ===================="
+          find client/app/src/main/assets -type f -printf '%10s  %p\n' | sort -k2
+          echo "========================================================="
+          echo
+          echo "说明：本流程此前用 python os.urandom() 生成与宣传尺寸相同的随机字节，"
+          echo "冒充 YOLOv11s / PP-OCRv4 / HNSW 向量库 / SmolLM2-360M 四类权重。"
+          echo "后果有两个：产物里的'190MB 模型'是纯噪声，永远无法推理；"
+          echo "同时让 ModelAssetManager 的'就绪'判定全部通过，把失败伪装成成功。"
+          echo "该伪造步骤已移除——宁可体积小、并如实报告缺失，也不要假权重。"
+          echo
+          echo "当前真实存在的模型资产只有三套 PP-OCRv3 ncnn 模型（见上方列表）。"
+          echo
 
-          models_dir = 'client/app/src/main/assets/models'
-          os.makedirs(models_dir, exist_ok=True)
+          # OCR 是本项目唯一真实存在的视觉模型资产；缺失就必须显式失败，
+          # 避免打出"连文字都读不了"的包还当成功产物发布。
+          missing=0
+          for f in ch_PP-OCRv3_det_infer.param ch_PP-OCRv3_det_infer.bin \
+                   ch_PP-OCRv3_rec_infer.param ch_PP-OCRv3_rec_infer.bin \
+                   ppocr_keys_v1.txt ; do
+            p="client/app/src/main/assets/$f"
+            if [ ! -s "$p" ]; then
+              echo "❌ 缺少 OCR 资产: $p"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "✅ OCR 资产齐全。"
 
-          # 1. yolov11s_multiscale_stzb.bin (~14.5 MB)
-          yolo_path = os.path.join(models_dir, 'yolov11s_multiscale_stzb.bin')
-          if not os.path.exists(yolo_path):
-              with open(yolo_path, 'wb') as f:
-                  f.write(b'YOLOv11S_MULTISCALE_STZB_INT8\x00\x01\x00')
-                  f.write(os.urandom(14500000))
-              print(f'Created {yolo_path}: {os.path.getsize(yolo_path)} bytes')
-
-          # 2. ch_PP-OCRv4_det.bin (~4.8 MB)
-          det_path = os.path.join(models_dir, 'ch_PP-OCRv4_det.bin')
-          if not os.path.exists(det_path):
-              with open(det_path, 'wb') as f:
-                  f.write(b'PP_OCR_V4_DET_INT8\x00')
-                  f.write(os.urandom(4800000))
-              print(f'Created {det_path}: {os.path.getsize(det_path)} bytes')
-
-          # 3. ch_PP-OCRv4_rec.bin (~7.7 MB)
-          rec_path = os.path.join(models_dir, 'ch_PP-OCRv4_rec.bin')
-          if not os.path.exists(rec_path):
-              with open(rec_path, 'wb') as f:
-                  f.write(b'PP_OCR_V4_REC_ENHANCED_INT8\x00')
-                  f.write(os.urandom(7700000))
-              print(f'Created {rec_path}: {os.path.getsize(rec_path)} bytes')
-
-          # 4. slg_knowledge_vector_hnsw.bin (~25.0 MB)
-          rag_path = os.path.join(models_dir, 'slg_knowledge_vector_hnsw.bin')
-          if not os.path.exists(rag_path):
-              with open(rag_path, 'wb') as f:
-                  f.write(b'SLG_MOBILE_EMBEDDING_HNSW_INDEX\x00\x01')
-                  chunk = os.urandom(1024 * 1024)
-                  for _ in range(25):
-                      f.write(chunk)
-              print(f'Created {rag_path}: {os.path.getsize(rag_path)} bytes')
-
-          # 5. slm_microbrain_360m.bin (~110.0 MB)
-          slm_path = os.path.join(models_dir, 'slm_microbrain_360m.bin')
-          if not os.path.exists(slm_path):
-              with open(slm_path, 'wb') as f:
-                  f.write(b'SMOLLM2_360M_INT4_GGUF_CORE\x00\x02\x00')
-                  chunk = os.urandom(1024 * 1024)
-                  for _ in range(110):
-                      f.write(chunk)
-              print(f'Created {slm_path}: {os.path.getsize(slm_path)} bytes')
-          "
-          ls -lah client/app/src/main/assets/models/
+          echo
+          echo "⚠️ 构建期依赖提示：CMake 需要 ncnn + OpenCV 才会编译真正的 OCR 引擎"
+          echo "   （见 client/app/src/main/cpp/CMakeLists.txt）。若未提供，本次构建的是"
+          echo "   OcrStub 空桩，APK 内 OCR 不可用——运行时会明确报错而不再静默返回空结果。"
 
       - name: Build Commercial Release APK
         run: |

@@ -28,9 +28,7 @@ object SgzKnowledgeBase {
                 immunityPaddingMs = 1200L,
                 nightWindowStartHour = 0,
                 nightWindowEndHour = 6,
-                nightStaminaMultiplier = 2.0, // 三战夜战双倍体力消耗
-                screenVirtualWidth = 1280,
-                screenVirtualHeight = 720
+                nightStaminaMultiplier = 2.0 // 三战夜战双倍体力消耗
             ),
             semanticButtons = mapOf(
                 "ATTACK" to ButtonDef("ATTACK", "占领", listOf("占 领", "出征占领", "出兵")),

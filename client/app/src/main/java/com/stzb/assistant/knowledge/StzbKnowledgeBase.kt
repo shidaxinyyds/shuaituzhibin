@@ -28,9 +28,7 @@ object StzbKnowledgeBase {
                 immunityPaddingMs = 1000L,
                 nightWindowStartHour = 0,
                 nightWindowEndHour = 7,
-                nightStaminaMultiplier = 1.0,
-                screenVirtualWidth = 1280,
-                screenVirtualHeight = 720
+                nightStaminaMultiplier = 1.0
             ),
             semanticButtons = mapOf(
                 "ATTACK" to ButtonDef("ATTACK", "出征", listOf("确定出征", "出 征", "出征作战", "出兵")),

@@ -1,13 +1,14 @@
 package com.stzb.assistant.tactics
 
 import android.graphics.PointF
-import android.graphics.Rect
 import android.util.Log
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.ocr.TileStatusDetector
 import com.stzb.assistant.ocr.TroopStatusDetector
-import com.stzb.assistant.service.CoordinateTransformer
+import com.stzb.assistant.service.UiAnchors
 import com.stzb.assistant.service.EngineBridge
+import com.stzb.assistant.service.MapNavigator
+import com.stzb.assistant.service.MapProjection
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -36,7 +37,12 @@ class ImmunityBreakFlow(
         val mode: ImmunityMode,
         val targetTileCoord: PointF,
         val designatedTroopSlot: Int = 1,
-        val latencyCompensationMs: Long = 110L // 触控与网络时延补偿
+        val latencyCompensationMs: Long = 110L, // 触控与网络时延补偿
+        /**
+         * 目标地块的**世界坐标**（大地图格坐标）。提供且地图投影已标定时，
+         * 流程会先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
+         */
+        val targetWorldCoord: Pair<Int, Int>? = null
     )
 
     fun stop() {
@@ -88,14 +94,21 @@ class ImmunityBreakFlow(
             logInfo("⏱️ 目标地块免战解锁时间戳: $unlockTimestampMs (剩余: ${immunityStatus.remainingSeconds}秒)")
 
             // 3. 点击地块打开操作菜单
-            EngineBridge.tap(config.targetTileCoord.x, config.targetTileCoord.y)
+            //    已标定世界坐标时，先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
+            val tapPoint = resolveTileTapPoint(config)
+            EngineBridge.tap(tapPoint.x, tapPoint.y)
             EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2500)
 
-            // 4. 点击出征按键
-            EngineBridge.clickButton(StzbUiMatcher.ButtonType.ATTACK)
-            val dialogReady = EngineBridge.waitForState(StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG, 3000)
-            if (!dialogReady) {
-                logWarn("未能呼出出征面板，执行看门狗自愈...")
+            // 4. 点击出征并**当场确认选队面板弹出**（带原因诊断：能说清卡在哪一环）
+            //    注意：这里不是压秒点，压秒点在下面的【确定出征】，那一处刻意不动。
+            val attack = EngineBridge.clickAndExpect(
+                StzbUiMatcher.ButtonType.ATTACK,
+                StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+                timeoutMs = 3000L,
+                attempts = 2
+            )
+            if (!attack.ok) {
+                logWarn("未能进入出征选队面板：${attack.detail}")
                 WatchdogRecovery.recoverToMainMap()
                 return false
             }
@@ -108,12 +121,8 @@ class ImmunityBreakFlow(
             // 目标触敌时刻 = 破免时刻 + 1000ms (确保 00:00:01 触敌，杜绝提前 0.1 秒被系统弹回)
             val targetHitEpochMs = unlockTimestampMs + 1000L
 
-            val marchRoi = Rect(
-                (CoordinateTransformer.virtualWidth - 360).toInt(),
-                (CoordinateTransformer.virtualHeight - 160).toInt(),
-                CoordinateTransformer.virtualWidth.toInt(),
-                CoordinateTransformer.virtualHeight.toInt()
-            )
+            // 行军耗时文本区改用统一锚点表（原先是写死的"右下角 360x160"）
+            val marchRoi = UiAnchors.rect(UiAnchors.RectKey.MARCH_TIME)
 
             val timingPlan = EngineBridge.planCardSecondDispatch(
                 marchTimeRoi = marchRoi,
@@ -134,6 +143,24 @@ class ImmunityBreakFlow(
                 "  • 绝对出征触发点: ${timingPlan.optimalDispatchEpochMs}\n" +
                 "  • 需等待倒计时: ${timingPlan.waitDelayMs} ms"
             )
+
+            // 6.5 **先架枪**：把【确定出征】的触控点现在就定位好。
+            //
+            // 定位要抓屏 + 识别 + 匹配，耗时几十到几百毫秒。原先是在倒计时结束、
+            // 目标时刻到了**之后**才调用 clickButtonDiagnosed 去定位并点击，
+            // 于是手势实际落在"目标时刻 + 定位耗时"——这段耗时被整个算进误差里。
+            // 现在定位提前做，扣扳机时只剩一次手势派发。
+            val preparedConfirm = EngineBridge.prepareButtonTap(StzbUiMatcher.ButtonType.CONFIRM)
+            if (preparedConfirm == null) {
+                logWarn("⚠️ 无法预先定位【确定出征】按键，压秒无法执行（未出征）。")
+                listener?.onStatusChanged(
+                    TacticalState.TaskType.IMMUNITY_BREAK,
+                    TacticalState.Status.FAILED,
+                    "压秒中止：未能定位【确定出征】"
+                )
+                WatchdogRecovery.recoverToMainMap()
+                return false
+            }
 
             // 7. 高精度倒计时排队与毫秒级点火出征
             if (timingPlan.waitDelayMs > 0) {
@@ -160,12 +187,34 @@ class ImmunityBreakFlow(
 
             if (!isRunning.get()) return false
 
-            // 8. 毫秒级扣动扳机：点击【确定出征】！
-            val fired = EngineBridge.clickButton(StzbUiMatcher.ButtonType.CONFIRM)
-            val triggerTime = System.currentTimeMillis()
+            // 8. 毫秒级扣动扳机：只做一次手势派发（定位已在 6.5 完成）
+            val fired = EngineBridge.firePreparedTap(preparedConfirm)
+            val triggerTime = fired.dispatchEpochMs
             val diffMs = triggerTime - timingPlan.optimalDispatchEpochMs
 
-            logTactic("🚀【出征触发完毕】时间误差: ${diffMs}ms！部队正高速开赴目标，预计将在 00:00:01 准点触敌！")
+            if (fired.dispatched) {
+                logTactic("🚀【出征触发完毕】时间误差: ${diffMs}ms！部队正高速开赴目标，预计将在 00:00:01 准点触敌！")
+                if (diffMs > LATE_TOLERANCE_MS) {
+                    // 派发时刻本身就晚了：必须说清，而不是把"晚了 300ms"包装成准点。
+                    logWarn(
+                        "⚠️ 压秒实际晚打 ${diffMs}ms（容忍 ${LATE_TOLERANCE_MS}ms）。" +
+                            "可检查设备卡顿，或适当增大网络补偿 latencyCompensationMs。"
+                    )
+                }
+            } else {
+                // 原实现拿到了返回值却不用，无论成败都打印"出征触发完毕、误差仅 xx ms"，
+                // 把"根本没点中"包装成"压秒精准"。现在如实报告。
+                logWarn(
+                    "⚠️【确定出征】手势派发失败（原定时间误差 ${diffMs}ms）；" +
+                        "本次压秒未生效，请人工确认该队是否已出发。"
+                )
+                listener?.onStatusChanged(
+                    TacticalState.TaskType.IMMUNITY_BREAK,
+                    TacticalState.Status.FAILED,
+                    "压秒失败：【确定出征】未点中"
+                )
+                return false
+            }
 
             listener?.onStatusChanged(
                 TacticalState.TaskType.IMMUNITY_BREAK,
@@ -186,11 +235,31 @@ class ImmunityBreakFlow(
         }
     }
 
+    /**
+     * 解析"该点哪个屏幕坐标才能点到目标地块"。
+     * 有世界坐标且已标定时先对准镜头、点镜头中心；否则回退取点屏幕坐标。
+     */
+    private suspend fun resolveTileTapPoint(config: ImmunityConfig): PointF {
+        val world = config.targetWorldCoord
+        if (world != null && MapProjection.isCalibrated) {
+            when (val nav = MapNavigator.centerOn(world.first, world.second)) {
+                is MapNavigator.Result.Reached -> {
+                    logInfo("🧭 已按世界坐标 (${world.first},${world.second}) 对准目标地块镜头")
+                    return MapProjection.viewportCenterCanvas()
+                }
+                is MapNavigator.Result.Refused ->
+                    logWarn("世界坐标导航被拒绝，改用取点屏幕坐标：${nav.reason}")
+                is MapNavigator.Result.Failed ->
+                    logWarn("世界坐标导航失败，改用取点屏幕坐标：${nav.reason}")
+            }
+        }
+        return config.targetTileCoord
+    }
+
     private suspend fun clickTroopSlotTab(slot: Int) {
-        val stepX = 140f
-        val startX = 220f
-        val targetX = startX + (slot - 1) * stepX
-        EngineBridge.tap(targetX, 160f)
+        // 统一锚点表，不再按 1280 宽画布写死 220/140/160
+        val p = UiAnchors.troopTab(slot)
+        EngineBridge.tap(p.x, p.y)
     }
 
     private fun logInfo(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.IMMUNITY_BREAK, "INFO", msg))
@@ -204,5 +273,8 @@ class ImmunityBreakFlow(
 
     companion object {
         private const val TAG = "ImmunityBreakFlow"
+
+        /** 压秒的可容忍迟到量；超过它必须显式告警，而不是当成准点。 */
+        private const val LATE_TOLERANCE_MS = 150L
     }
 }
