@@ -109,7 +109,15 @@ class ScreenCaptureService : Service() {
             .setOngoing(true)
             .build()
 
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun initMediaProjection(resultCode: Int, resultData: Intent) {

@@ -13,6 +13,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build & Package APK
@@ -32,6 +35,7 @@ jobs:
           cache: 'gradle'
 
       - name: Set up Android SDK
+        id: setup-android
         uses: android-actions/setup-android@v3
 
       - name: Install Android NDK & CMake

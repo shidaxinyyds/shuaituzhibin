@@ -167,7 +167,11 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             }
         }
 
-        windowManager.addView(capsuleView, capsuleParams)
+        try {
+            windowManager.addView(capsuleView, capsuleParams)
+        } catch (e: Exception) {
+            Log.e(TAG, "创建常驻胶囊悬浮窗失败: ${e.message}")
+        }
     }
 
     private fun snapCapsuleToEdge() {
@@ -312,13 +316,21 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
     private fun showDashboard() {
         if (dashboardView?.parent == null) {
-            windowManager.addView(dashboardView, dashboardParams)
+            try {
+                windowManager.addView(dashboardView, dashboardParams)
+            } catch (e: Exception) {
+                Log.e(TAG, "展开控制面板异常: ${e.message}")
+            }
         }
     }
 
     private fun hideDashboard() {
         if (dashboardView?.parent != null) {
-            windowManager.removeView(dashboardView)
+            try {
+                windowManager.removeView(dashboardView)
+            } catch (e: Exception) {
+                Log.e(TAG, "收起控制面板异常: ${e.message}")
+            }
         }
     }
 
@@ -355,14 +367,22 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         currentPickTarget = target
         hideDashboard()
         if (pickerView?.parent == null) {
-            windowManager.addView(pickerView, pickerParams)
+            try {
+                windowManager.addView(pickerView, pickerParams)
+            } catch (e: Exception) {
+                Log.e(TAG, "开启准星取点异常: ${e.message}")
+            }
         }
     }
 
     private fun stopCrosshairPicker() {
         currentPickTarget = null
         if (pickerView?.parent != null) {
-            windowManager.removeView(pickerView)
+            try {
+                windowManager.removeView(pickerView)
+            } catch (e: Exception) {
+                Log.e(TAG, "关闭准星取点异常: ${e.message}")
+            }
         }
     }
 
@@ -427,7 +447,11 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         hideDashboard()
         stopCrosshairPicker()
         if (capsuleView?.parent != null) {
-            windowManager.removeView(capsuleView)
+            try {
+                windowManager.removeView(capsuleView)
+            } catch (e: Exception) {
+                Log.w(TAG, "销毁胶囊异常: ${e.message}")
+            }
         }
     }
 

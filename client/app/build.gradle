@@ -18,8 +18,8 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            // 商业版针对真实手机与模拟器，统一编译 64 位 arm64-v8a，体积精简且抗逆向能力最强
-            abiFilters 'arm64-v8a'
+            // 商业版：兼顾真实手机 (arm64-v8a) 与 PC 模拟器原生加速 (x86_64)
+            abiFilters 'arm64-v8a', 'x86_64'
         }
 
         externalNativeBuild {

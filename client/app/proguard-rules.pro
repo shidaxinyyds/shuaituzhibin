@@ -32,3 +32,9 @@
 -keep public class * extends android.app.Service
 -keep public class * extends android.app.Activity
 -keep public class * extends android.accessibilityservice.AccessibilityService
+
+# 7. 保护知识库数据契约与卡密鉴权实体
+-keep class com.stzb.assistant.knowledge.** { *; }
+-keep class com.stzb.assistant.license.** { *; }
+-keep class com.stzb.assistant.SecurityBridge { *; }
+-keep class com.stzb.assistant.tactics.TacticalState** { *; }
