@@ -1,12 +1,8 @@
-name: Build Android APK
+name: Build Commercial APK
 
 on:
   push:
-    branches: [ "main", "master" ]
-    tags:
-      - 'v*'
-  pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "main" ]
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build & Package APK
+    name: Build Commercial Release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -45,33 +41,46 @@ jobs:
           mkdir -p ~/.android
           keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
 
-      - name: Build Debug & Release APK
+      - name: Build Commercial Release APK
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.1.8937393
         run: |
           cd client
-          ./gradlew assembleDebug --stacktrace
-          ./gradlew assembleRelease --stacktrace || echo "Release build completed"
+          ./gradlew assembleRelease --stacktrace --no-daemon 2>&1 | tee build_log.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "## ❌ Gradle Build Failed with exit code $EXIT_CODE" >> $GITHUB_STEP_SUMMARY
+            echo '```text' >> $GITHUB_STEP_SUMMARY
+            tail -n 150 build_log.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            exit $EXIT_CODE
+          fi
 
-      - name: Find & Rename APK Outputs
-        id: apk-paths
+      - name: Prepare Single Commercial APK
         run: |
-          mkdir -p release-apks
-          find client/app/build/outputs/apk -name "*.apk" -type f -exec cp {} release-apks/ \;
-          ls -lah release-apks/
+          mkdir -p single-release-apk
+          APK_FILE=$(find client/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -z "$APK_FILE" ]; then
+            echo "❌ No APK found in build outputs!"
+            exit 1
+          fi
+          echo "Selected Commercial APK: $APK_FILE"
+          cp "$APK_FILE" single-release-apk/RateOfLand-Commercial-v1.0.2.apk
+          ls -lah single-release-apk/
 
-      - name: Upload APK Artifacts
+      - name: Upload Single Commercial APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rate-of-land-commercial-apk
-          path: release-apks/*.apk
+          name: RateOfLand-Commercial-v1.0.2
+          path: single-release-apk/RateOfLand-Commercial-v1.0.2.apk
           retention-days: 30
 
-      - name: Create Release and Upload Asset (Tagged Release)
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: release-apks/*.apk
+          tag_name: "v1.0.2"
+          name: "率土之滨全能管家 v1.0.2 商业旗舰版"
+          files: single-release-apk/RateOfLand-Commercial-v1.0.2.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
