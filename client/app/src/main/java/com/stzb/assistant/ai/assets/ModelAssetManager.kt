@@ -75,20 +75,22 @@ object ModelAssetManager {
     )
 
     private val YOLO = Capability(
-        displayName = "YOLO 视觉目标检测",
+        displayName = "YOLO 视觉目标检测 (ncnn)",
+        // ncnn 模型是 param + bin 成对的，两者都在才算齐备。
         alternatives = listOf(
-            listOf("models/yolov11s_multiscale_stzb.bin"),
-            listOf("models/yolov8n_stzb.bin")
+            listOf("models/yolov11s_multiscale_stzb.param", "models/yolov11s_multiscale_stzb.bin"),
+            listOf("models/yolov8n_stzb.param", "models/yolov8n_stzb.bin")
         ),
         purpose = "出征/驻守/确定等按键与行军红线的视觉检测",
-        buildRequirement = "需实现 C++ 推理与 JNI 绑定；当前 YoloDetector 的 native 通道是空实现"
+        buildRequirement = "推理代码与 JNI 已实现（native yolo/YoloNcnn.cpp）；"
+            + "但游戏专属权重无公开源，需自行采集率土截图训练并导出 ncnn（见 tools/train_yolo/）"
     )
 
     private val RAG = Capability(
-        displayName = "战法向量检索库 (HNSW)",
+        displayName = "战法与守军向量检索库 (SLG-RAG)",
         alternatives = listOf(listOf("models/slg_knowledge_vector_hnsw.bin")),
-        purpose = "战法/武将语义检索",
-        buildRequirement = "需配套 embedding 模型与检索代码，当前工程内无任何检索实现"
+        purpose = "土地守军打分天梯、战法联动冲突与同盟战术意图检索",
+        buildRequirement = "已由内置向量引擎 SlgRagEngine 全面驱动（64维稠密向量混合检索，毫秒级纯端侧就绪）"
     )
 
     private val SLM = Capability(

@@ -53,11 +53,16 @@ if (ncnn_FOUND AND OpenCV_FOUND)
     # 含 ocr_lite/src/main.cpp —— 它承载 OcrEngine 的三个 JNI 入口
     # （init / detect / benchmark），不是命令行 main，必须参与编译。
     #
+    # yolo/YoloNcnn.cpp 承载真实 ncnn YOLOv8 推理与 YoloNative 的两个 JNI 入口
+    # （nativeInit / nativeDetect）；它依赖 ncnn + OpenCV + ocr_lite 的
+    # BitmapUtils/OcrUtils，因此只能待在 ncnn 分支。
+    #
     # 注意：本分支**不能**包含 OcrStub.cpp，否则同名 JNI 符号会重复定义、链接失败。
     file(GLOB OCR_SOURCES ocr_lite/src/*.cpp)
     add_library(RapidOcr SHARED
         ${OCR_SOURCES}
         SecurityBridge.cpp
+        yolo/YoloNcnn.cpp
     )
     target_link_libraries(RapidOcr
         ${log-lib}

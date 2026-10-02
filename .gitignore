@@ -44,3 +44,10 @@ ENV/
 # OS Caches
 Thumbs.db
 [Ee]xcluded/
+
+# 模型权重：本项目选择「二进制直接入库」（非 git-lfs）。
+# 上面的 **/bin/ 只匹配名为 bin 的目录、不会误伤 *.bin 文件；这里再显式放行
+# assets/models 下的权重，固化意图，防止将来新增通配规则时把模型漏掉。
+!client/app/src/main/assets/models/*.bin
+!client/app/src/main/assets/models/*.param
+!client/app/src/main/assets/models/*.gguf

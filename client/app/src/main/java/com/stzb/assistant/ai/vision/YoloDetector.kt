@@ -11,15 +11,20 @@ import kotlin.math.min
 import kotlin.random.Random
 
 /**
- * 移动端超轻量目标检测引擎 (YOLOv8-Nano INT8 移动端适配器)
- * 
- * 核心设计指标：
- *   1. 【体积极致轻量】：量化后模型仅约 2.1 MB，极速冷启动；
- *   2. 【端侧毫秒级检测】：手机端纯 CPU 推理耗时 10~18ms，显存/内存占用 < 25MB；
- *   3. 【双通道容灾架构】：
- *      - 主通道：加载 NCNN / ONNX INT8 YOLOv8-Nano 权重，进行多目标边界框并行检测；
- *      - 容灾通道：若模型文件未下载或处于最小模式，自动无缝切换至 OpenCV 空间色度与几何显著性检测，保证 100% 永不崩溃；
- *   4. 【防封拟人点映射】：自动在检测框内通过高斯正态分布注入抖动偏移，杜绝中心死板点击。
+ * 移动端目标检测引擎 (YOLO 双通道)
+ *
+ * 两条通道，能力与真相严格对齐：
+ *   1. **主通道（真推理）**：当 `assets/models/` 下存在**针对率土训练并导出为 ncnn**
+ *      的成对权重（`*.param` + `*.bin`）、且本包在构建期链接了 ncnn+OpenCV 时，
+ *      经 [YoloNative] 走真实 ncnn 推理（见 native `yolo/YoloNcnn.cpp`）。
+ *   2. **容灾通道（几何+色度）**：权重缺失、或本包是 OCR 空桩构建（无 ncnn）时，
+ *      自动回退到不依赖模型的空间色度/几何显著性检测，保证不崩、且**如实标注这是几何通道**。
+ *
+ * ⚠️ 诚实声明：通用 COCO 预训练权重检不出"出征/驻守/行军红线"等游戏专属类别，
+ *    因此主通道所需的权重**必须自行采集率土截图训练**（见 `tools/train_yolo/`）。
+ *    仓库当前不含这些权重，故出厂默认走容灾通道——这不是降级，是现状。
+ *
+ * 防封拟人点：无论哪条通道，命中框都经高斯抖动映射触控点（[DetectionBox.humanTouchPoint]）。
  */
 class YoloDetector(private val context: Context) {
 
@@ -78,27 +83,40 @@ class YoloDetector(private val context: Context) {
     }
 
     private fun initModel() {
+        // 候选权重基名（ncnn 需要 .param + .bin 成对）。优先更大/更新的模型。
+        val candidates = listOf(
+            "yolov11s_multiscale_stzb",
+            "yolov8n_stzb"
+        )
         try {
-            val path11 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov11s_multiscale_stzb.bin")
-            val path8 = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, "yolov8n_stzb.bin")
-            val finalPath = if (path11 != null && java.io.File(path11).length() > 500 * 1024) path11 else path8
+            for (base in candidates) {
+                val paramPath = com.stzb.assistant.ai.assets.ModelAssetManager
+                    .getOrExtractModelPath(context, "$base.param")
+                val binPath = com.stzb.assistant.ai.assets.ModelAssetManager
+                    .getOrExtractModelPath(context, "$base.bin")
+                if (paramPath == null || binPath == null) continue
+                if (java.io.File(binPath).length() < 50 * 1024) continue
 
-            if (finalPath != null && java.io.File(finalPath).length() > 50 * 1024) {
-                isNativeModelLoaded = true
-                // 措辞刻意保守：这里只证明"权重文件在"。
-                // 工程内的 runNativeYoloInference() 目前直接返回空列表，
-                // 说"加载成功/引擎就绪"会让人以为检测真的在跑。
-                Log.w(
-                    TAG,
-                    "发现 YOLO 权重文件 $finalPath，但当前没有可用的原生推理实现" +
-                        "（runNativeYoloInference 返回空），检测将走几何色度通道。"
-                )
-            } else {
-                Log.i(TAG, "未发现 YOLO 权重，目标检测走几何色度通道（这是当前唯一实现，非降级）。")
-                isNativeModelLoaded = false
+                // 真·加载：只有 YoloNative.load 返回 true（库可用且 ncnn 载入成功）
+                // 才算主通道就绪；否则（空桩构建 / 维度不符）诚实回退几何通道。
+                if (YoloNative.load(paramPath, binPath, NATIVE_INPUT_SIZE, 4)) {
+                    isNativeModelLoaded = true
+                    Log.i(TAG, "YOLO 主通道就绪：ncnn 已加载 $base（真实推理启用）。")
+                    return
+                } else {
+                    Log.w(
+                        TAG,
+                        "发现 YOLO 权重 $base，但原生推理不可用（本包未链接 ncnn，或权重维度不符）；" +
+                            "回退几何色度通道。"
+                    )
+                    isNativeModelLoaded = false
+                    return
+                }
             }
+            Log.i(TAG, "未发现 YOLO 权重，目标检测走几何色度通道（这是当前唯一实现，非降级）。")
+            isNativeModelLoaded = false
         } catch (e: Exception) {
-            Log.w(TAG, "初始化 YOLO 检测器: ${e.message}")
+            Log.w(TAG, "初始化 YOLO 检测器异常: ${e.message}")
             isNativeModelLoaded = false
         }
     }
@@ -242,11 +260,31 @@ class YoloDetector(private val context: Context) {
     }
 
     /**
-     * 原生 NCNN 模型推理预留桥接
+     * 真实 ncnn YOLO 推理（经 [YoloNative]）。返回原图像素坐标下的检测框。
+     * 未就绪/空桩构建时返回空列表，由 [detect] 回退几何通道。
      */
     private fun runNativeYoloInference(bitmap: Bitmap, confThreshold: Float): List<DetectionBox> {
-        // 当后续放置真实 .bin 权重时，此处无缝对齐 C++ NCNN/ONNX 接口
-        return emptyList()
+        val flat = YoloNative.detect(bitmap, confThreshold, NATIVE_NMS_THRESHOLD)
+        if (flat.isEmpty()) return emptyList()
+        val boxes = mutableListOf<DetectionBox>()
+        var i = 0
+        while (i + 5 < flat.size) {
+            val cls = flat[i].toInt()
+            val x1 = flat[i + 1]
+            val y1 = flat[i + 2]
+            val x2 = flat[i + 3]
+            val y2 = flat[i + 4]
+            val score = flat[i + 5]
+            val left = x1.toInt().coerceIn(0, bitmap.width)
+            val top = y1.toInt().coerceIn(0, bitmap.height)
+            val right = x2.toInt().coerceIn(0, bitmap.width)
+            val bottom = y2.toInt().coerceIn(0, bitmap.height)
+            if (right > left && bottom > top) {
+                boxes.add(DetectionBox(DetectionClass.fromId(cls), Rect(left, top, right, bottom), score))
+            }
+            i += 6
+        }
+        return boxes
     }
 
     /**
@@ -292,5 +330,8 @@ class YoloDetector(private val context: Context) {
 
     companion object {
         private const val TAG = "YoloDetector"
+        /** 与训练/导出时的输入尺寸保持一致（ultralytics 默认 640）。 */
+        private const val NATIVE_INPUT_SIZE = 640
+        private const val NATIVE_NMS_THRESHOLD = 0.45f
     }
 }

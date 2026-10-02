@@ -415,22 +415,27 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showLandGuide() {
+        com.stzb.assistant.ai.rag.SlgRagEngine.init(this)
         val suggestions = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.defenderDb.landSuggestions
         if (suggestions.isEmpty()) {
             Toast.makeText(this, "当前游戏无土地建议数据", Toast.LENGTH_SHORT).show()
             return
         }
         val sb = StringBuilder()
+        sb.append("【SLG-RAG 战术知识库 · 土地打分天梯】\n\n")
         suggestions.toSortedMap().forEach { (lvl, s) ->
-            sb.append("【Lv.$lvl 土地指南】推荐兵力: ${s.recommendedSoldiers}+\n")
-            sb.append("  • 软柿子优先打: ${s.safeHeroes.joinToString("、")}\n")
+            sb.append("📍【Lv.$lvl 土地守军】推荐兵力: ${s.recommendedSoldiers}+\n")
+            sb.append("  🟢 软柿子优先开: ${s.safeHeroes.joinToString("、")}\n")
             if (s.blacklistHeroes.isNotEmpty()) {
-                sb.append("  • 黑名单千万别撞: ${s.blacklistHeroes.joinToString("、")}\n")
+                sb.append("  🔴 翻车雷区(避开): ${s.blacklistHeroes.joinToString("、")}\n")
             }
-            sb.append("  • 策略: ${s.note}\n\n")
+            sb.append("  💡 攻坚要诀: ${s.note}\n\n")
         }
+        sb.append("───────────────────────\n")
+        sb.append("🛡️ 军师 RAG 自动感知已常驻：游戏内侦察守军时，悬浮窗将自动进行 RAG 毫秒级阵容扫描与翻车风险拦截！")
+
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("📖 开荒打地天梯指南")
+            .setTitle("📖 开荒打地指南 (RAG向量增强)")
             .setMessage(sb.toString().trim())
             .setPositiveButton("我知道了", null)
             .show()

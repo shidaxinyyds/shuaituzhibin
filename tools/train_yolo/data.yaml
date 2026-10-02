@@ -1,0 +1,19 @@
+# 率土之滨 YOLO 数据集配置（ultralytics 格式）
+# 类别顺序必须与 YoloDetector.DetectionClass.id 一致，错位=点到错误按钮。
+path: ./dataset        # 数据集根目录（含 images/ 与 labels/）
+train: images/train
+val: images/val
+
+nc: 11
+names:
+  0: attack          # 出征按钮
+  1: defend          # 驻守按钮
+  2: retreat         # 撤退按钮
+  3: confirm         # 确定按钮
+  4: cancel          # 取消按钮
+  5: mail_alert      # 军令红点
+  6: radar_alert     # 敌袭告警
+  7: enemy_tile      # 敌对红地
+  8: resource_tile   # 资源地块
+  9: march_redline   # 敌军行军红线
+  10: city_gate      # 关卡要塞

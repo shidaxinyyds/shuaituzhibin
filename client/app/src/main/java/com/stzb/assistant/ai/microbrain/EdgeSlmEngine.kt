@@ -30,6 +30,7 @@ import java.util.regex.Pattern
 class EdgeSlmEngine(private val context: Context) {
 
     init {
+        com.stzb.assistant.ai.rag.SlgRagEngine.init(context)
         probeOptionalAssets()
     }
 
@@ -102,11 +103,12 @@ class EdgeSlmEngine(private val context: Context) {
         // 6. 提取战术意图类型
         val intent = deduceIntent(cleanText, targetName)
 
-        // 7. 提取应急预案 (如抢跑/被抢城皮)
-        val contingency = extractContingency(cleanText)
+        // 7. 结合 RAG 向量检索丰富战术操作指南与应急预案
+        val ragMatch = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanText)
+        val fullContingency = if (contingency != "常规执行") "$contingency | RAG战术提示: ${ragMatch.executionTimingAdvice}" else ragMatch.executionTimingAdvice
 
         // 8. 实时生成军师思考推演流
-        val thinking = generateThinkingStream(intent, targetName, targetCoord, targetTime, advanceSeconds, contingency)
+        val thinking = generateThinkingStream(intent, targetName, targetCoord, targetTime, advanceSeconds, fullContingency)
 
         return TacticalOrder(
             orderId = "ORD-" + UUID.randomUUID().toString().substring(0, 8).uppercase(),
@@ -116,7 +118,7 @@ class EdgeSlmEngine(private val context: Context) {
             targetTime = targetTime,
             advanceSeconds = advanceSeconds,
             assignedTeams = assignedTeams,
-            contingencyPlan = contingency,
+            contingencyPlan = fullContingency,
             advisorThinking = thinking,
             confidence = if (targetName != "未明目标") 0.96f else 0.82f,
             rawDecreeText = cleanText
@@ -124,7 +126,7 @@ class EdgeSlmEngine(private val context: Context) {
     }
 
     /**
-     * 核心接口 2：战报深度会诊与兵种战法克制诊断
+     * 核心接口 2：战报深度会诊与兵种战法克制诊断 (RAG向量增强)
      */
     fun diagnoseBattleReport(reportText: String): BattleDiagnosis {
         val keySkills = mutableListOf<String>()
@@ -155,30 +157,28 @@ class EdgeSlmEngine(private val context: Context) {
             else -> BattleResult.DRAW
         }
 
-        // 推理战术对策建议
-        val adviceBuilder = StringBuilder()
-        if (keySkills.contains("战必断金")) {
-            adviceBuilder.append("敌军配置【战必断金】，马超/皇甫嵩等普攻物理武将遭克制，建议换带【枭雄】免控或后置爆发；")
-        }
-        if (keySkills.contains("反计之策")) {
-            adviceBuilder.append("敌军带【反计之策】，主动法系战法前回合哑火，建议前3回合保持减伤规避；")
-        }
-        if (keySkills.contains("浑水摸鱼") || keySkills.contains("妖术")) {
-            adviceBuilder.append("敌军控制充足，建议队伍配备【安抚军心】或【九锡黄龙】解控保核心输出。")
-        }
-        if (adviceBuilder.isEmpty()) {
-            adviceBuilder.append("常规攻防对决，建议补充预备兵，保持兵力 25000+ 压制。")
-        }
+        // 调用 RAG 向量引擎进行深层机制复盘与克制推演
+        val ragDiag = com.stzb.assistant.ai.rag.SlgRagEngine.diagnoseBattleReport(reportText)
+        val allSkills = (keySkills + ragDiag.detectedSkills).distinct()
 
-        val commentary = "【军师复盘】：此役定性为${result.desc}。检出敌方核心技能[${keySkills.joinToString("/")}]。${adviceBuilder}"
+        val commentary = buildString {
+            append("【诸葛军师 · RAG战报会诊】: 此役定性为${result.desc}。\n")
+            if (allSkills.isNotEmpty()) {
+                append("▶ 关键战法: ${allSkills.joinToString("/")}\n")
+            }
+            if (ragDiag.conflictAnalysis.isNotBlank()) {
+                append("▶ 机制复盘: ${ragDiag.conflictAnalysis}\n")
+            }
+            append("▶ 调优建议: ${ragDiag.counterStrategy}")
+        }
 
         return BattleDiagnosis(
             battleId = "BTL-" + System.currentTimeMillis().toString().takeLast(6),
             battleResult = result,
             myTroopLoss = 2300,
             enemyTroopLoss = 6800,
-            keySkillsDetected = keySkills,
-            strategicCounterAdvice = adviceBuilder.toString(),
+            keySkillsDetected = allSkills,
+            strategicCounterAdvice = ragDiag.counterStrategy,
             militaryCommentary = commentary
         )
     }
