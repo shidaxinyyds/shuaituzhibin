@@ -34,20 +34,17 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Set up Android SDK
-        id: setup-android
-        uses: android-actions/setup-android@v3
-
       - name: Install Android NDK & CMake
         run: |
-          yes | sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
 
       - name: Grant Execute Permission for Gradlew
         run: chmod +x client/gradlew
 
       - name: Build Debug & Release APK
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-android.outputs.sdk-path }}/ndk/25.1.8937393
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/25.1.8937393
         run: |
           cd client
           ./gradlew clean assembleDebug assembleRelease --stacktrace
