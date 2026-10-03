@@ -560,7 +560,7 @@ object SlgRagEngine {
 
         val level = LEVEL_PATTERN.find(reportText)?.groupValues?.getOrNull(1)?.toIntOrNull()
         val baseSoldiers = recommendedSoldiersForLevel(level)
-        val killThreshold = ((baseSoldiers * PVE_KILL_THRESHOLD_RATIO) / 500 + 1) * 500
+        val killThreshold = (((baseSoldiers * PVE_KILL_THRESHOLD_RATIO) / 500 + 1) * 500).toInt()
 
         val advice = when {
             isRampage && level != null ->
@@ -885,10 +885,10 @@ object SlgRagEngine {
     )
 
     /** 从战报文本里找 "Lv.7" / "7级地" 这类地级。 */
-    private val LEVEL_PATTERN = java.util.regex.Pattern.compile("(?:Lv\\.?|LV\\.?|等级)\\s*(\\d{1,2})")
+    private val LEVEL_PATTERN = Regex("(?:Lv\\.?|LV\\.?|等级)\\s*(\\d{1,2})")
 
     /** 从战报文本里找 "速度 123" / "速度:123" 这类速度读数。 */
-    private val SPEED_PATTERN = java.util.regex.Pattern.compile("速度\\s*[:：]?\\s*(\\d{2,3})")
+    private val SPEED_PATTERN = Regex("速度\\s*[:：]?\\s*(\\d{2,3})")
 
     /**
      * PVE 补刀阈值折算系数（残余守军占比的经验值，可调）。

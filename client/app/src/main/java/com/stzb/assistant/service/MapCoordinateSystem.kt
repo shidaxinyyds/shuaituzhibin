@@ -571,8 +571,16 @@ object MapNavigator {
         }
 
         // 3. 点击匹配到的书签条目，触发游戏瞬间跳转
-        val touchX = (matchResult.box.left + matchResult.box.right) / 2f
-        val touchY = (matchResult.box.top + matchResult.box.bottom) / 2f
+        //    TextBlock 只有 boxPoint(4 个角点 x/y)，没有 .box 矩形；取其外接框中心。
+        if (matchResult.boxPoint.isEmpty()) {
+            com.stzb.assistant.tactics.WatchdogRecovery.tapSafeBlankArea()
+            Log.w(TAG, "匹配到的书签文字块缺少坐标点，已安全收起抽屉。")
+            return Result.Failed("书签条目坐标缺失，无法对准点击")
+        }
+        val boxXs = matchResult.boxPoint.map { it.x }
+        val boxYs = matchResult.boxPoint.map { it.y }
+        val touchX = (boxXs.min() + boxXs.max()) / 2f
+        val touchY = (boxYs.min() + boxYs.max()) / 2f
         Log.i(TAG, "成功匹配书签条目: [${matchResult.text}]，触发瞬间跳转: ($touchX, $touchY)")
         val jumped = EngineBridge.tap(touchX, touchY)
         if (!jumped) {

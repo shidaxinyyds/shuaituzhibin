@@ -97,7 +97,7 @@ object BgeEmbedder {
 
         return try {
             vocab = readVocab(vocabPath)
-            val env = ai.onnxruntime.OrtEnvironment.getEnv()
+            val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
             session = env.createSession(modelPath, ai.onnxruntime.OrtSession.SessionOptions())
             dim = detectDim()
             if (dim <= 0) {
@@ -175,17 +175,17 @@ object BgeEmbedder {
     /** 对查询做 mean pooling + L2 归一化；失败返回 null。 */
     fun embed(text: String): FloatArray? {
         val s = session ?: return null
-        val env = ai.onnxruntime.OrtEnvironment.getEnv()
+        val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
         val inputs = HashMap<String, ai.onnxruntime.OnnxTensor>()
         var out: ai.onnxruntime.OrtSession.Result? = null
         return try {
             val (ids, mask) = tokenIds(text)
             inputs["input_ids"] = ai.onnxruntime.OnnxTensor.createTensor(
-                env, LongBuffer.wrap(ids), longArrayOf(1, MAX_LEN))
+                env, LongBuffer.wrap(ids), longArrayOf(1L, MAX_LEN.toLong()))
             inputs["attention_mask"] = ai.onnxruntime.OnnxTensor.createTensor(
-                env, LongBuffer.wrap(mask), longArrayOf(1, MAX_LEN))
+                env, LongBuffer.wrap(mask), longArrayOf(1L, MAX_LEN.toLong()))
             inputs["token_type_ids"] = ai.onnxruntime.OnnxTensor.createTensor(
-                env, LongBuffer.wrap(LongArray(MAX_LEN)), longArrayOf(1, MAX_LEN))
+                env, LongBuffer.wrap(LongArray(MAX_LEN)), longArrayOf(1L, MAX_LEN.toLong()))
 
             out = s.run(inputs)
             val tensor = out[0] as? ai.onnxruntime.OnnxTensor ?: return null
@@ -216,7 +216,10 @@ object BgeEmbedder {
         } finally {
             // ⚠️ 关键修复：输出张量与输入张量必须在**所有**路径（含 tensor/info 为 null 的
             // early-return、shape!=3 分支、异常）释放，否则长跑 native 内存只增不减。
-            out?.forEach { runCatching { it.close() } }
+            // OrtSession.Result 本身是 AutoCloseable（它同时是 Iterable<Entry>，
+            // 故不能对它的 Entry 调 close——Entry 没有 close）。直接关 Result 才会释放其持有的
+            // 全部输出 OnnxValue 的 native 内存。
+            runCatching { out?.close() }
             inputs.values.forEach { runCatching { it.close() } }
         }
     }
