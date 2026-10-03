@@ -7,7 +7,8 @@
 一条命令把四台引擎从「下基座 → 训练 → 导出 INT8 → 入包」串起来，并在最后**用与
 App 完全相同的契约**校验每一件产物，杜绝"脚本说成功、装机却加载失败"：
 
-    ① YOLO26   → assets/models/yolo26*_stzb.param/.bin   （param 首行须 7767517）
+    ① YOLO(可选) → assets/models/yolo*_stzb.param/.bin   多变目标增强通道（武将头像/部队/建筑）；
+                固定 UI 目标已改走确定性通道，故 YOLO **缺失不判不合格**（仅当存在且损坏才报错）
     ② PP-OCRv5 → assets/ch_PP-OCRv5_*.{param,bin}+keys    （param 首行须 7767517）
     ③ bge+索引 → assets/models/bge_zh_int8.onnx(+vocab)   （头须 ONNX）
                 assets/models/slg_knowledge_vector_hnsw.bin（须 V2 且 dim==512）
@@ -66,11 +67,20 @@ def check_ncnn_pair(base):
 def check_onnx(path):
     if not os.path.isfile(path):
         return "缺失"
-    with open(path, "rb") as fh:
-        if fh.read(4) != ONNX_MAGIC:
-            return "非 ONNX 头"
     if os.path.getsize(path) < 1024 * 1024:
         return "体积过小(疑空壳)"
+    # 真 ONNX 是 protobuf（首字节 0x08=ir_version），不是 ASCII 'ONNX'；用 onnx 解析权威校验。
+    try:
+        import onnx
+        m = onnx.load(path)
+        if not m.graph or len(m.graph.node) == 0:
+            return "ONNX 无计算图"
+    except ImportError:
+        with open(path, "rb") as fh:
+            if fh.read(1) != b"\x08":
+                return "非 ONNX(protobuf 头)"
+    except Exception as exc:
+        return "ONNX 解析失败:%s" % type(exc).__name__
     return None
 
 
@@ -106,17 +116,17 @@ def validate():
     if ocr_hit:
         rows[-1] = ("OCR det/rec", "✅ ok（命中 %s）" % ocr_hit, ocr_base)
 
-    # ① YOLO：任一 yolo*_stzb
-    yolo_ok = False
-    yolo_path = ""
-    for nm in sorted(os.listdir(MODELS)) if os.path.isdir(MODELS) else []:
-        if nm.startswith("yolo") and nm.endswith("_stzb.param"):
-            base = os.path.join(MODELS, nm[: -len(".param")])
-            if check_ncnn_pair(base) is None:
-                yolo_ok, yolo_path = True, base + ".param"
-                break
-    add("YOLO26 ncnn", None if yolo_ok else "缺失（跑 train_yolo26.py）",
-        yolo_path or os.path.join(MODELS, "yolo26s_stzb.param"))
+    # ① YOLO：可选「多变目标」增强通道（武将头像/部队/建筑）。
+    #   固定 UI 目标已改走 EngineBridge 下的确定性通道，无需 YOLO；
+    #   因此“缺失”**不算不合格**（不计入退出码），仅当存在且损坏才报错。
+    yolo_files = [nm for nm in (sorted(os.listdir(MODELS)) if os.path.isdir(MODELS) else [])
+                  if nm.startswith("yolo") and nm.endswith("_stzb.param")]
+    if not yolo_files:
+        rows.append(("YOLO增强通道(可选)", "☑ 未启用（固定UI走确定性，无需它）",
+                     os.path.relpath(os.path.join(MODELS, "yolo26s_stzb.param"), REPO)))
+    else:
+        base = os.path.join(MODELS, yolo_files[0][: -len(".param")])
+        add("YOLO增强通道(可选)", check_ncnn_pair(base), base + ".param")
 
     # ③ bge + 索引
     add("bge INT8 onnx", check_onnx(os.path.join(MODELS, "bge_zh_int8.onnx")),
@@ -156,7 +166,8 @@ def main():
     args = ap.parse_args()
 
     if args.run_all and not args.validate_only:
-        sel = {s.strip() for s in args.only.split(",") if s.strip()} or {"yolo", "ocr", "bge", "slm"}
+        # 默认不再跑 yolo（它是 Phase C 多变目标可选增强通道，需额外数据集）；需时用 --only yolo 显式开启
+        sel = {s.strip() for s in args.only.split(",") if s.strip()} or {"ocr", "bge", "slm"}
         rc = 0
         if "yolo" in sel:
             extra = ["--data", args.data] if args.data else []

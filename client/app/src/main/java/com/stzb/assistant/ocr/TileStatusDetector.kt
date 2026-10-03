@@ -54,6 +54,17 @@ object TileStatusDetector {
     private val LOWER_GOLDEN = Scalar(18.0, 100.0, 120.0)
     private val UPPER_GOLDEN = Scalar(38.0, 255.0, 255.0)
 
+    // 敌对占领地（红地）在 HSV 中的红色双区间：红跨色调 0°，必须分两段（同 RaidRadarDetector）。
+    // S/V 取中段偏保守：宁可漏报几块，也不把行军红线/告警光晕误判成“一整格敌占地”。
+    private val LOWER_RED_1 = Scalar(0.0, 110.0, 70.0)
+    private val UPPER_RED_1 = Scalar(10.0, 255.0, 255.0)
+    private val LOWER_RED_2 = Scalar(156.0, 110.0, 70.0)
+    private val UPPER_RED_2 = Scalar(180.0, 255.0, 255.0)
+
+    /** 构成“一整格敌对红地”的像素面积下限（720p 基准，低于此视为碎片/细线）。 */
+    private const val MIN_ENEMY_TILE_AREA = 500.0
+    private const val MAX_ENEMY_TILE_AREA = 40000.0
+
     private val PATTERN_LEVEL = Pattern.compile("(?:LV|Lv|lv|等级|级)[\\s.:：]*([1-9]|10)")
 
     /**
@@ -161,6 +172,104 @@ object TileStatusDetector {
             srcMat.release()
             hsvMat.release()
             goldMask.release()
+            hierarchy.release()
+            contours.forEach { it.release() }
+            if (searchArea != null && workingBitmap != fullFrame) {
+                workingBitmap.recycle()
+            }
+        }
+    }
+
+    /**
+     * 敌对占领地（红地）分割：在整图或指定区域里找出被敌方占领的地块。
+     *
+     * 做法：等距地块是一格**实心红色菱形**，故先用 HSV 双区间红掩膜（红跨色调 0°，
+     * 必须分两段，与免战罩同源的光罩提取一致的骨架）提取红色 → 形态学开+闭去碎点并填洞
+     * → 外轮廓 → 再按**面积带 + 长宽比 + 实心度**三重过滤，把行军红线、红色告警
+     * 光晕这类“细/空”的红排除掉，只留“一整格红地”。
+     *
+     * 诚实边界：率土红地与黄土地在低饱和/强光照下会偏色，阈值取中段偏保守；
+     * 面积/长宽/实心度阈值待真机不同分辨率标定。误判为敌占格会触发错误避让/攻击，
+     * 因此这里坚持“宁可漏报、不可误报”。
+     *
+     * @param fullFrame 720p 完整画面或地块周围截取区域
+     * @param searchArea 预期搜索矩形（可选，不传则全图检索）
+     * @return 红地外接矩形列表（全画面绝对坐标，按面积从大到小）；无则空列表
+     */
+    fun detectEnemyTiles(fullFrame: Bitmap, searchArea: Rect? = null): List<Rect> {
+        val workingBitmap = if (searchArea != null) {
+            val left = maxOf(0, searchArea.left)
+            val top = maxOf(0, searchArea.top)
+            val w = minOf(fullFrame.width - left, searchArea.width())
+            val h = minOf(fullFrame.height - top, searchArea.height())
+            if (w <= 0 || h <= 0) return emptyList()
+            Bitmap.createBitmap(fullFrame, left, top, w, h)
+        } else {
+            fullFrame
+        }
+        val offsetX = searchArea?.left ?: 0
+        val offsetY = searchArea?.top ?: 0
+
+        val srcMat = Mat()
+        val hsvMat = Mat()
+        val redMask = Mat()
+        val redMask2 = Mat()
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+        val results = ArrayList<Rect>()
+
+        try {
+            Utils.bitmapToMat(workingBitmap, srcMat)
+            Imgproc.cvtColor(srcMat, hsvMat, Imgproc.COLOR_RGBA2RGB)
+            Imgproc.cvtColor(hsvMat, hsvMat, Imgproc.COLOR_RGB2HSV)
+
+            // 1. 红掩膜双区间并集（红跨 0°，单区间会漏掉一半色相）
+            Core.inRange(hsvMat, LOWER_RED_1, UPPER_RED_1, redMask)
+            Core.inRange(hsvMat, LOWER_RED_2, UPPER_RED_2, redMask2)
+            Core.bitwise_or(redMask, redMask2, redMask)
+
+            // 2. 开运算去孤立红点，闭运算填平菱形内部空洞
+            val kOpen = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+            val kClose = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
+            Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_OPEN, kOpen)
+            Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_CLOSE, kClose)
+            kOpen.release()
+            kClose.release()
+
+            // 3. 外轮廓 + 三重几何过滤，只保留“一整格红地”
+            Imgproc.findContours(redMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+            for (c in contours) {
+                val area = Imgproc.contourArea(c)
+                if (area !in MIN_ENEMY_TILE_AREA..MAX_ENEMY_TILE_AREA) continue
+                val r = Imgproc.boundingRect(c)
+                // 太小的碎点、太细的红线直接排除
+                if (r.width < 30 || r.height < 15) continue
+                val aspect = r.width.toFloat() / r.height.toFloat()
+                // 等距地块外接框约为 2:1 的扁菱形；太方/太长都排除
+                if (aspect !in 1.1f..3.0f) continue
+                // 实心度：菱形填充率≈0.5，细长红线远低于此，用来剔除线状红
+                val solidity = area / (r.width.toDouble() * r.height.toDouble())
+                if (solidity < 0.45) continue
+                results.add(
+                    Rect(
+                        r.x + offsetX,
+                        r.y + offsetY,
+                        r.x + r.width + offsetX,
+                        r.y + r.height + offsetY
+                    )
+                )
+            }
+            results.sortByDescending { it.width().toLong() * it.height().toLong() }
+            Log.i(TAG, "【敌占红地】本帧检出 ${results.size} 块")
+            return results
+        } catch (e: Exception) {
+            Log.e(TAG, "敌占红地分割异常: ${e.message}", e)
+            return emptyList()
+        } finally {
+            srcMat.release()
+            hsvMat.release()
+            redMask.release()
+            redMask2.release()
             hierarchy.release()
             contours.forEach { it.release() }
             if (searchArea != null && workingBitmap != fullFrame) {

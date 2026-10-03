@@ -6,8 +6,8 @@ import android.graphics.Rect
 import android.util.Log
 import com.stzb.assistant.ocr.DefenderEvaluator
 import com.stzb.assistant.ocr.OcrManager
-// 说明：这里原先 `import com.stzb.assistant.ocr.OpenCvMatcher` 但从未使用它，
-// 属于"看起来已经接上了视觉匹配"的误导性导入，已移除。
+// OpenCvMatcher 此前因“只导入不使用”被删；现在 detectMailAlert 真的用上了它，重新导入。
+import com.stzb.assistant.ocr.OpenCvMatcher
 import com.stzb.assistant.ocr.RaidRadarDetector
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.ocr.TileStatusDetector
@@ -485,6 +485,43 @@ object EngineBridge {
         val detail = TileStatusDetector.parseTileDetail(bmp)
         bmp.recycle()
         return detail
+    }
+
+    /**
+     * 敌对占领地（红地）检测：路由到 [TileStatusDetector.detectEnemyTiles]（确定性 HSV 红地分割）。
+     *
+     * 与“金色免战罩”同源的形状/颜色通道，而非依赖任何神经网络权重；
+     * 宁可漏报、不可误报（具体阈值见 [TileStatusDetector.detectEnemyTiles]）。
+     * @param searchArea 限定搜索区域（可选，默认全图）
+     * @return 全画面绝对坐标的红地外接矩形，按面积从大到小；无则空列表
+     */
+    fun detectEnemyTiles(searchArea: Rect? = null): List<Rect> {
+        val frame = captureFrame() ?: return emptyList()
+        return try {
+            TileStatusDetector.detectEnemyTiles(frame, searchArea)
+        } finally {
+            frame.recycle()
+        }
+    }
+
+    /**
+     * 邮件红点/未读角标精定位：路由到 [OpenCvMatcher.findRedBadgeClusters]，
+     * 以“圆度”作置信度门控（低于 [minConfidence] 的红簇不采信，宁缺毋滥）。
+     *
+     * 这是对“整块固定 ROI 色密度粗判”的升级：输出的是逐个真实红角标的质心与外接框。
+     * @param roi 限定搜索区域（如右上角邮件按钮一带），null=全图
+     * @return 达标的红角标（质心/外接框/置信度），按面积从大到小；无则空列表
+     */
+    fun detectMailAlert(
+        roi: Rect? = null,
+        minConfidence: Float = 0.5f
+    ): List<OpenCvMatcher.MatchResult> {
+        val frame = captureFrame() ?: return emptyList()
+        return try {
+            OpenCvMatcher.findRedBadgeClusters(frame, roi).filter { it.score >= minConfidence }
+        } finally {
+            frame.recycle()
+        }
     }
 
     /**

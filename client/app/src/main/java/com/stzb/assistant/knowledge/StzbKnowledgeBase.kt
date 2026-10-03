@@ -40,6 +40,7 @@ object StzbKnowledgeBase {
                 "BUILD" to ButtonDef("BUILD", "建设", listOf("建 设", "筑城", "建造", "起要塞")),
                 "ABANDON" to ButtonDef("ABANDON", "放弃", listOf("放 弃", "放弃领地", "放弃土地")),
                 "CONFIRM" to ButtonDef("CONFIRM", "确定", listOf("确 定", "确认", "出征", "出发", "立即前往")),
+                "CANCEL" to ButtonDef("CANCEL", "取消", listOf("取 消", "关闭", "再想想", "放弃操作", "返回")),
                 "MARCH" to ButtonDef("MARCH", "行军", listOf("行 军")),
                 "TRANSFER" to ButtonDef("TRANSFER", "调兵", listOf("调 兵", "调动")),
                 "RETREAT" to ButtonDef("RETREAT", "撤退", listOf("撤 退", "立即撤退", "召回")),

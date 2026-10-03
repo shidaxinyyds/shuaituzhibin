@@ -82,7 +82,9 @@ class YoloDetector(private val context: Context) {
      *
      * 之前它是 private，外部无从判断"当前跑的是真推理还是几何色度回退"，
      * 于是调用方可能把回退结果当成真实检测结果使用。现在显式暴露，
-     * 由 [com.stzb.assistant.runtime.VisionRuntime] 决定要不要采信其结论。
+     * 由调用方（见 [com.stzb.assistant.service.EngineBridge]，运行时的统一视觉门面）
+     * 决定要不要采信其结论。注：本类目前作为 Phase C 的可选 ncnn 学习通道预留，
+     * 固定 UI 目标的主检测已改走 EngineBridge 下的确定性通道（StzbUiMatcher/TileStatusDetector/RaidRadarDetector/OpenCvMatcher）。
      */
     val isNativeReady: Boolean
         get() = isNativeModelLoaded

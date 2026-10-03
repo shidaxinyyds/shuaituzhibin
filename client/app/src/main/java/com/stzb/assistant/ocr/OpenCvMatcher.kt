@@ -44,6 +44,12 @@ object OpenCvMatcher {
     private const val MIN_DISTINCTIVENESS = 0.04f
     private var isInitialized = false
 
+    // 红色徽标（新邮件红点/未读角标）的 HSV 双区间：红跨色调 0°，必须分两段。
+    private val LOWER_RED_1 = Scalar(0.0, 100.0, 90.0)
+    private val UPPER_RED_1 = Scalar(10.0, 255.0, 255.0)
+    private val LOWER_RED_2 = Scalar(156.0, 100.0, 90.0)
+    private val UPPER_RED_2 = Scalar(180.0, 255.0, 255.0)
+
     // 动态缓存加载的模板 Mat
     private val templateCache = HashMap<String, Mat>()
 
@@ -219,6 +225,101 @@ object OpenCvMatcher {
             // ⚠️ 关键修复：Mat 释放置于 finally，任何匹配/峰区分异常路径都不再泄漏。
             resultMat?.release()
             srcMat.release()
+        }
+    }
+
+    /**
+     * 红色连通域质心定位：把“某个区域里有没有红点/红角标”从整块 ROI 粗判，
+     * 升级为**逐个真实小红簇**的质心 + 外接框。
+     *
+     * 专治 mail_alert 这类“小红色徽标”——它不是可模板匹配的固定图标，而是
+     * 叠加在按钮上的红点，靠颜色定义、位置随角标出现与否变化。做法：
+     * HSV 双区间红掩膜（红跨 0°）→ connectedComponentsWithStats 逐簇 →
+     * 按面积带 + 近圆度过滤出“角标尺寸”的红块 → 返回质心/外接框/置信度。
+     *
+     * 置信度用“圆度”（短边/长边，正圆≈１）表示：红角标接近圆形，细长红条圆度低→低置信。
+     * 面积/圆度阈值待真机标定；本机不可验证，务必结合真机日志回溯。
+     *
+     * @param roi 只在该屏幕矩形内找（全画面绝对坐标）；null=全图
+     * @return 红簇列表（全画面绝对坐标，按面积从大到小）；无则空列表
+     */
+    fun findRedBadgeClusters(
+        srcBitmap: Bitmap,
+        roi: Rect? = null,
+        minArea: Double = 25.0,
+        maxArea: Double = 2500.0
+    ): List<MatchResult> {
+        if (!isInitialized) return emptyList()
+        val full = Mat()
+        val bgr = Mat()
+        val hsv = Mat()
+        val mask = Mat()
+        val mask2 = Mat()
+        val labels = Mat()
+        val stats = Mat()
+        val centroids = Mat()
+        var sub: Mat? = null
+        val results = ArrayList<MatchResult>()
+        try {
+            Utils.bitmapToMat(srcBitmap, full)
+            Imgproc.cvtColor(full, bgr, Imgproc.COLOR_RGBA2BGR)
+            Imgproc.cvtColor(bgr, hsv, Imgproc.COLOR_BGR2HSV)
+
+            val x0 = if (roi != null) maxOf(0, roi.left) else 0
+            val y0 = if (roi != null) maxOf(0, roi.top) else 0
+            sub = if (roi != null) {
+                val x1 = minOf(hsv.cols(), roi.right)
+                val y1 = minOf(hsv.rows(), roi.bottom)
+                if (x1 - x0 < 2 || y1 - y0 < 2) return emptyList()
+                Mat(hsv, org.opencv.core.Rect(x0, y0, x1 - x0, y1 - y0))
+            } else {
+                hsv
+            }
+
+            Core.inRange(sub!!, LOWER_RED_1, UPPER_RED_1, mask)
+            Core.inRange(sub!!, LOWER_RED_2, UPPER_RED_2, mask2)
+            Core.bitwise_or(mask, mask2, mask)
+
+            val n = Imgproc.connectedComponentsWithStats(mask, labels, stats, centroids)
+            for (i in 1 until n) {   // label 0 是背景，跳过
+                val area = stats.get(i, Imgproc.CC_STAT_AREA)[0]
+                if (area !in minArea..maxArea) continue
+                val left = stats.get(i, Imgproc.CC_STAT_LEFT)[0].toInt()
+                val top = stats.get(i, Imgproc.CC_STAT_TOP)[0].toInt()
+                val w = stats.get(i, Imgproc.CC_STAT_WIDTH)[0].toInt()
+                val h = stats.get(i, Imgproc.CC_STAT_HEIGHT)[0].toInt()
+                if (w <= 0 || h <= 0) continue
+                // 近圆度：角标接近正圆→高；细长红条→低
+                val roundness = minOf(w, h).toDouble() / maxOf(w, h).toDouble()
+                if (roundness < 0.35) continue
+                val cx = centroids.get(i, 0)[0] + x0
+                val cy = centroids.get(i, 1)[0] + y0
+                results.add(
+                    MatchResult(
+                        isFound = true,
+                        centerX = cx.toFloat(),
+                        centerY = cy.toFloat(),
+                        score = roundness.toFloat(),
+                        rect = Rect(left + x0, top + y0, left + x0 + w, top + y0 + h)
+                    )
+                )
+            }
+            results.sortByDescending { (it.rect.width() * it.rect.height()).toDouble() }
+            return results
+        } catch (e: Throwable) {
+            Log.w(TAG, "红簇连通域定位失败: ${e.message}")
+            return emptyList()
+        } finally {
+            // sub 为 roi==null 时就是 hsv 本身，不能重复释放；只在它是独立视图时释放
+            if (roi != null) sub?.release()
+            full.release()
+            bgr.release()
+            hsv.release()
+            mask.release()
+            mask2.release()
+            labels.release()
+            stats.release()
+            centroids.release()
         }
     }
 

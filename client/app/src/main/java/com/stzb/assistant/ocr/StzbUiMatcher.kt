@@ -48,6 +48,7 @@ object StzbUiMatcher {
         BUILD("建设", listOf("建 设", "筑城", "建造")),
         ABANDON("放弃", listOf("放 弃", "放弃领地")),
         CONFIRM("确定", listOf("确 定", "确认", "出征", "出发")),
+        CANCEL("取消", listOf("取 消", "关闭", "再想想", "放弃操作")),
         MARCH("行军", listOf("行 军")),
         TRANSFER("调兵", listOf("调 兵", "调动")),
         RETREAT("撤退", listOf("撤 退", "立即撤退")),
