@@ -77,6 +77,16 @@ class YoloDetector(private val context: Context) {
 
     private var isNativeModelLoaded = false
 
+    /**
+     * ncnn 主通道是否真的就绪。
+     *
+     * 之前它是 private，外部无从判断"当前跑的是真推理还是几何色度回退"，
+     * 于是调用方可能把回退结果当成真实检测结果使用。现在显式暴露，
+     * 由 [com.stzb.assistant.runtime.VisionRuntime] 决定要不要采信其结论。
+     */
+    val isNativeReady: Boolean
+        get() = isNativeModelLoaded
+
     init {
         // 尝试探测本地存储或 assets 中的模型资产
         initModel()

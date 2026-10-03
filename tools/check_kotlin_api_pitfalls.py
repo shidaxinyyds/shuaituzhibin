@@ -18,6 +18,7 @@ API 签名**。于是下面这几类错误能一路绿灯过本地闸门，直�
   4. 把 `Pattern.compile(...)` 当 Kotlin Regex 用 `.find()/.findAll()/.groupValues`
                                               —— java.util.regex.Pattern 只有 `.matcher()`
   5. `textBlock.box.left/.top/.right/.bottom` —— OCR 的 TextBlock 只有 `boxPoint: ArrayList<Point>`
+  6. `ai.onnxruntime.Value`                     —— 本绑定无此类；Result 索引出来是 `OnnxValue`
 
 本闸门把这些"编译期才看得见"的坑固化成规则，推送前就能拦下，不必每轮靠 CI 兜底。
 
@@ -50,6 +51,9 @@ RULES = [
     ("textblock-dot-box",
      "OCR TextBlock 没有 .box 矩形；用 boxPoint: ArrayList<Point> 取外接框",
      re.compile(r"\b\w+\s*\.\s*box\s*\.\s*(left|right|top|bottom)\b")),
+    ("ort-value-vs-onnxvalue",
+     "本 ORT 绑定里没有 ai.onnxruntime.Value；Result 索引出来的是 ai.onnxruntime.OnnxValue",
+     re.compile(r"ai\.onnxruntime\s*\.\s*Value\b(?!\w)")),
     ("pattern-kotlin-regex-api",
      "java.util.regex.Pattern 没有 .find()/.findAll()/.groupValues（那是 Kotlin Regex 的 MatchResult）；改用 .matcher(x).find() 或 Regex()",
      None),  # 需要两遍扫描，见下
@@ -193,10 +197,12 @@ BAD_SAMPLES = [
     ("tensor-shape-int", "createTensor(env, buf, longArrayOf(1, N))"),
     ("result-foreach-close", "out?.forEach { it.close() }"),
     ("textblock-dot-box", "val x = matchResult.box.left"),
+    ("ort-value-vs-onnxvalue", "private fun headVec(v: ai.onnxruntime.Value?): FloatArray"),
     ("pattern-kotlin-regex-api", "private val P = Pattern.compile(\"x\")\nval m = P.find(text)"),
 ]
 GOOD_SAMPLES = [
     "val e = OrtEnvironment.getEnvironment()",
+    "private fun headVec(v: ai.onnxruntime.OnnxValue?): FloatArray",
     "OnnxTensor.createTensor(env, LongBuffer.wrap(ids), longArrayOf(1L, MAX_LEN.toLong()))",
     "runCatching { out?.close() }",
     "inputs.values.forEach { runCatching { it.close() } }",  # 安全的显式关闭，不该误报

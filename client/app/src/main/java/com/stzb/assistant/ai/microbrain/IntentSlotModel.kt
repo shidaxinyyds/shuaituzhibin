@@ -209,7 +209,7 @@ object IntentSlotModel {
         }
     }
 
-    private fun headVec(value: ai.onnxruntime.Value?): FloatArray {
+    private fun headVec(value: ai.onnxruntime.OnnxValue?): FloatArray {
         val tensor = value as? ai.onnxruntime.OnnxTensor ?: return FloatArray(0)
         val fb = tensor.floatBuffer
         val arr = FloatArray(fb.remaining())
