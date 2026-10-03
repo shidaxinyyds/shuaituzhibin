@@ -120,5 +120,5 @@ dependencies {
 
     // ONNX Runtime Mobile：③bge 中文向量 / ④意图+槽位微脑 的端侧推理运行时
     // （ARM64 约 12MB，与 assets/models 下的 INT8 权重配合；缺权重时只是加载失败，不影响编译）
-    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.22.0'
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.17.1'
 }
