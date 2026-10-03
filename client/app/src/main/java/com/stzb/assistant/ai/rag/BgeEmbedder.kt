@@ -88,8 +88,8 @@ object BgeEmbedder {
         val out = s.outputInfo
         if (out.isEmpty()) return 0
         val nodeInfo = out.values.firstOrNull() ?: return 0
-        val tensorInfo = nodeInfo.info as? ai.onnxruntime.TensorInfo ?: return 0
-        val shape = tensorInfo.shape
+        val tensorInfo = nodeInfo.getInfo() as? ai.onnxruntime.TensorInfo ?: return 0
+        val shape = tensorInfo.getShape()
         // last_hidden_state: [1, seq, hidden]
         return if (shape.size == 3) shape[2].toInt() else 0
     }
@@ -143,9 +143,9 @@ object BgeEmbedder {
             inputs.values.forEach { it.close() }
 
             val tensor = out[0] as? ai.onnxruntime.OnnxTensor ?: return null
-            val info = tensor.info as? ai.onnxruntime.TensorInfo ?: return null
+            val info = tensor.getInfo() as? ai.onnxruntime.TensorInfo ?: return null
             val buf: FloatBuffer = tensor.floatBuffer
-            val shape = info.shape
+            val shape = info.getShape()
             if (shape.size != 3) {
                 // 直接给出 [1, hidden] 的情况
                 val vec = FloatArray(shape[1].toInt())
