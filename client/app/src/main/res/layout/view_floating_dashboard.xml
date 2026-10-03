@@ -492,6 +492,28 @@
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
             </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="32dp"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <!--
+                  「执行军令」：把上一步识别出的军令真正送进战术流水线。
+                  此前军令只能"被解析出来看"，没有任何执行入口（解析了却打不出去）。
+                  现在统一经 DualTrackSafetyGate 做防幻觉 + 效用校验后下发。
+                -->
+                <Button
+                    android:id="@+id/btnAdvisorExecuteOrder"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="⚔️ 执行该军令（经安全门禁）"
+                    android:textColor="#FFD54F"
+                    android:textSize="11sp" />
+            </LinearLayout>
         </LinearLayout>
 
         <!-- 6. 定时任务面板 (支持用户可配置的定时计划) -->
@@ -508,6 +530,22 @@
                 android:layout_height="wrap_content"
                 android:text="📅 定时战术计划（完全由你编排，到点自动执行）"
                 android:textColor="#A7FFEB"
+                android:textSize="10sp" />
+
+            <!--
+              硬件级 RTC 唤醒的**真实**状态。
+              为什么要单独显示：Android 12+ 需手动授予「闹钟与提醒」权限，
+              没有它时 setExactAndAllowWhileIdle 会被系统拒绝，
+              定时任务在深度息屏后根本不会触发。此前没有任何界面反映这件事，
+              用户只会看到"我设了任务却没执行"。这里如实展示 + 一键授权入口。
+            -->
+            <TextView
+                android:id="@+id/tvScheduleRtcStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="⏰ RTC 唤醒状态：未检测"
+                android:textColor="#FFCC80"
                 android:textSize="10sp" />
 
             <ScrollView
@@ -566,6 +604,34 @@
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
                     android:text="🔖 测试书签"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="32dp"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnEnableExactAlarm"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="⏰ 开启精确闹钟权限"
+                    android:textColor="#FFCC80"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnRefreshRtcStatus"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="🔄 刷新 RTC 状态"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
             </LinearLayout>

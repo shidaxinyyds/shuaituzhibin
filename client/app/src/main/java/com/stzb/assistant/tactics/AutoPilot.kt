@@ -257,7 +257,11 @@ object AutoPilot {
     private fun ensureRaidPatrol(pipeline: TacticalPipeline, intents: Intents, nowMs: Long): Boolean {
         if (!intents.raidDefense) return false
 
-        val patrolAlive = pipeline.currentTaskType == TacticalState.TaskType.RAID_DEFENSE
+        // ⚠️ 必须用 isRaidPatrolActive（它同时接受 RAID_DEFENSE 与 NIGHT_SENTINEL），
+        // 而不是直接判 `== RAID_DEFENSE`：TacticalPipeline 的两个入口都登记 NIGHT_SENTINEL，
+        // 直接判 RAID_DEFENSE 会恒为 false，导致每 60 秒把正在跑的哨兵拆掉重建，
+        // 进而把 startPatrol() 的 lastKeepAliveTimeMs 反复归零 → 5 分钟微保活永不触发。
+        val patrolAlive = pipeline.isRaidPatrolActive
         val needsRestart = !raidDispatched ||
             (!patrolAlive && nowMs - raidLastStartAtMs >= RAID_RESTART_COOLDOWN_MS)
         if (!needsRestart) return false

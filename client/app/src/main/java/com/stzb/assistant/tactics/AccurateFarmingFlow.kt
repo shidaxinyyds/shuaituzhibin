@@ -40,8 +40,17 @@ class AccurateFarmingFlow(
         val minTileLevel: Int = 5,
         val farmingTroopSlot: Int = 2,
         val minPolicyOrdersRequired: Int = 3,
+        /**
+         * 是否允许在"点选到的地块低于 [minTileLevel]"时降级屯田。
+         *
+         * 默认 **false**：优先 Lv.5+ 级资源地，遇到低等级地直接放弃本次，
+         * 避免把 3 策令 + 20 体力花在收益很低的地块上。
+         */
+        val allowBelowMinLevel: Boolean = false,
+        /** 是否启用"防溢清令"：令数达到软上限时连续屯田把令压回安全水位。 */
         val enableAutoPolicyClear: Boolean = true,
         val enableBlacksmithCheck: Boolean = true,
+        /** 是否真的执行"领取/打造"点击；false 则只巡检并汇报，不产生任何点击。 */
         val autoCollectMaterials: Boolean = true
     )
 
@@ -72,8 +81,12 @@ class AccurateFarmingFlow(
                     notifyStatus(TacticalState.Status.COMPLETED, "策令不足无法屯田，打铁巡检已完成")
                     return true
                 }
-                if (currentOrders >= 24) {
-                    logTactic("🚨 策令告警：已达 $currentOrders 令（接近 30 上限），启动强制防溢出屯田！")
+                if (currentOrders >= POLICY_ORDER_SOFT_CAP) {
+                    if (config.enableAutoPolicyClear) {
+                        logTactic("🚨 策令告警：已达 $currentOrders 令（软上限 $POLICY_ORDER_SOFT_CAP，硬上限 $POLICY_ORDER_HARD_CAP），将启动防溢出清令。")
+                    } else {
+                        logTactic("⚠️ 策令已达 $currentOrders 令，但配置关闭了 enableAutoPolicyClear，仅告警不做清令。")
+                    }
                 }
             } else {
                 logTactic("ℹ️ 未能直接读取到顶栏策令数字，继续按照默认配置尝试屯田")
@@ -94,8 +107,38 @@ class AccurateFarmingFlow(
 
             if (!isRunning) return false
 
-            // 4. 点击地块唤出轮盘并解析土地属性
-            val farmSuccess = dispatchFarming(tapPoint, config)
+            // 4. 点击地块唤出轮盘并解析土地属性，必要时**连续屯田以清令防溢出**
+            //
+            //    本轮补齐：`enableAutoPolicyClear` 此前是死字段——界面上给了"防溢清令"的开关，
+            //    代码里却从未读取，命中 24 令时只打印一句"启动强制防溢出屯田"然后照旧只打一轮。
+            //    现在按"令数超出软上限多少"反推需要几轮，并逐轮重新读数，直到降到软上限以下。
+            val plannedRuns = planFarmingRuns(currentOrders, config)
+            if (plannedRuns > 1) {
+                logTactic(
+                    "🚨【防溢清令】当前 $currentOrders 令 ≥ 软上限 $POLICY_ORDER_SOFT_CAP，" +
+                        "计划连续屯田 $plannedRuns 轮以把令压回安全水位。"
+                )
+            }
+
+            var farmSuccess = false
+            var runs = 0
+            var orders = currentOrders
+            while (isRunning && runs < plannedRuns) {
+                runs++
+                logTactic("🌾 屯田第 $runs/$plannedRuns 轮开始（当前令: ${orders ?: "未读到"}）")
+                farmSuccess = dispatchFarming(tapPoint, config)
+                if (!farmSuccess) {
+                    logTactic("⚠️ 第 $runs 轮屯田未能完成，已提前结束清令循环（避免无意义重复点击）。")
+                    break
+                }
+                // 每轮重新读一次令数，只有真正降下来才继续，不做"闭眼循环"
+                orders = detectPolicyOrders()
+                if (orders != null && orders < POLICY_ORDER_SOFT_CAP) {
+                    logTactic("✅【防溢清令完成】当前令数 $orders，已回到软上限 $POLICY_ORDER_SOFT_CAP 以下。")
+                    break
+                }
+                if (!isRunning) break
+            }
 
             if (!isRunning) return false
 
@@ -105,7 +148,7 @@ class AccurateFarmingFlow(
             }
 
             if (farmSuccess) {
-                logTactic("✅ 智能屯田与工坊打铁巡检全部圆满完成")
+                logTactic("✅ 智能屯田与工坊打铁巡检全部圆满完成（共 $runs 轮）")
                 notifyStatus(TacticalState.Status.COMPLETED, "屯田打铁管家任务完成")
                 return true
             } else {
@@ -206,13 +249,38 @@ class AccurateFarmingFlow(
             try {
                 val detail = TileStatusDetector.parseTileDetail(frame)
                 logTactic("🌾 地块属性感知: 等级=Lv.${detail.level}, 资源=${detail.resourceType}, 免战=${detail.isImmune}(${detail.immunityRemainingSec}s), 要塞=${detail.isFortress}")
+
+                // 视觉复核（可选增强）：确认这确实是一块资源地。
+                // 刻意**只做提示不做闸门**——模型存在漏检，用它去拦截正常屯田
+                // 会让功能变得不可用；这里只把"视觉是否也看到了资源地块"写进日志，
+                // 便于事后判断"点击点是否偏了"。
+                logTactic(verifyTileWithVision(frame))
+
                 if (detail.isImmune) {
                     logTactic("⚠️ 目标地块处于免战中（剩余 ${detail.immunityRemainingSec} 秒），无法屯田，放弃操作")
                     WatchdogRecovery.recoverToMainMap()
                     return false
                 }
                 if (detail.level > 0 && detail.level < config.minTileLevel) {
-                    logTactic("⚠️ 地块等级 Lv.${detail.level} 低于门槛 Lv.${config.minTileLevel}，收益偏低（继续执行）")
+                    // 本轮补齐"优先 Lv.5+ 级资源地"：
+                    // 原先只打印一句"收益偏低（继续执行）"就照常屯田——等于把 3 令和 20 体力
+                    // 花在一块低等级地上，与"优先高等级资源地"的产品目标相反。
+                    // 现在默认**拒绝**低等级地块（与 validate_logistics_farming.py M4 的
+                    // "level < min_level → 过滤掉" 语义一致），只有显式放开才降级执行。
+                    if (config.allowBelowMinLevel) {
+                        logTactic(
+                            "⚠️ 地块等级 Lv.${detail.level} 低于门槛 Lv.${config.minTileLevel}，" +
+                                "但配置允许降级执行，继续屯田。"
+                        )
+                    } else {
+                        logTactic(
+                            "⛔ 地块等级 Lv.${detail.level} 低于门槛 Lv.${config.minTileLevel}，" +
+                                "已放弃本次屯田（避免浪费 3 策令）；请重新点选 Lv.${config.minTileLevel}+ 的资源地，" +
+                                "或把 allowBelowMinLevel 设为 true。"
+                        )
+                        WatchdogRecovery.recoverToMainMap()
+                        return false
+                    }
                 }
             } finally {
                 frame.recycle()
@@ -256,36 +324,122 @@ class AccurateFarmingFlow(
     }
 
     /**
+     * 视觉复核：镜头中是否真的存在"资源地块"。
+     *
+     * ## 定位：提示，不是闸门
+     * 真实的业务风险是"点击点偏了 → 对着空地/敌地点了屯田"，白白浪费 3 策令。
+     * 但视觉模型存在漏检，若用它做硬闸门，一次漏检就会让屯田功能整体不可用——
+     * 那比浪费 3 令严重得多。因此这里只输出一行可诊断的结论，
+     * 由玩家/日志判断"是不是点偏了"，**不参与任何放行决策**。
+     *
+     * @param frame 调用方已抓取的帧；本函数**不负责回收**，由调用方的 finally 处理
+     */
+    private fun verifyTileWithVision(frame: Bitmap): String {
+        val detector = com.stzb.assistant.runtime.VisionRuntime.yolo(context)
+            ?: return "👁️ 视觉复核：未启用（无 YOLO 权重或资源不足），以 OCR/OpenCV 结果为准。"
+        if (!com.stzb.assistant.runtime.VisionRuntime.isNativeVisionReady()) {
+            return "👁️ 视觉复核：仅几何色度回退，结论不作为证据。"
+        }
+        return try {
+            val boxes = detector.detect(frame, confThreshold = 0.35f)
+            val tiles = boxes.filter {
+                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.TILE_RESOURCE ||
+                    it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.CITY_GATE
+            }
+            if (tiles.isEmpty()) {
+                "👁️ 视觉复核：未在画面中检出资源地块 —— 若随后屯田失败，" +
+                    "优先怀疑**点击点偏了**（仅提示，不阻断本次操作）。"
+            } else {
+                val best = tiles.maxByOrNull { it.confidence }
+                "👁️ 视觉复核：检出「${best?.detectionClass?.label}」" +
+                    "（置信 ${"%.2f".format(best?.confidence ?: 0f)}），点击点看起来是对的。"
+            }
+        } catch (e: Exception) {
+            "👁️ 视觉复核：检测异常 ${e.message}（不影响本次屯田流程）。"
+        }
+    }
+
+    /**
      * 自动工坊打铁 / 宝物锻造 / 陈情事务巡检
+     *
+     * ## 本轮两处修正
+     * 1. `autoCollectMaterials` 此前是**死字段**（界面给了开关，代码从不读取）。
+     *    现在它是真正的闸门：
+     *      - `true`  → 定位到锻造/领取入口后执行点击收取；
+     *      - `false` → 只巡检并把"发现了什么"如实汇报，**不产生任何点击**。
+     * 2. 原先只要"看到 CONFIRM 就点，然后无条件打印『收益入库』"——
+     *    即使手势派发失败、即使那根本不是领取按钮，也会写成功。
+     *    这属于把失败包装成成功，会让玩家以为材料已经到账。
+     *    现在按**点击与确认的真实返回值**给结论。
      */
     private suspend fun performBlacksmithCheck(config: FarmingConfig): Boolean {
-        logTactic("⚒️ 开始巡检每日工坊打铁 / 工匠锻造 / 宝物精炼事务...")
+        logTactic(
+            "⚒️ 开始巡检每日工坊打铁 / 工匠锻造 / 宝物精炼事务" +
+                (if (config.autoCollectMaterials) "（自动领取已开启）" else "（仅巡检，不自动领取）") + "..."
+        )
         WatchdogRecovery.recoverToMainMap()
 
         // 寻找【陈情】或【工坊】或【事务】或【锻造】入口
         val forgeBtn = EngineBridge.findButton(StzbUiMatcher.ButtonType.FORGE)
-        if (forgeBtn != null) {
-            logTactic("⚒️ 发现打铁/锻造入口: ${forgeBtn.matchedText}，执行点击")
-            EngineBridge.tap(forgeBtn.safeTouchPoint.x, forgeBtn.safeTouchPoint.y)
-            EngineBridge.humanDelay(800, 1300)
+        if (forgeBtn == null) {
+            logTactic("ℹ️ 大地图未见直接陈情打铁入口（今日可能未刷新或已完成），巡检结束。")
+            WatchdogRecovery.recoverToMainMap()
+            return false
+        }
 
-            // 检查是否有可领取的打造收益或免费打造按钮
-            val confirmBtn = EngineBridge.findButton(StzbUiMatcher.ButtonType.CONFIRM)
-                ?: EngineBridge.findButton(StzbUiMatcher.ButtonType.FORGE)
-            if (confirmBtn != null) {
-                logTactic("💎 发现锻造确认/领取按钮: ${confirmBtn.matchedText}，点击执行")
-                EngineBridge.tap(confirmBtn.safeTouchPoint.x, confirmBtn.safeTouchPoint.y)
-                EngineBridge.humanDelay(600, 1000)
-                logTactic("✅ 工匠锻造/打铁操作已完成，收益入库")
-            } else {
-                logTactic("ℹ️ 当前暂无可领取的免费工匠打造或材料")
-            }
+        logTactic("⚒️ 发现打铁/锻造入口: ${forgeBtn.matchedText}")
+        if (!config.autoCollectMaterials) {
+            logTactic("ℹ️ 已按配置关闭自动领取：本次只汇报入口位置，不执行点击。")
+            WatchdogRecovery.recoverToMainMap()
+            return true
+        }
+
+        val opened = EngineBridge.tap(forgeBtn.safeTouchPoint.x, forgeBtn.safeTouchPoint.y)
+        if (!opened) {
+            logTactic("⚠️ 打铁入口手势派发失败，未能进入锻造面板。")
+            WatchdogRecovery.recoverToMainMap()
+            return false
+        }
+        EngineBridge.humanDelay(800, 1300)
+
+        // 检查是否有可领取的打造收益或免费打造按钮
+        val collectBtn = EngineBridge.findButton(StzbUiMatcher.ButtonType.CONFIRM)
+            ?: EngineBridge.findButton(StzbUiMatcher.ButtonType.FORGE)
+        if (collectBtn == null) {
+            logTactic("ℹ️ 当前暂无可领取的免费工匠打造或材料（面板内未见领取/打造按键）。")
+            WatchdogRecovery.recoverToMainMap()
+            return false
+        }
+
+        logTactic("💎 发现锻造/领取按键: ${collectBtn.matchedText}，点击执行")
+        val tapped = EngineBridge.tap(collectBtn.safeTouchPoint.x, collectBtn.safeTouchPoint.y)
+        EngineBridge.humanDelay(600, 1000)
+        if (tapped) {
+            logTactic("✅ 锻造/领取点击已派发（收益是否真到账以游戏内提示为准）。")
         } else {
-            logTactic("ℹ️ 大地图未见直接陈情打铁入口（今日可能未刷新或已完成）")
+            logTactic("⚠️ 锻造/领取手势派发失败，材料可能未领取，请人工复核。")
         }
 
         WatchdogRecovery.recoverToMainMap()
-        return true
+        return tapped
+    }
+
+    /**
+     * 计算本轮需要连续屯田几轮（用于"防溢清令"）。
+     *
+     * 规则与 `validate_logistics_farming.py` 的 M5 一致：
+     *   - 关闭防溢清令、或没读到令数 → 固定跑 1 轮（不猜）；
+     *   - 令数未达软上限 → 跑 1 轮（正常屯田）；
+     *   - 令数 ≥ 软上限 → 按"超出量 / 每次消耗令数"反推轮数，并加 1 轮余量，
+     *     上限 [MAX_CLEAR_RUNS] 轮兜底，防止读数异常导致无限循环。
+     */
+    private fun planFarmingRuns(currentOrders: Int?, config: FarmingConfig): Int {
+        if (!config.enableAutoPolicyClear) return 1
+        if (currentOrders == null) return 1
+        if (currentOrders < POLICY_ORDER_SOFT_CAP) return 1
+        val perRun = config.minPolicyOrdersRequired.coerceAtLeast(1)
+        val overflow = currentOrders - POLICY_ORDER_SOFT_CAP
+        return (overflow / perRun + 2).coerceIn(2, MAX_CLEAR_RUNS)
     }
 
     private fun logTactic(msg: String) {
@@ -305,5 +459,14 @@ class AccurateFarmingFlow(
 
     companion object {
         private const val TAG = "AccurateFarmingFlow"
+
+        /** 策令硬上限（率土为 30）。 */
+        const val POLICY_ORDER_HARD_CAP = 30
+
+        /** 策令软上限：达到即启动防溢清令，避免顶到硬上限后策令产出被浪费。 */
+        const val POLICY_ORDER_SOFT_CAP = 24
+
+        /** 单次清令循环最多连续屯田几轮，防止读数异常导致无限循环。 */
+        private const val MAX_CLEAR_RUNS = 8
     }
 }

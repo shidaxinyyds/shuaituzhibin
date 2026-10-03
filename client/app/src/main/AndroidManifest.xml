@@ -14,6 +14,29 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+      系统硬件级 RTC 精确定时唤醒权限（离线战术定时管家的核心依赖）。
+
+      为什么必须声明：`ScheduledTaskManager.syncNextExactAlarm()` 调用的是
+      `AlarmManager.setExactAndAllowWhileIdle()`。自 Android 12 (API 31) 起，
+      该调用**必须**持有 SCHEDULE_EXACT_ALARM，否则直接抛 SecurityException——
+      此前本清单漏了这一条，异常被 catch 静默吞掉，"硬件级 RTC 唤醒"实际退化成
+      15 秒协程轮询，深度息屏（Doze）后定时任务根本不会准点触发。
+
+      targetSdk 34 下该权限不会被自动授予，需要在运行时引导用户到
+      「设置 → 应用 → 特殊应用权限 → 闹钟与提醒」手动开启
+      （见 ScheduledTaskManager.needsExactAlarmPermission / openExactAlarmSettings）。
+    -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!--
+      开机重建定时闹钟权限。
+      系统重启会清空所有 AlarmManager 精确闹钟，必须在 BOOT_COMPLETED 时把
+      持久化的定时计划重新登记回硬件 RTC，否则“离线战术定时管家”一重启就静默失效。
+      （见 BootCompletedReceiver / ScheduledTaskManager.restoreAlarmsAfterBoot）
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:name=".App"
         android:allowBackup="false"
@@ -66,6 +89,20 @@
             android:name=".tactics.ScheduledTaskManager$ScheduledTaskAlarmReceiver"
             android:enabled="true"
             android:exported="false" />
+
+        <!--
+          开机自启重建接收器：系统重启后重新登记定时管家的硬件 RTC 闹钟。
+          BOOT_COMPLETED 由系统发出，必须 exported=true 才能收到（targetSdk 34 要求显式声明）。
+        -->
+        <receiver
+            android:name=".tactics.BootCompletedReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

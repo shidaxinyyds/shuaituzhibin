@@ -6,6 +6,8 @@ name: Static Verification
 # 它盯的是那些"编译期不报错、但会在运行期或 CI 里炸"的问题：
 #   * 资源引用一致性（R.id/R.color/R.string/R.drawable/R.layout 与 XML 对账）
 #   * 成员引用一致性（枚举常量、关键对象成员是否真的有声明）
+#   * **接收者标识符声明对账**（如 `scope.launch` 而 scope 从未声明 → Unresolved reference）
+#   * **具名构造参数对账**（如 `Foo(a = 1, c = 2)` 而 c 不存在 → No parameter with name）
 #   * findViewById<T> 与 XML 元素类型是否兼容（不兼容会抛 ClassCastException）
 #   * 领域不变量（关键状态是否只在统一入口内维护）
 #   * native OCR 构建前置条件（include 路径、链接库、JNI 符号与签名、分支互斥）

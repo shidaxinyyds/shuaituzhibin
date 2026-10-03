@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import com.stzb.assistant.runtime.TouchGate
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -22,6 +23,17 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     private val scope = CoroutineScope(Dispatchers.Default)
     private var currentJob: Job? = null
     private var activeTaskType: TacticalState.TaskType? = null
+
+    /**
+     * 夜战哨兵是**独立常驻后台守护**，与前台任务并存：
+     *  - 刻意不登记 [activeTaskType]，否则 AutoPilot 会因 `busy=当前非空` 永不派发其它目标，
+     *    且任何前台任务的 stopCurrentTask 都会把夜战防护整段掐掉；
+     *  - 与前台的抢屏竞态统一由 [TouchGate] 所有权锁消除。
+     */
+    private var guardianJob: Job? = null
+
+    @Volatile
+    private var guardianActive = false
 
     val roadPavingFlow = RoadPavingFlow(this)
     val immunityBreakFlow = ImmunityBreakFlow(this)
@@ -40,6 +52,27 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      */
     val currentTaskType: TacticalState.TaskType?
         get() = activeTaskType
+
+    /**
+     * 夜战巡检守护（哨兵）当前是否真的在跑。
+     *
+     * ## 为什么需要这个统一判据
+     * `RAID_DEFENSE`（"深夜应急总控"）与 `NIGHT_SENTINEL`（"暗夜天眼防沦哨兵"）
+     * 是**同一件事的两个历史名称**：`RaidDefenseFlow` 已整体升级为 `NightSentinelFlow`，
+     * 而 [startRaidDefense] 与 [startNightSentinel] 两个入口**都**登记 `NIGHT_SENTINEL`。
+     *
+     * 此前 `AutoPilot.ensureRaidPatrol()` 与悬浮窗的 `patrolRunning` 都直接判
+     * `currentTaskType == RAID_DEFENSE` —— 而 activeTaskType **永远不会**是 RAID_DEFENSE，
+     * 于是这个判断恒为 false，引发两处真实故障：
+     *   1. 托管以为"哨兵没在跑"，在敌袭告警态下每满 60 秒就把正在运行的哨兵
+     *      `stop` 掉再重建 → `startPatrol()` 里的 `lastKeepAliveTimeMs` 每 60 秒被归零一次，
+     *      而保活周期是 5 分钟 → **「防掉线微保活」永远不会被执行**；
+     *   2. 军师面板的状态文案里 `patrolRunning` 恒为 false，会谎报"雷达哨兵未巡查"。
+     *
+     * 现在统一收敛到本判据，两处调用点都改用它，避免再出现"名字对不上导致功能静默失效"。
+     */
+    val isRaidPatrolActive: Boolean
+        get() = guardianActive
 
     fun registerListener(listener: TacticalState.TacticalEventListener) {
         if (!listeners.contains(listener)) {
@@ -82,7 +115,8 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
 
         val job = scope.launch {
             try {
-                block()
+                // 前台任务整段独占画面所有权：期间夜战守护只抓屏+告警，不会抢屏点击。
+                TouchGate.foregroundSession { block() }
             } catch (e: CancellationException) {
                 throw e // 主动取消不算异常
             } catch (e: Exception) {
@@ -287,6 +321,16 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      * 根据同盟邮件法令卡片一键启动双压秒全勤攻城
      */
     fun startSiegeFromMail(mailPlan: AllianceMailParser.SiegeMailPlan) {
+        // 邮件里没读到触敌时刻时，解析器会回落到默认 21:00:00。
+        // 压秒的价值就在那一秒，因此这里必须**显式告警**，让用户知道当前基准是"猜的"。
+        if (!mailPlan.timeFound) {
+            onLogEmitted(TacticalState.TacticalLog(
+                TacticalState.TaskType.SIEGE_SYNC,
+                "WARN",
+                "⚠️ 邮件未识别到触敌时刻，已按默认 ${mailPlan.targetTimeStr} 计算压秒基准。" +
+                    "若这不是法令上的真实时间，请改用「定时」页签手动指定，或把时间补进法令文本后重新解析。"
+            ))
+        }
         val screenCenter = android.graphics.PointF(
             com.stzb.assistant.service.CoordinateTransformer.virtualWidth / 2f,
             com.stzb.assistant.service.CoordinateTransformer.virtualHeight / 2f
@@ -308,19 +352,60 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     /**
      * 启动深夜敌袭巡检与决策 C 自动反击守护任务
      */
-    fun startRaidDefense(config: RaidDefenseFlow.DefenseConfig) {
-        launchTask(TacticalState.TaskType.NIGHT_SENTINEL) {
-            raidDefenseFlow.startPatrol(config)
+    fun startRaidDefense(config: RaidDefenseFlow.DefenseConfig) = startGuardian(config)
+
+    /**
+     * 启动暗夜天眼哨兵守护流。
+     */
+    fun startNightSentinel(config: RaidDefenseFlow.DefenseConfig) = startGuardian(config)
+
+    /**
+     * 拉起夜战守护。刻意**不走** [launchTask]：守护是常驻后台 Job，
+     * 不登记 activeTaskType，从而（1）AutoPilot 仍可正常下发其它目标，
+     * （2）前台任务不会通过 stopCurrentTask 误将夜战防护掉掉。与前台的抢屏竞态由 [TouchGate] 保证。
+     */
+    private fun startGuardian(config: RaidDefenseFlow.DefenseConfig) {
+        synchronized(this) {
+            if (guardianActive) {
+                Log.i(TAG, "夜战守护已在运行，忽略重复拉起。")
+                return
+            }
+            guardianActive = true
+            guardianJob = scope.launch {
+                try {
+                    raidDefenseFlow.startPatrol(config)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e(TAG, "夜战守护异常退出: ${e.message}", e)
+                    onStatusChanged(
+                        TacticalState.TaskType.NIGHT_SENTINEL,
+                        TacticalState.Status.FAILED,
+                        "守护异常退出: ${e.message}"
+                    )
+                } finally {
+                    synchronized(this@TacticalPipeline) {
+                        guardianActive = false
+                        guardianJob = null
+                    }
+                }
+            }
         }
     }
 
-    /**
-     * 启动暗夜天眼哨兵守护流
-     */
-    fun startNightSentinel(config: RaidDefenseFlow.DefenseConfig) {
-        launchTask(TacticalState.TaskType.NIGHT_SENTINEL) {
-            raidDefenseFlow.startPatrol(config)
+    /** 停止夜战守护（独立于前台任务的“停止当前”）。 */
+    fun stopGuardian() {
+        synchronized(this) {
+            guardianJob?.cancel()
+            guardianJob = null
+            guardianActive = false
         }
+        raidDefenseFlow.stop()
+        onStatusChanged(
+            TacticalState.TaskType.NIGHT_SENTINEL,
+            TacticalState.Status.INTERRUPTED,
+            "暗夜天眼守护已停止。"
+        )
     }
 
     /**
@@ -348,8 +433,14 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         val prev = activeTaskType
         when (prev) {
             TacticalState.TaskType.ROAD_PAVING -> roadPavingFlow.stop()
-            TacticalState.TaskType.IMMUNITY_BREAK,
-            TacticalState.TaskType.TACTICAL_SCHEDULE -> immunityBreakFlow.stop()
+            // 破免流有自己的运行标志，必须显式复位。
+            TacticalState.TaskType.IMMUNITY_BREAK -> immunityBreakFlow.stop()
+            // ⚠️ 修正错位：TACTICAL_SCHEDULE 的任务体就是本类内部的 executeTimedDispatch，
+            // 取消 currentJob 即可收尾；此前它被错并到 IMMUNITY_BREAK 那一支，
+            // 等于"停定时任务却去停了破免流"。
+            // （它内部若下发了破免，activeTaskType 早已被 launchTask 改成 IMMUNITY_BREAK，
+            //   会走上面那条分支，所以这里什么都不用做。）
+            TacticalState.TaskType.TACTICAL_SCHEDULE -> {}
             TacticalState.TaskType.SIEGE_SYNC -> siegeSyncFlow.stop()
             TacticalState.TaskType.RAID_DEFENSE,
             TacticalState.TaskType.NIGHT_SENTINEL -> raidDefenseFlow.stop()
@@ -372,10 +463,17 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         roadPavingFlow.stop()
         immunityBreakFlow.stop()
         siegeSyncFlow.stop()
-        raidDefenseFlow.stop()
         dailyLogisticsFlow.stop()
         accurateFarmingFlow.stop()
         AlarmRinger.stopAlarm(context)
+
+        // 夜战守护是独立后台 Job，总控急停必须显式收掉它。
+        synchronized(this) {
+            guardianJob?.cancel()
+            guardianJob = null
+            guardianActive = false
+        }
+        raidDefenseFlow.stop()
 
         currentJob?.cancel()
         currentJob = null

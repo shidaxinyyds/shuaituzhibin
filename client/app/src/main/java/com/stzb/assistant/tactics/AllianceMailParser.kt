@@ -32,7 +32,17 @@ object AllianceMailParser {
         val fortressWorldCoord: Pair<Int, Int>? = null,
         val demolitionOffsetSec: Int = 5,
         val rawDecreeText: String = "",
-        val confidence: Float = 0.95f
+        val confidence: Float = 0.95f,
+        /**
+         * 是否**真的**从邮件里读到了触敌时刻。
+         *
+         * 为什么要显式带上：邮件没写时间时，本解析器会回落到默认 21:00:00。
+         * 此前这个回落只体现在 `confidence` 上，调用方无法分辨
+         * "读到 21:00" 与 "没读到、按 21:00 猜的" ——
+         * 于是可能把一次毫秒级卡秒悄悄安排在错误的时刻上。
+         * 现在调用方可以据此**拒绝下发**或要求用户确认。
+         */
+        val timeFound: Boolean = true
     )
 
     // 正则提取模式
@@ -95,8 +105,12 @@ object AllianceMailParser {
         }
 
         val targetCoord = coords.firstOrNull()
-        // 若邮件中出现第 2 个坐标且文本包含"要塞"或"集合"，判定为集合要塞坐标
-        val fortressCoord = if (coords.size >= 2) coords[1] else null
+        // 只有当邮件里**确实提到要塞/集合**时，才把第 2 个坐标当作集合要塞坐标。
+        // 之前这里是无条件取 coords[1]，与注释不符：一封只写了两个普通地块坐标的邮件，
+        // 会被误判出"前线要塞"并把部队提前调往一个随机地点。
+        val mentionsFortress = cleanText.contains("要塞") || cleanText.contains("集合") ||
+                cleanText.contains("集结") || cleanText.contains("前线")
+        val fortressCoord = if (coords.size >= 2 && mentionsFortress) coords[1] else null
 
         // 3. 提取触敌时间
         var hour = 21 // 默认 21:00
@@ -156,7 +170,12 @@ object AllianceMailParser {
             }
         }
 
-        val confidence = if (targetCoord != null && timeFound) 0.98f else 0.85f
+        // 置信度：坐标与时间都读到才是高置信；缺任一都要显式降级（而不是悄悄用默认值）
+        val confidence = when {
+            targetCoord != null && timeFound -> 0.98f
+            targetCoord != null && !timeFound -> 0.70f
+            else -> 0.85f
+        }
 
         val plan = SiegeMailPlan(
             targetName = targetName,
@@ -167,10 +186,23 @@ object AllianceMailParser {
             fortressWorldCoord = fortressCoord,
             demolitionOffsetSec = demoDelay,
             rawDecreeText = cleanText,
-            confidence = confidence
+            confidence = confidence,
+            timeFound = timeFound
         )
 
-        Log.i(TAG, "同盟法令解析完成: 目标=${plan.targetName} $targetCoord, 触敌=${plan.targetTimeStr}, 拆迁延迟=${plan.demolitionOffsetSec}s, 要塞=$fortressName $fortressCoord")
+        if (!timeFound) {
+            Log.w(
+                TAG,
+                "⚠️ 邮件里未识别到触敌时刻，已回落到默认 $timeStr。" +
+                    "调用方应要求用户确认后再下发压秒（timeFound=false）。"
+            )
+        }
+        Log.i(
+            TAG,
+            "同盟法令解析完成: 目标=${plan.targetName} $targetCoord, 触敌=${plan.targetTimeStr}" +
+                "(读到时=$timeFound), 拆迁延迟=${plan.demolitionOffsetSec}s, " +
+                "要塞=$fortressName $fortressCoord, 置信=${plan.confidence}"
+        )
         return plan
     }
 }

@@ -29,6 +29,14 @@ object BgeEmbedder {
     private const val TAG = "BgeEmbedder"
     private const val MAX_LEN = 64
 
+    /**
+     * 加载 bge（ORT 会话 + 词表）的预计内存开销（MB）。
+     *
+     * bge-small-zh INT8 权重约 25~30MB，加上 ORT 运行时开销按 40MB 估，
+     * 交给 [com.stzb.assistant.runtime.ResourceGuard] 做准入判断。
+     */
+    private const val BGE_COST_MB = 40
+
     @Volatile
     private var loaded = false
 
@@ -36,9 +44,29 @@ object BgeEmbedder {
     private var vocab: Map<String, Int> = emptyMap()
     private var dim = 0
 
+    private var releaseHookRegistered = false
+
     fun isLoaded(): Boolean = loaded
 
     fun vectorDim(): Int = dim
+
+    /**
+     * 释放 ORT 会话与词表（系统回收内存时由 ResourceGuard 回调）。
+     *
+     * 释放后 [ensureLoaded] 会在下次调用时重新按资源水位判断能否加载；
+     * 检索侧会自动退回 64 维哈希向量路径，**不会**因为释放而抛异常或返回空结果。
+     */
+    fun release() {
+        try {
+            session?.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "关闭 ORT 会话异常: ${e.message}")
+        }
+        session = null
+        vocab = emptyMap()
+        loaded = false
+        Log.i(TAG, "已释放 bge 会话以回收内存，检索将退回 64 维哈希向量路径。")
+    }
 
     /** 载入资产；成功返回 true（只代表"推理会话建起来了"，不代表检索结果一定好）。 */
     fun ensureLoaded(context: Context): Boolean {
@@ -55,6 +83,18 @@ object BgeEmbedder {
             return false
         }
 
+        // 资源准入闸门：ORT 会话 + 词表常驻内存约数十 MB。
+        // 没有余量时**明确放弃**并回退 64 维哈希路径，而不是硬加载把进程顶到 LMK 边缘——
+        // 一次检索质量下降，远好过常驻进程被系统杀掉导致压秒/夜战防护整体消失。
+        if (!com.stzb.assistant.runtime.ResourceGuard.canAfford(BGE_COST_MB)) {
+            Log.w(
+                TAG,
+                "系统可用内存不足（bge 约需 ${BGE_COST_MB}MB）：${com.stzb.assistant.runtime.ResourceGuard.describe()}。" +
+                    "放弃加载 bge，③ 降级为 64 维哈希向量。"
+            )
+            return false
+        }
+
         return try {
             vocab = readVocab(vocabPath)
             val env = ai.onnxruntime.OrtEnvironment.getEnv()
@@ -65,6 +105,11 @@ object BgeEmbedder {
                 return false
             }
             loaded = true
+            // 系统开始回收内存时主动释放 ORT 会话（本进程是常驻进程，被 LMK 杀掉代价太大）
+            if (!releaseHookRegistered) {
+                com.stzb.assistant.runtime.ResourceGuard.registerReleaseHook { release() }
+                releaseHookRegistered = true
+            }
             Log.i(TAG, "bge 端侧向量器已加载，向量维度 $dim。")
             true
         } catch (e: Throwable) {
@@ -108,9 +153,11 @@ object BgeEmbedder {
         push("[CLS]")
         var i = 0
         while (i < chars.length) {
-            val pair = chars.substring(i, i + 2)
-            if (i + 1 < chars.length && vocab.containsKey(pair)) {
-                push(pair)
+            // 先判边界再取二元组：原实现先 substring(i, i+2)，奇数长度文本的
+            // 最后一个字符会越界抛异常，并被 embed 的 catch(Throwable) 吞成 null（静默降级）。
+            val hasPair = i + 1 < chars.length
+            if (hasPair && vocab.containsKey(chars.substring(i, i + 2))) {
+                push(chars.substring(i, i + 2))
                 i += 2
             } else {
                 push(chars.substring(i, i + 1))
@@ -128,10 +175,11 @@ object BgeEmbedder {
     /** 对查询做 mean pooling + L2 归一化；失败返回 null。 */
     fun embed(text: String): FloatArray? {
         val s = session ?: return null
+        val env = ai.onnxruntime.OrtEnvironment.getEnv()
+        val inputs = HashMap<String, ai.onnxruntime.OnnxTensor>()
+        var out: ai.onnxruntime.OrtSession.Result? = null
         return try {
             val (ids, mask) = tokenIds(text)
-            val env = ai.onnxruntime.OrtEnvironment.getEnv()
-            val inputs = HashMap<String, ai.onnxruntime.OnnxTensor>()
             inputs["input_ids"] = ai.onnxruntime.OnnxTensor.createTensor(
                 env, LongBuffer.wrap(ids), longArrayOf(1, MAX_LEN))
             inputs["attention_mask"] = ai.onnxruntime.OnnxTensor.createTensor(
@@ -139,9 +187,7 @@ object BgeEmbedder {
             inputs["token_type_ids"] = ai.onnxruntime.OnnxTensor.createTensor(
                 env, LongBuffer.wrap(LongArray(MAX_LEN)), longArrayOf(1, MAX_LEN))
 
-            val out = s.run(inputs)
-            inputs.values.forEach { it.close() }
-
+            out = s.run(inputs)
             val tensor = out[0] as? ai.onnxruntime.OnnxTensor ?: return null
             val info = tensor.getInfo() as? ai.onnxruntime.TensorInfo ?: return null
             val buf: FloatBuffer = tensor.floatBuffer
@@ -150,28 +196,28 @@ object BgeEmbedder {
                 // 直接给出 [1, hidden] 的情况
                 val vec = FloatArray(shape[1].toInt())
                 buf.get(vec)
-                return normalize(vec)
-            }
-            val hidden = shape[2].toInt()
-            val seq = shape[1].toInt()
-            val acc = FloatArray(hidden)
-            var count = 0
-            for (t in 0 until seq) {
-                val keep = mask[t] == 1L
-                if (!keep) continue
-                for (h in 0 until hidden) {
-                    val v = buf[t * hidden + h]
-                    acc[h] += v
+                normalize(vec)
+            } else {
+                val hidden = shape[2].toInt()
+                val seq = shape[1].toInt()
+                val acc = FloatArray(hidden)
+                var count = 0
+                for (t in 0 until seq) {
+                    if (mask[t] != 1L) continue
+                    for (h in 0 until hidden) acc[h] += buf[t * hidden + h]
+                    count++
                 }
-                count++
+                val denom = if (count == 0) 1f else count.toFloat()
+                normalize(FloatArray(hidden) { acc[it] / denom })
             }
-            val denom = if (count == 0) 1f else count.toFloat()
-            val pooled = FloatArray(hidden) { acc[it] / denom }
-            out.forEach { it.close() }
-            normalize(pooled)
         } catch (e: Throwable) {
             Log.w(TAG, "bge 向量化失败（③ 降级）: ${e.message}")
             null
+        } finally {
+            // ⚠️ 关键修复：输出张量与输入张量必须在**所有**路径（含 tensor/info 为 null 的
+            // early-return、shape!=3 分支、异常）释放，否则长跑 native 内存只增不减。
+            out?.forEach { runCatching { it.close() } }
+            inputs.values.forEach { runCatching { it.close() } }
         }
     }
 

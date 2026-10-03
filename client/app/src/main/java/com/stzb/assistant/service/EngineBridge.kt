@@ -188,7 +188,24 @@ object EngineBridge {
         val clicked: Boolean,
         val failure: StzbUiMatcher.ButtonLookupFailure?,
         val detail: String
-    )
+    ) {
+        /**
+         * 与 [ClickAndExpect.ok] 同名对齐的"可继续推进"判据。
+         *
+         * **为什么必须补上它**：`clickButtonDiagnosed()` 返回本类型，
+         * 而 `clickAndExpect()` 返回 [ClickAndExpect]。两个结果类型都有 `ok` 才不容易误用——
+         * 此前有 3 处调用方（`TacticalPipeline.startTimedDispatch` 的 confirmRes、
+         * `DailyLogisticsFlow.performReserveRecruitment` 的 recruitAction、
+         * `AccurateFarmingFlow.dispatchFarming` 的 confirmAction）
+         * 把本类型当 [ClickAndExpect] 用，写了 `.ok` 而这个成员当时并不存在，
+         * 直接导致整个模块**编译失败**（`Unresolved reference: ok`）。
+         *
+         * 语义边界：本类型不具备场景校验能力，
+         * 因此 [ok] 只代表"按键已定位并成功派发点击"，**不代表目标界面已经出现**。
+         * 需要确认界面跳转时请改用 `clickAndExpect()`。
+         */
+        val ok: Boolean get() = clicked
+    }
 
     /**
      * 带原因诊断的按键点击。

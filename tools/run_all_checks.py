@@ -19,6 +19,15 @@
   8. `validate_scene_fingerprint.py` 场景指纹算法在真机截图上的实测（需要截图）
   9. `tools/p1/check_assets.py`    入包资产体检：体积预算 / RAG 索引契约 / 假权重（离线纯 stdlib）
  10. `tools/p1/check_bases.py`     模型权重下载清单核验（默认离线只读；`--download` 才联网）
+ 11. `check_undeclared_receivers.py` 接收者标识符声明对账（拦 `Unresolved reference: scope` 这类）
+ 12. `check_ctor_named_args.py`    具名构造参数对账（拦 `No parameter with name` 这类）
+
+> 11 / 12 是补上 `verify_refs.py` 的射程盲区：它只对账**枚举常量**与**整对象成员**
+> （`ButtonType.X` / `EngineBridge.x`），查不到 `局部变量.属性`、`this 成员`
+> 与**具名实参**。真实教训有两个：
+>   * `OverlayWindowManager.kt` 里有 3 处 `scope.launch`，而 `scope` 从未声明；
+>   * 3 处把 `ClickOutcome` 当 `ClickAndExpect` 用、写了不存在的 `.ok`。
+> 这两类都让工程**编不出 APK**，却在当时的静态闸门下一路绿灯。
 
 散着敲这些命令既容易漏，也没法作为"可交付的验证入口"。本脚本把它们串起来，
 并可直接在 CI 里跑（新增的 `.github/workflows/verify.yml` 就是这么用的）。
@@ -69,7 +78,15 @@ def run_checker_inprocess(name, argv):
     mod = importlib.util.module_from_spec(spec)
     try:
         spec.loader.exec_module(mod)  # 先把模块跑起来（定义 main）
-    except Exception as e:
+    except BaseException as e:
+        # ⚠️ 必须是 BaseException 而不是 Exception。
+        #
+        # `check_ci_shell.py` 在**模块顶层**做 `except ImportError: sys.exit(2)`，
+        # 而 `SystemExit` 继承自 BaseException、**不是** Exception。
+        # 原先只捕获 Exception，于是缺 PyYAML 时这个 SystemExit 会一路穿出
+        # 本函数与主循环，把整条回归**在第 5 项就掐断**——
+        # 表现是"跑到一半就停"，极容易被误读成"后面都过了"（假绿）。
+        # 现在它只会让这一项自己失败，其余检查照跑。
         return 3, f"[加载失败] {type(e).__name__}: {e}"
 
     buf = io.StringIO()
@@ -127,6 +144,31 @@ def build_checks(args):
             "id": "native-ocr-selftest",
             "title": "native 校验器的反例自测（注入缺陷）",
             "script": "selftest_native_ocr_check.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "undeclared-receivers",
+            "title": "接收者标识符声明对账（拦 Unresolved reference）",
+            "script": "check_undeclared_receivers.py",
+            "argv": ["--root", os.path.join("client", "app", "src", "main")],
+            "required": True,
+        },
+        {
+            "id": "ctor-named-args",
+            "title": "具名构造参数对账（拦 No parameter with name）",
+            "script": "check_ctor_named_args.py",
+            "argv": ["--root", os.path.join("client", "app", "src", "main")],
+            "required": True,
+        },
+        {
+            # 注意：这里刻意**不加 --strict**。
+            # 付费墙开发模式是当前有意保留的开发态（后端未部署前翻成 false 会自锁），
+            # 若让它硬失败，CI 会长期飘红，而长期飘红的唯一后果是"所有人开始忽略它"。
+            # 故此检查默认只报告；发布前手动 `python tools/check_release_readiness.py --strict`。
+            "id": "release-readiness",
+            "title": "发布就绪自检（付费墙/权限/崩溃兜底/资产）",
+            "script": "check_release_readiness.py",
             "argv": [],
             "required": True,
         },

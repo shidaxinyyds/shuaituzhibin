@@ -16,7 +16,8 @@ import android.util.Log
  * 
  * 核心痛点解决：
  *   1. 凌晨 3:00~5:00 突发敌袭偷家时，高分贝铃声 + 持续震动强力唤醒玩家；
- *   2. 自动获取 PowerManager 唤醒锁，保持屏幕点亮，避免手机休眠冻结无障碍与截屏通道。
+ *   2. 获取 PARTIAL_WAKE_LOCK 保持 CPU 清醒，确保手机休眠时铃声/震动仍能持续
+ *      （真正点亮屏幕需全屏通知意图，本处不伪造“亮屏”能力）。
  */
 object AlarmRinger {
 
@@ -34,12 +35,16 @@ object AlarmRinger {
         Log.w(TAG, "🚨 触发夜战敌袭紧急警报！正在唤醒设备与拉响警报...")
 
         try {
-            // 1. 点亮屏幕并保持常亮
+            // 1. 保持 CPU 清醒（PARTIAL_WAKE_LOCK 未废弃且在各版本都有效）。
+            //    ⚠️ 原先用 SCREEN_BRIGHT_WAKE_LOCK|ACQUIRE_CAUSES_WAKEUP：该级别自 API 19 起废弃、
+            //    在现代 Android 上**根本点不亮屏幕**，只是“看起来在亮屏”。真要在息屏时唤醒玩家，
+            //    靠的是下面的 USAGE_ALARM 铃声 + 持续震动；亮屏需全屏通知意图（另行实现）。
             val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = pm.newWakeLock(
-                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                PowerManager.PARTIAL_WAKE_LOCK,
                 "StzbAssistant:RaidAlarmWakeLock"
             ).apply {
+                setReferenceCounted(false)
                 acquire(10 * 60 * 1000L) // 最长保持 10 分钟
             }
 

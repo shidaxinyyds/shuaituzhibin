@@ -31,11 +31,14 @@ import os
 import re
 import sys
 
+# ⚠️ 不要在模块顶层 sys.exit —— 本脚本会被 `run_all_checks.py` 用 importlib 加载，
+# 顶层 `sys.exit(2)` 抛出的 SystemExit 不属于 Exception，会**穿出调用方**并把
+# 整条一键回归掐断（表现为"跑到第 5 项就停"，看起来像后面都过了）。
+# 因此把缺依赖的判断推迟到 main() 里，让它只影响本项检查。
 try:
     import yaml
 except ImportError:
-    print("需要 PyYAML：pip install pyyaml", file=sys.stderr)
-    sys.exit(2)
+    yaml = None
 
 KEYWORDS = ("if", "then", "elif", "else", "fi", "for", "do", "done",
             "while", "case", "esac", "select", "until")
@@ -147,6 +150,11 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+    if yaml is None:
+        print("需要 PyYAML：pip install pyyaml（本次只影响本项检查，不会中断其它检查）",
+              file=sys.stderr)
+        return 2
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--workflows", default=os.path.join(".github", "workflows"))

@@ -129,6 +129,13 @@ class EdgeSlmEngine(private val context: Context) {
 
     /**
      * 核心接口 2：战报深度会诊与兵种战法克制诊断 (RAG向量增强)
+     *
+     * **本轮修复**：
+     *   1. 接入 PVE / PVP 分流：先在 RAG 层判定战报类型，再把专属结论（PVE 守军暴走/反击机制
+     *      与补刀阈值；PVP 速度差先手、同类指挥战法冲突、加点超车建议）带进军师评述。
+     *   2. 战损不再写死 `myTroopLoss = 2300 / enemyTroopLoss = 6800`——
+     *      那两个数字此前与战报毫无关系，属于"看起来分析过了"的假数据。
+     *      现在从战报原文解析，读不到就如实报 0（并在评述里注明未读到）。
      */
     fun diagnoseBattleReport(reportText: String): BattleDiagnosis {
         val keySkills = mutableListOf<String>()
@@ -159,30 +166,82 @@ class EdgeSlmEngine(private val context: Context) {
             else -> BattleResult.DRAW
         }
 
-        // 调用 RAG 向量引擎进行深层机制复盘与克制推演
+        // 调用 RAG 向量引擎进行深层机制复盘与克制推演（自动做 PVE/PVP 分流）
         val ragDiag = com.stzb.assistant.ai.rag.SlgRagEngine.diagnoseBattleReport(reportText)
         val allSkills = (keySkills + ragDiag.detectedSkills).distinct()
 
         val commentary = buildString {
-            append("【诸葛军师 · RAG战报会诊】: 此役定性为${result.desc}。\n")
+            append("【诸葛军师 · RAG战报会诊】: 此役定性为${result.desc}。")
+            append("战报类型: ")
+            append(
+                when (ragDiag.reportType) {
+                    com.stzb.assistant.ai.rag.SlgRagEngine.ReportType.PVE -> "PVE 开荒打地"
+                    com.stzb.assistant.ai.rag.SlgRagEngine.ReportType.PVP -> "PVP 玩家会战"
+                    com.stzb.assistant.ai.rag.SlgRagEngine.ReportType.UNKNOWN -> "未判定（按通用路径分析）"
+                }
+            )
+            append("\n")
             if (allSkills.isNotEmpty()) {
                 append("▶ 关键战法: ${allSkills.joinToString("/")}\n")
             }
             if (ragDiag.conflictAnalysis.isNotBlank()) {
                 append("▶ 机制复盘: ${ragDiag.conflictAnalysis}\n")
             }
+
+            // PVE 专属：守军暴走/反击机制 + 补刀阈值
+            ragDiag.pveAnalysis?.let { pve ->
+                append("▶ 守军机制: ${pve.rampageEvidence}\n")
+                append("▶ 补刀阈值: ≥ ${pve.killThresholdSoldiers} 兵力 ${pve.referenceNote}\n")
+            }
+
+            // PVP 专属：先手判定 + 指挥战法冲突 + 加点超车
+            ragDiag.pvpAnalysis?.let { pvp ->
+                append("▶ 先手判定: ${pvp.firstStrikeSide} ${pvp.referenceNote}\n")
+                if (pvp.commandSkillConflict) {
+                    append("▶ 指挥冲突: ${pvp.conflictDetail}\n")
+                }
+                append("▶ 加点建议: ${pvp.speedUpAdvice}\n")
+            }
+
             append("▶ 调优建议: ${ragDiag.counterStrategy}")
         }
+
+        val losses = parseTroopLosses(reportText)
 
         return BattleDiagnosis(
             battleId = "BTL-" + System.currentTimeMillis().toString().takeLast(6),
             battleResult = result,
-            myTroopLoss = 2300,
-            enemyTroopLoss = 6800,
+            myTroopLoss = losses.first,
+            enemyTroopLoss = losses.second,
             keySkillsDetected = allSkills,
             strategicCounterAdvice = ragDiag.counterStrategy,
             militaryCommentary = commentary
         )
+    }
+
+    /**
+     * 从战报原文解析双方战损。
+     *
+     * 只在确实读到数字时返回；读不到就返回 (0, 0)，由上层如实展示"未读取到战损"，
+     * 而不是塞一个编造的常数进去。
+     *
+     * @return Pair(我方战损, 敌方战损)
+     */
+    private fun parseTroopLosses(reportText: String): Pair<Int, Int> {
+        fun firstNumberNear(keywords: List<String>): Int? {
+            for (kw in keywords) {
+                val idx = reportText.indexOf(kw)
+                if (idx < 0) continue
+                val tail = reportText.substring(idx, minOf(reportText.length, idx + 24))
+                val m = Regex("(\\d{3,6})").find(tail) ?: continue
+                m.groupValues.getOrNull(1)?.toIntOrNull()?.let { return it }
+            }
+            return null
+        }
+
+        val mine = firstNumberNear(listOf("我方损失", "我军损失", "损失兵力", "我部损失", "战损"))
+        val enemy = firstNumberNear(listOf("敌方损失", "歼敌", "敌军损失", "击杀", "讨伐"))
+        return Pair(mine ?: 0, enemy ?: 0)
     }
 
     /**

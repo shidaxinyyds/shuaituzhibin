@@ -107,12 +107,22 @@ object OcrManager {
             }
             return null
         }
+        // ⚠️ 关键修复：emptyOutput 此前每帧新建且从不回收，720p 一帧≈3.7MB，
+        // 长时间挂机的 OCR 高频调用必然 OOM。native 只把它当输出画布，
+        // 取回 OcrResult 后必须在 finally 回收，异常路径也不能漏。
+        val emptyOutput = try {
+            Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        } catch (e: OutOfMemoryError) {
+            Log.e(TAG, "OCR 输出位图分配失败（内存不足）: ${e.message}")
+            return null
+        }
         return try {
-            val emptyOutput = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
             engine.detect(bitmap, emptyOutput, maxSideLen)
         } catch (e: Exception) {
             Log.e(TAG, "OCR 推理异常: ${e.message}")
             null
+        } finally {
+            if (!emptyOutput.isRecycled) emptyOutput.recycle()
         }
     }
 

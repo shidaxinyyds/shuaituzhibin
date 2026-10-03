@@ -11,7 +11,6 @@ import org.opencv.core.Core
 import org.opencv.core.Mat
 import org.opencv.core.Point
 import org.opencv.core.Scalar
-import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import java.io.InputStream
 
@@ -134,19 +133,33 @@ object OpenCvMatcher {
      * 加载单个 Asset 模板至内存
      */
     fun loadTemplateFromAsset(context: Context, assetPath: String, keyName: String): Boolean {
+        var stream: InputStream? = null
+        var bmp: Bitmap? = null
         return try {
-            val input: InputStream = context.assets.open(assetPath)
-            val bmp = BitmapFactory.decodeStream(input)
-            val mat = Mat()
-            Utils.bitmapToMat(bmp, mat)
-            Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
-            templateCache[keyName] = mat
-            bmp.recycle()
-            Log.d(TAG, "模板 [$keyName] 载入成功 (${mat.cols()}x${mat.rows()})")
+            stream = context.assets.open(assetPath)
+            val decoded = BitmapFactory.decodeStream(stream)
+            if (decoded == null) {
+                Log.w(TAG, "模板 [$keyName] 解码失败（资产可能损坏）")
+                return false
+            }
+            bmp = decoded
+            val m = Mat()
+            try {
+                Utils.bitmapToMat(decoded, m)
+                Imgproc.cvtColor(m, m, Imgproc.COLOR_RGBA2BGR)
+                templateCache[keyName] = m
+            } catch (e: Exception) {
+                m.release()
+                throw e
+            }
+            Log.d(TAG, "模板 [$keyName] 载入成功 (${m.cols()}x${m.rows()})")
             true
         } catch (e: Exception) {
             Log.w(TAG, "加载模板 [$keyName] 失败: ${e.message}")
             false
+        } finally {
+            bmp?.recycle()
+            stream?.close()   // ⚠️ 关键修复：input 此前从不 close，反复加载会泄漏文件句柄
         }
     }
 
@@ -161,47 +174,51 @@ object OpenCvMatcher {
         val tplMat = templateCache[templateName] ?: return MatchResult(false, 0f, 0f, 0f, Rect())
 
         val srcMat = Mat()
-        Utils.bitmapToMat(srcBitmap, srcMat)
-        Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2BGR)
+        var resultMat: Mat? = null
+        return try {
+            Utils.bitmapToMat(srcBitmap, srcMat)
+            Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2BGR)
 
-        if (srcMat.cols() < tplMat.cols() || srcMat.rows() < tplMat.rows()) {
-            srcMat.release()
-            return MatchResult(false, 0f, 0f, 0f, Rect())
-        }
-
-        val resultMat = Mat()
-        Imgproc.matchTemplate(srcMat, tplMat, resultMat, Imgproc.TM_CCOEFF_NORMED)
-
-        val mmr = Core.minMaxLoc(resultMat)
-        val maxVal = mmr.maxVal.toFloat()
-        val matchLoc: Point = mmr.maxLoc
-        val runnerUp = peakDistinctiveness(resultMat, matchLoc, tplMat.cols(), tplMat.rows())
-
-        srcMat.release()
-        resultMat.release()
-
-        // 两道判据缺一不可：分数够高，且**不与最佳位置重叠**的次高分明显更低。
-        // 只满足第一条时画面里很可能有重复图案，此时拒绝比猜一个安全。
-        return if (maxVal >= threshold && (maxVal - runnerUp) >= MIN_DISTINCTIVENESS) {
-            val cx = (matchLoc.x + tplMat.cols() / 2f).toFloat()
-            val cy = (matchLoc.y + tplMat.rows() / 2f).toFloat()
-            val rect = Rect(
-                matchLoc.x.toInt(),
-                matchLoc.y.toInt(),
-                (matchLoc.x + tplMat.cols()).toInt(),
-                (matchLoc.y + tplMat.rows()).toInt()
-            )
-            MatchResult(true, cx, cy, maxVal, rect)
-        } else {
-            if (maxVal >= threshold) {
-                Log.w(
-                    TAG,
-                    "模板 [$templateName] 分数 $maxVal 达标，但区分度不足" +
-                        "（次高 $runnerUp，需 ≥ $MIN_DISTINCTIVENESS）：画面里可能有重复图案，" +
-                        "已拒绝以免点错目标。"
-                )
+            if (srcMat.cols() < tplMat.cols() || srcMat.rows() < tplMat.rows()) {
+                return MatchResult(false, 0f, 0f, 0f, Rect())
             }
-            MatchResult(false, 0f, 0f, maxVal, Rect())
+
+            val rm = Mat()
+            resultMat = rm
+            Imgproc.matchTemplate(srcMat, tplMat, rm, Imgproc.TM_CCOEFF_NORMED)
+
+            val mmr = Core.minMaxLoc(rm)
+            val maxVal = mmr.maxVal.toFloat()
+            val matchLoc: Point = mmr.maxLoc
+            val runnerUp = peakDistinctiveness(rm, matchLoc, tplMat.cols(), tplMat.rows())
+
+            // 两道判据缺一不可：分数够高，且**不与最佳位置重叠**的次高分明显更低。
+            // 只满足第一条时画面里很可能有重复图案，此时拒绝比猜一个安全。
+            if (maxVal >= threshold && (maxVal - runnerUp) >= MIN_DISTINCTIVENESS) {
+                val cx = (matchLoc.x + tplMat.cols() / 2f).toFloat()
+                val cy = (matchLoc.y + tplMat.rows() / 2f).toFloat()
+                val rect = Rect(
+                    matchLoc.x.toInt(),
+                    matchLoc.y.toInt(),
+                    (matchLoc.x + tplMat.cols()).toInt(),
+                    (matchLoc.y + tplMat.rows()).toInt()
+                )
+                MatchResult(true, cx, cy, maxVal, rect)
+            } else {
+                if (maxVal >= threshold) {
+                    Log.w(
+                        TAG,
+                        "模板 [$templateName] 分数 $maxVal 达标，但区分度不足" +
+                            "（次高 $runnerUp，需 ≥ $MIN_DISTINCTIVENESS）：画面里可能有重复图案，" +
+                            "已拒绝以免点错目标。"
+                    )
+                }
+                MatchResult(false, 0f, 0f, maxVal, Rect())
+            }
+        } finally {
+            // ⚠️ 关键修复：Mat 释放置于 finally，任何匹配/峰区分异常路径都不再泄漏。
+            resultMat?.release()
+            srcMat.release()
         }
     }
 
@@ -249,62 +266,11 @@ object OpenCvMatcher {
     }
 
     /**
-     * 多尺度金字塔匹配 (应对不同手机 DPI 造成的图形缩放)
+     * 多尺度图配入口已移除：本引擎现只对外提供 [match]（单尺度 + 区分度判据）。
+     * 历史上 `matchMultiScale` 想靠 0.92x~1.08x 金字塔抹平机型 DPI 缩放，但：
+     *   1. 全工程**无任何调用方**（按“严禁死代码”必须清除）；
+     *   2. 分辨率/缩放差异已由 [com.stzb.assistant.service.SceneFingerprint] 标定 +
+     *      [StzbUiMatcher] 语义 OCR 定位从根上解决，模板金字塔既多余又慢。
+     * 若将来确需跨尺度模板匹配，应重新按真实调用方设计，而非保留无人问津的死 API。
      */
-    fun matchMultiScale(
-        srcBitmap: Bitmap,
-        templateName: String,
-        threshold: Float = 0.75f
-    ): MatchResult {
-        val tplMat = templateCache[templateName] ?: return MatchResult(false, 0f, 0f, 0f, Rect())
-        val scales = floatArrayOf(1.0f, 0.92f, 1.08f)
-        var bestResult = MatchResult(false, 0f, 0f, 0f, Rect())
-
-        for (s in scales) {
-            val scaledTpl = Mat()
-            if (s == 1.0f) {
-                tplMat.copyTo(scaledTpl)
-            } else {
-                Imgproc.resize(tplMat, scaledTpl, Size(tplMat.cols() * s.toDouble(), tplMat.rows() * s.toDouble()))
-            }
-
-            val srcMat = Mat()
-            Utils.bitmapToMat(srcBitmap, srcMat)
-            Imgproc.cvtColor(srcMat, srcMat, Imgproc.COLOR_RGBA2BGR)
-
-            if (srcMat.cols() >= scaledTpl.cols() && srcMat.rows() >= scaledTpl.rows()) {
-                val resultMat = Mat()
-                Imgproc.matchTemplate(srcMat, scaledTpl, resultMat, Imgproc.TM_CCOEFF_NORMED)
-                val mmr = Core.minMaxLoc(resultMat)
-                val score = mmr.maxVal.toFloat()
-
-                // 与 match() 使用**同一道**区分度判据。
-                // 不能只按分数挑最优层：某一层若正好撞上重复图案，
-                // 它同样可能给出 1.0 的高分，于是"取分数最高的那一层"
-                // 恰好会把一个不可信的结果选出来。
-                val distinct = peakDistinctiveness(
-                    resultMat, mmr.maxLoc, scaledTpl.cols(), scaledTpl.rows()
-                )
-                val usable = score >= threshold && (score - distinct) >= MIN_DISTINCTIVENESS
-
-                if (usable && score > bestResult.score) {
-                    val cx = (mmr.maxLoc.x + scaledTpl.cols() / 2f).toFloat()
-                    val cy = (mmr.maxLoc.y + scaledTpl.rows() / 2f).toFloat()
-                    val rect = Rect(
-                        mmr.maxLoc.x.toInt(),
-                        mmr.maxLoc.y.toInt(),
-                        (mmr.maxLoc.x + scaledTpl.cols()).toInt(),
-                        (mmr.maxLoc.y + scaledTpl.rows()).toInt()
-                    )
-                    bestResult = MatchResult(true, cx, cy, score, rect)
-                }
-                resultMat.release()
-            }
-            srcMat.release()
-            scaledTpl.release()
-
-            if (bestResult.isFound && bestResult.score > 0.88f) break
-        }
-        return bestResult
-    }
 }

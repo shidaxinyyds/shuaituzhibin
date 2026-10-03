@@ -6,7 +6,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.graphics.PointF
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.EngineBridge
@@ -200,6 +202,30 @@ object ScheduledTaskManager {
         }
         startTicker(pipeline)
         syncNextExactAlarm()
+    }
+
+    /**
+     * 开机重建硬件 RTC 闹钟（BOOT_COMPLETED 专用路径）。
+     *
+     * ## 为什么必须有这一条
+     * Android 重启会**清空所有 AlarmManager 精确闹钟**——`setExactAndAllowWhileIdle`
+     * 登记的那一刻就随进程/系统关机一起没了。此前只有用户重新打开悬浮窗、
+     * 走到 [init] 时才会 `syncNextExactAlarm()` 重新登记；也就是说**手机一重启，
+     * "离线战术定时管家"就静默失效**，直到用户手动重开，这与"无人值守准点出征"
+     * 的核心卖点直接矛盾。
+     *
+     * 本路径只依赖 `appContext` + 持久化任务，**不依赖无障碍/屏幕捕获/TacticalPipeline**
+     * （那些要等用户开启服务后由 [init] 接管 ticker 与实际触发）；重启后先把闹钟
+     * 登记回硬件，闹钟到点唤醒时若服务已起来就能正常执行，若还没起来也只是本轮不执行、
+     * 下次 init 继续——总之闹钟链不再因重启而断掉。
+     */
+    @Synchronized
+    fun restoreAlarmsAfterBoot(context: Context) {
+        appContext = context.applicationContext
+        loadTasks(context)
+        syncNextExactAlarm()
+        val enabled = tasks.count { it.isEnabled }
+        Log.i(TAG, "🔁 开机重建：已把 $enabled 项启用中的定时计划重新登记回硬件 RTC 闹钟。")
     }
 
     fun getTasks(): List<ScheduledTask> = tasks.toList()
@@ -407,6 +433,18 @@ object ScheduledTaskManager {
      *   手机深度息屏后进入 Doze 模式，后台协程会进入深睡眠挂起导致任务无法准点执行。
      *   通过系统原生 AlarmManager.setExactAndAllowWhileIdle()，由手机硬件 RTC 芯片强行唤醒 CPU！
      *   零第三方守护包、零 Shizuku、100% 纯原生保障！
+     *
+     * ## 本轮修复：精确闹钟权限
+     * 此前清单里**没有声明** `SCHEDULE_EXACT_ALARM`，而本函数又"只 catch 不处理"，
+     * 于是 Android 12+ 上 `SecurityException` 被静默吞掉 —— 用户看到的是
+     * "定时任务在息屏后不触发"，日志上却只有一行不痛不痒的 WARN，
+     * 「硬件级 RTC 唤醒」这个卖点等于完全没落地。
+     *
+     * 现在：
+     *   1. 清单已补 `SCHEDULE_EXACT_ALARM`；
+     *   2. 每次同步前先查 [needsExactAlarmPermission]，无权限时**明确标记状态**并给出可操作提示，
+     *      由 UI（定时页签）引导用户去 [openExactAlarmSettings]；
+     *   3. 万一仍然抛 SecurityException，也把状态置为"未授权"，不再静默降级。
      */
     fun syncNextExactAlarm() {
         val ctx = appContext ?: return
@@ -438,8 +476,25 @@ object ScheduledTaskManager {
 
         if (nextTriggerMs == null) {
             alarmManager.cancel(pendingIntent)
+            exactAlarmActive = false
+            exactAlarmStatusText = "当前无待执行任务，RTC 唤醒已注销。"
             Log.i(TAG, "当前无待执行任务，已取消原生 RTC 唤醒定时。")
             return
+        }
+
+        // Android 12+ 必须显式持有"闹钟与提醒"特殊权限，否则 setExact* 必抛 SecurityException。
+        if (needsExactAlarmPermission(ctx)) {
+            exactAlarmActive = false
+            exactAlarmStatusText =
+                "⚠️ 未授予「闹钟与提醒」权限：深度息屏后定时任务不会准点触发。" +
+                    "请在定时页签点「开启精确闹钟权限」。"
+            Log.w(
+                TAG,
+                "未授予 SCHEDULE_EXACT_ALARM：无法注册硬件级 RTC 唤醒，" +
+                    "当前仅依赖协程轮询（Doze 下会被挂起）。"
+            )
+            // 仍然尝试注册一次：部分 ROM 在无权限时给的是"近似闹钟"而不抛异常，
+            // 能注册就比完全不注册好；真正的判定交给 catch。
         }
 
         try {
@@ -449,11 +504,66 @@ object ScheduledTaskManager {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
             }
             val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(nextTriggerMs))
+            exactAlarmActive = true
+            exactAlarmStatusText = "✅ 硬件级 RTC 唤醒已注册，下次唤醒: $formatted"
             Log.i(TAG, "已注册系统底层硬件级 RTC 闹钟，下次唤醒时间: $formatted")
         } catch (e: SecurityException) {
-            Log.w(TAG, "系统缺少精确闹钟权限，继续依赖协程轮询调度: ${e.message}")
+            exactAlarmActive = false
+            exactAlarmStatusText =
+                "⚠️ 精确闹钟被系统拒绝：请到系统设置授予「闹钟与提醒」权限后重试（当前退化为 15 秒轮询）。"
+            Log.w(
+                TAG,
+                "注册精确闹钟被拒（缺少 SCHEDULE_EXACT_ALARM），已退化为协程轮询: ${e.message}"
+            )
         }
     }
+
+    /**
+     * 是否需要引导用户去授予「闹钟与提醒」精确闹钟权限。
+     *
+     * Android 12 起 `setExactAndAllowWhileIdle` 需要 SCHEDULE_EXACT_ALARM；
+     * 12 以下无此限制，恒返回 false。
+     */
+    fun needsExactAlarmPermission(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return false
+        return try {
+            !am.canScheduleExactAlarms()
+        } catch (e: Exception) {
+            // 个别 ROM 未实现该查询接口，按"需要引导"处理更安全
+            true
+        }
+    }
+
+    /**
+     * 跳转到系统「闹钟与提醒」特殊权限页，让用户手动开启。
+     *
+     * 返回 false 表示系统未提供该设置页（极少数 ROM），调用方应改为文字提示。
+     */
+    fun openExactAlarmSettings(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return false
+        return try {
+            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                data = Uri.parse("package:${context.packageName}")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "打开精确闹钟设置页失败: ${e.message}")
+            false
+        }
+    }
+
+    /** 硬件级 RTC 唤醒当前是否真的注册成功（供 UI 如实展示，不再"看起来开启了"）。 */
+    @Volatile
+    var exactAlarmActive: Boolean = false
+        private set
+
+    /** 最近一次 RTC 注册的可读结论，直接展示给用户。 */
+    @Volatile
+    var exactAlarmStatusText: String = "尚未尝试注册 RTC 唤醒。"
+        private set
 
     /**
      * 系统 RTC 闹钟唤醒触发广播接收器
@@ -705,6 +815,53 @@ object ScheduledTaskManager {
                         cityWorldCoord = if (target.worldX != null && target.worldY != null) {
                             Pair(target.worldX, target.worldY)
                         } else null
+                    )
+                )
+            }
+
+            TacticalState.TaskType.LOGISTICS_STEWARD -> {
+                // 本轮补齐：此前 LOGISTICS_STEWARD / FARMING_STEWARD 会直接落到 else 分支，
+                // 只打印一句"暂无执行实现"就结束——即"到点了却什么都没干"。
+                // 定时任务的全部意义就在于无人值守时把一整套巡检跑一遍，
+                // 因此这里把四项开关全部打开下发。
+                Log.i(
+                    TAG,
+                    "定时日常后勤「${task.name}」下发：税收 / 伤兵补兵 / 体力防溢 / 城建升级" +
+                        (if (!task.bookmarkName.isNullOrBlank()) "（主城书签: ${task.bookmarkName}）" else "")
+                )
+                pipeline.startDailyLogistics(
+                    DailyLogisticsFlow.LogisticsConfig(
+                        enableTaxLevy = true,
+                        enableReserveRecruitment = true,
+                        enableStaminaProtection = true,
+                        enableCityConstruction = true,
+                        // 用户在该任务上填的书签就是"主城书签"，让书签 0 漂移对准主城
+                        cityBookmarkName = task.bookmarkName
+                    )
+                )
+            }
+
+            TacticalState.TaskType.FARMING_STEWARD -> {
+                val target = task.allTargets().firstOrNull()
+                if (target == null && task.bookmarkName.isNullOrBlank()) {
+                    Log.w(TAG, "跳过定时屯田「${task.name}」：未设置屯田地块坐标，也未填写官方书签。")
+                    return
+                }
+                val twx = target?.worldX
+                val twy = target?.worldY
+                Log.i(
+                    TAG,
+                    "定时屯田打铁「${task.name}」下发：部队 ${task.troopSlot} 队，" +
+                        "目标=${target?.let { "(${it.x.toInt()},${it.y.toInt()})" } ?: "书签:${task.bookmarkName}"}"
+                )
+                pipeline.startAccurateFarming(
+                    AccurateFarmingFlow.FarmingConfig(
+                        targetTileCoord = target?.let { PointF(it.x, it.y) },
+                        targetWorldCoord = if (twx != null && twy != null) Pair(twx, twy) else null,
+                        bookmarkName = task.bookmarkName,
+                        farmingTroopSlot = task.troopSlot,
+                        minTileLevel = 5,
+                        enableBlacksmithCheck = true
                     )
                 )
             }

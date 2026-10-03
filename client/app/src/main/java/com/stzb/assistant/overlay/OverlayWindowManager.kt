@@ -43,6 +43,8 @@ import com.stzb.assistant.tactics.TacticalState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -64,6 +66,20 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val mainHandler = Handler(Looper.getMainLooper())
     private val pipeline = TacticalPipeline.getInstance(context)
+
+    /**
+     * 悬浮窗内部协程作用域。
+     *
+     * ## 为什么补这一行
+     * 本文件里有 3 处 `scope.launch { ... }`（免战检测、军令执行、书签测试），
+     * 但 `scope` **此前从未被声明过** —— 属于 `Unresolved reference: scope`，
+     * 会让整个模块编译失败。只是它藏在一个 2400 行的文件里，
+     * 而工程当时没有可用的编译环境，所以一直没暴露。
+     *
+     * 用 `SupervisorJob` 是为了让其中一个按钮的协程失败时，
+     * 不会连带取消其它仍在运行的任务（例如长时压秒等待）。
+     */
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private var capsuleView: View? = null
     private var dashboardView: View? = null
@@ -102,12 +118,22 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private val edgeSlmEngine = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(context)
     private var lastExtractedOrder: com.stzb.assistant.ai.microbrain.TacticalOrder? = null
 
-    // 说明：这里刻意**不再持有 DualTrackSafetyGate**。
-    // 该守门员在 verifyAndDispatch 里会把军令解析出的世界坐标 (x,y) 丢弃，
-    // 改用"屏幕正中"作为点击目标（其内部注释自称"世界坐标与屏幕像素解耦"），
-    // 这正是"识别到意图却点错地方"的元凶之一。目标坐标改为由用户点选后
-    // 直接交给流水线，不再经过这个会改写目标的环节。
-    // 详见 DualTrackSafetyGate.kt 顶部的停用说明。
+    /**
+     * 最近一次「识别军令」读到的**原文**。
+     *
+     * 执行军令时需要重新走一遍"解析 → 安全校验"，而校验必须基于原文
+     * （只拿 TacticalOrder 会丢掉原文里的坐标歧义与语境，也就无从判断该不该拒绝）。
+     */
+    private var lastExtractedDecreeText: String = ""
+
+    /**
+     * 军令安全闸门（防幻觉 + 效用评估），本轮**重新接线**。
+     *
+     * 此前它被摘出调用链，因为它会把军令的世界坐标丢弃、改用屏幕正中当点击目标。
+     * 现在它已被修成"解析不出真实坐标就明确拒绝"的形态（见 DualTrackSafetyGate 顶部说明），
+     * 因此"识别军令 → 执行军令"这条链路终于可以真实可用，而不是只解析不下发。
+     */
+    private val safetyGate by lazy { com.stzb.assistant.ai.decision.DualTrackSafetyGate(context) }
 
     // 取点回调路由与临时取点态
     private var currentPickTarget: PickTarget? = null
@@ -202,12 +228,51 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         }
     }
 
+    /**
+     * 军令安全闸门的结论回调：把"通过 / 拦截 / 已下发"如实写进游戏内日志流。
+     *
+     * 这里刻意用 [com.stzb.assistant.tactics.TacticalState.TaskType.TACTICAL_HUD] 作为日志归类——
+     * 该枚举此前声明了却**没有任何地方引用**（等于一段永不生效的分支），
+     * 现在它承载"端侧 RAG 战术智脑"这一路的输出，真正参与运行。
+     */
+    private val safetyGateListener = object : com.stzb.assistant.ai.decision.DualTrackSafetyGate.SafetyGateCallback {
+        override fun onOrderVerified(
+            order: com.stzb.assistant.ai.microbrain.TacticalOrder,
+            utilityScore: Float
+        ) {
+            emitAdvisorLog("INFO", "🛡️ 军令【${order.targetName}】通过安全门禁，效用得分 ${"%.1f".format(utilityScore)}。")
+        }
+
+        override fun onOrderRejected(
+            order: com.stzb.assistant.ai.microbrain.TacticalOrder,
+            reason: String
+        ) {
+            emitAdvisorLog("WARN", "⛔ 军令【${order.targetName}】被拦截：$reason")
+        }
+
+        override fun onExecutionDispatched(taskType: com.stzb.assistant.tactics.TacticalState.TaskType, summary: String) {
+            emitAdvisorLog("TACTIC", "🚀 $summary")
+        }
+    }
+
+    /** 把军师/闸门结论写入统一的日志流（悬浮窗「日志」页签可见）。 */
+    private fun emitAdvisorLog(level: String, message: String) {
+        pipeline.onLogEmitted(
+            com.stzb.assistant.tactics.TacticalState.TacticalLog(
+                taskType = com.stzb.assistant.tactics.TacticalState.TaskType.TACTICAL_HUD,
+                level = level,
+                message = message
+            )
+        )
+    }
+
     init {
         pipeline.registerListener(this)
         com.stzb.assistant.knowledge.KnowledgeBaseManager.registerListener(profileChangeListener)
         com.stzb.assistant.tactics.ScheduledTaskManager.registerListener(scheduleChangeListener)
         com.stzb.assistant.tactics.ScheduledTaskManager.init(context, pipeline)
         com.stzb.assistant.tactics.AutoPilot.registerListener(autoPilotListener)
+        safetyGate.setCallback(safetyGateListener)
 
         initLayoutParams()
         createCapsuleView()
@@ -610,23 +675,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 Toast.makeText(context, "请先解析邮件卡片或点选要集火的城池/要塞", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            val hitMs = System.currentTimeMillis() + 60 * 1000L
-            pipeline.startSiegeSync(
-                SiegeSyncFlow.SiegeConfig(
-                    cityVirtualCoord = target ?: PointF(
-                        com.stzb.assistant.service.CoordinateTransformer.virtualWidth / 2f,
-                        com.stzb.assistant.service.CoordinateTransformer.virtualHeight / 2f
-                    ),
-                    targetBaseHitEpochMs = hitMs,
-                    mainSquadSlot = tacticalDefaults().siegeMainSquadSlot,
-                    demolitionSlots = tacticalDefaults().siegeDemolitionSlots,
-                    latencyCompensationMs = activeRules().immunityPaddingMs,
-                    cityWorldCoord = pickedSiegeWorld,
-                    demolitionOffsetSec = 5,
-                    enablePreFlight30MinCheck = true
-                )
-            )
-            hideDashboard()
+            // Q2=A：没有从邮件法令解析到**真实触敌时刻**时，不再拍脑袋 now+60s 去压秒。
+            // 压秒的价值就在那一秒，用假时刻只会把主力送到非约定时间白白暴露。显式拒绝并指引。
+            Toast.makeText(
+                context,
+                "未解析到法令的真实触敌时刻，已拒绝压秒。请先点「解析邮件」获取法令时间，或到「定时」页签手动设定触城时刻后再发车。",
+                Toast.LENGTH_LONG
+            ).show()
+            return@setOnClickListener
         }
 
         // 4. 深夜巡检
@@ -655,7 +711,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         // 5. 停止当前 / 停止全部
         root.findViewById<Button>(R.id.btnStopCurrent)?.setOnClickListener {
             pipeline.stopCurrentTask()
-            Toast.makeText(context, "已停止当前任务", Toast.LENGTH_SHORT).show()
+            // 夜战守护是独立后台 Job，不占当前任务槽，需显式停；否则“停止当前”再也停不掉哨兵。
+            pipeline.stopGuardian()
+            Toast.makeText(context, "已停止当前任务与夜战守护", Toast.LENGTH_SHORT).show()
         }
         root.findViewById<Button>(R.id.btnEmergencyStop)?.setOnClickListener {
             pipeline.stopAll()
@@ -750,6 +808,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
             val order = edgeSlmEngine.parseAllianceDecree(decreeText)
             lastExtractedOrder = order
+            // 原文一并留存：执行军令时要基于原文重走"解析→安全校验"，
+            // 只凭 TacticalOrder 会丢掉语境，也就判断不出该不该拒绝。
+            lastExtractedDecreeText = decreeText
             tvAdvisorStream?.text = buildString {
                 append("📜【军令已解析】目标【${order.targetName}】")
                 append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
@@ -810,6 +871,32 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             showAskAdvisorDialog()
         }
 
+        // 6.1 「执行军令」：把 lastExtractedOrder 真正送进流水线。
+        //
+        // 本轮接线：此前"识别军令"只把结果写到 tvAdvisorStream 展示，
+        // `lastExtractedOrder` 除了拼状态文案之外**没有任何执行路径**——
+        // 也就是"解析得出来、却永远不会打出去"。现在由 DualTrackSafetyGate 统一把关后下发：
+        // 通过 → 落到对应战术流；不通过（如缺少坐标系/未标定）→ 明确拒绝并说明原因。
+        root.findViewById<Button>(R.id.btnAdvisorExecuteOrder)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val order = lastExtractedOrder
+            if (order == null) {
+                Toast.makeText(context, "请先点「识别军令」解析出一条军令", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            tvAdvisorMetrics?.text = "状态: 军令安全审查中（防幻觉 + 效用评估）..."
+            hideDashboard()
+            scope.launch {
+                val (ok, detail) = safetyGate.parseAndDispatch(lastExtractedDecreeText)
+                withContext(Dispatchers.Main) {
+                    tvAdvisorMetrics?.text = "状态: ${if (ok) "军令已下发" else "军令被拦截"}"
+                    tvAdvisorStream?.append("\n$detail")
+                }
+            }
+        }
+
         // 7. 定时任务：计划完全由用户编排，工程内不预置任何任务
         root.findViewById<Button>(R.id.btnAddScheduleTask)?.setOnClickListener {
             showScheduleEditorDialog(existing = null)
@@ -817,6 +904,33 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         root.findViewById<Button>(R.id.btnResetScheduleDefaults)?.setOnClickListener {
             showScheduleManagerDialog()
+        }
+
+        // 7.1 精确闹钟权限：Android 12+ 必须手动授予，否则 RTC 硬件唤醒会被系统拒绝。
+        root.findViewById<Button>(R.id.btnEnableExactAlarm)?.setOnClickListener {
+            val sm = com.stzb.assistant.tactics.ScheduledTaskManager
+            if (sm.needsExactAlarmPermission(context)) {
+                if (sm.openExactAlarmSettings(context)) {
+                    Toast.makeText(
+                        context,
+                        "请在弹出的系统设置页里允许「闹钟与提醒」，返回后点「刷新 RTC 状态」。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        context,
+                        "本机未提供该设置页。请手动到：设置 → 应用 → 特殊应用权限 → 闹钟与提醒 → 允许本应用。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } else {
+                Toast.makeText(context, "已具备精确闹钟权限，无需重复授权。", Toast.LENGTH_SHORT).show()
+            }
+            refreshRtcStatus()
+        }
+
+        root.findViewById<Button>(R.id.btnRefreshRtcStatus)?.setOnClickListener {
+            refreshRtcStatus()
         }
 
         root.findViewById<Button>(R.id.btnTestBookmarkJump)?.setOnClickListener {
@@ -1381,6 +1495,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val tasks = com.stzb.assistant.tactics.ScheduledTaskManager.getTasks()
         tvStatus?.text = "⏰ 定时计划共 ${tasks.size} 项（每 15 秒轮询一次）"
 
+        refreshRtcStatus()
+
         if (tasks.isEmpty()) {
             tvList?.text = "尚未编排任何定时任务。\n" +
                 "点击下方「＋ 新建定时任务」自行添加——工程内不预置任何任务。"
@@ -1422,6 +1538,27 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     }
 
     /**
+     * 刷新"硬件级 RTC 唤醒"的真实状态。
+     *
+     * 这个状态是**必须**露出来的：Android 12+ 不授予「闹钟与提醒」时，
+     * `setExactAndAllowWhileIdle` 会被系统直接拒绝，定时任务在深度息屏后不会触发。
+     * 如果界面上不显示，用户只会得到"我设了任务却没执行"的困惑，
+     * 而日志里的 SecurityException 又不会被普通用户看到。
+     */
+    private fun refreshRtcStatus() {
+        val root = dashboardView ?: return
+        val tvRtc = root.findViewById<TextView>(R.id.tvScheduleRtcStatus) ?: return
+        val sm = com.stzb.assistant.tactics.ScheduledTaskManager
+
+        val permissionOk = !sm.needsExactAlarmPermission(context)
+        tvRtc.text = buildString {
+            append(if (permissionOk) "🔓 精确闹钟权限：已授予" else "🔒 精确闹钟权限：未授予（息屏后不会准点触发）")
+            append("\n")
+            append("⏰ ").append(sm.exactAlarmStatusText)
+        }
+    }
+
+    /**
      * 新建 / 编辑定时任务表单。
      *
      * 关于目标坐标：铺路与攻城必须要有明确目标，目标取自对应页签中**用户已点选**的地块。
@@ -1429,11 +1566,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
      * 还可能对着城池误操作。所以这里不提供"随便取一个点"的入口，只如实展示当前可用的目标。
      */
     private fun showScheduleEditorDialog(existing: com.stzb.assistant.tactics.ScheduledTaskManager.ScheduledTask?) {
-        val typeLabels = arrayOf("暗夜天眼哨兵", "同盟战役双压秒", "离线战术定时(含破免)")
+        val typeLabels = arrayOf("暗夜天眼哨兵", "同盟战役双压秒", "离线战术定时(含破免)", "日常后勤全托管", "自动屯田打铁")
         val typeValues = arrayOf(
             TacticalState.TaskType.NIGHT_SENTINEL,
             TacticalState.TaskType.SIEGE_SYNC,
-            TacticalState.TaskType.TACTICAL_SCHEDULE
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            TacticalState.TaskType.LOGISTICS_STEWARD,
+            TacticalState.TaskType.FARMING_STEWARD
         )
 
         val pad = dp(16)
@@ -1696,11 +1835,25 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     return@setOnClickListener
                 }
 
-                if (type != TacticalState.TaskType.RAID_DEFENSE && type != TacticalState.TaskType.NIGHT_SENTINEL && type != TacticalState.TaskType.TACTICAL_SCHEDULE && primary == null) {
-                    val tabName = if (type == TacticalState.TaskType.SIEGE_SYNC) "攻城" else "准星取点"
+                // 后勤全托管不需要点击目标（它自己按书签/坐标对准主城），因此单独豁免；
+                // 屯田打铁则"目标坐标或书签"至少要有一个。
+                val needsTarget = when (type) {
+                    TacticalState.TaskType.RAID_DEFENSE,
+                    TacticalState.TaskType.NIGHT_SENTINEL,
+                    TacticalState.TaskType.TACTICAL_SCHEDULE,
+                    TacticalState.TaskType.LOGISTICS_STEWARD -> false
+                    TacticalState.TaskType.FARMING_STEWARD -> primary == null && bookmark == null
+                    else -> primary == null
+                }
+                if (needsTarget) {
+                    val tabName = when (type) {
+                        TacticalState.TaskType.SIEGE_SYNC -> "攻城"
+                        TacticalState.TaskType.FARMING_STEWARD -> "屯田"
+                        else -> "准星取点"
+                    }
                     Toast.makeText(
                         context,
-                        "请先到「$tabName」页签点选目标地块，再保存该任务",
+                        "请先到「$tabName」页签点选目标地块（或填入官方书签），再保存该任务",
                         Toast.LENGTH_LONG
                     ).show()
                     return@setOnClickListener
@@ -2419,8 +2572,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             if (stream?.text.isNullOrBlank()) {
                 // 把"敌袭巡检守护是否真的在跑"如实传进去：
                 // 引擎自己无从得知，不传的话它只能编一句"雷达哨兵保持巡查"。
-                val patrolRunning =
-                    pipeline.currentTaskType == TacticalState.TaskType.RAID_DEFENSE
+                // 必须用 isRaidPatrolActive：哨兵登记的类型是 NIGHT_SENTINEL，
+                // 直接判 RAID_DEFENSE 会恒为 false，导致军师面板谎报"未巡查"。
+                val patrolRunning = pipeline.isRaidPatrolActive
                 val advisorThought = edgeSlmEngine.generateAdvisorLiveStream(
                     detail, lastExtractedOrder, patrolRunning
                 )
@@ -2447,6 +2601,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         hideDashboard()
         clearTempPicks()
         stopCrosshairPicker()
+        // 取消本组件派发出去的协程（免战检测/军令执行/书签测试），
+        // 避免窗口已销毁后仍有回调去碰已移除的 View。
+        scope.cancel()
         if (capsuleView?.parent != null) {
             try {
                 windowManager.removeView(capsuleView)

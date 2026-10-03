@@ -25,6 +25,20 @@ class App : Application() {
         instance = this
         Log.i("StzbApp", "率土全能管家应用启动，初始化核心基础设施...")
 
+        // 0. 崩溃兜底与资源守卫 —— 必须**最先**安装。
+        //    之后任何一步初始化崩溃都会留下可读的栈帧快照与环境信息；
+        //    否则常驻进程一崩，用户只会看到"不知道为什么就不动了"，无从排查。
+        com.stzb.assistant.runtime.CrashGuard.install(this)
+        com.stzb.assistant.runtime.ResourceGuard.attach(this)
+        val crashCount = com.stzb.assistant.runtime.CrashGuard.crashCount(this)
+        if (crashCount > 0) {
+            Log.w(
+                "StzbApp",
+                "检测到历史崩溃 $crashCount 次；最近一次快照在 filesDir/crash_last.txt，" +
+                    "可用 CrashGuard.readSnapshot(context) 读取后附在反馈里。"
+            )
+        }
+
         // 1. 创建前台服务通知渠道 (适配 Android 8.0+)
         createNotificationChannel()
 

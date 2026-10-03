@@ -335,33 +335,88 @@ class SiegeSyncFlow(
         }
 
         // 2. 检查并执行【自愈调动到指定前线要塞】
+        //
+        //    目标对准的两条路径（此前只实现了第一条，`fortressName` 是死字段）：
+        //      a. 有世界坐标且已标定 → 把镜头拖到该格，点镜头中心；
+        //      b. 只有要塞名称（同盟法令里常见，且往往比坐标更可靠）→ 用官方书签 0 漂移跳转。
+        //    两条都不满足时**明确告知没做**，而不是静默跳过——
+        //    "发车前 30 分钟自愈调动"如果悄悄没执行，玩家到点才会发现部队不在前线。
         val fortressCoord = config.fortressWorldCoord
-        if (fortressCoord != null && MapProjection.isCalibrated) {
-            logTactic("🚚【检查前线要塞进驻】目标集合要塞坐标: (${fortressCoord.first}, ${fortressCoord.second})")
+        val fortressBookmark = config.fortressName
+        val canNavByWorld = fortressCoord != null && MapProjection.isCalibrated
+        val canNavByBookmark = !fortressBookmark.isNullOrBlank()
 
-            val navResult = MapNavigator.centerOn(fortressCoord.first, fortressCoord.second)
-            if (navResult is MapNavigator.Result.Reached) {
-                val centerPt = MapProjection.viewportCenterCanvas()
-                EngineBridge.tap(centerPt.x, centerPt.y)
-                if (EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2000)) {
-                    val transferOutcome = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.TRANSFER)
-                    if (transferOutcome.clicked) {
-                        EngineBridge.humanDelay(600, 900)
-                        for (slot in checkSlots) {
-                            clickTroopSlotTab(slot)
-                            EngineBridge.humanDelay(200, 350)
-                        }
-                        val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
-                        if (confirm.clicked) {
-                            logTactic("🚚【自愈调动成功】主力与拆迁部队已下发要塞调动指令！预计 10~15 分钟内抵达前线。")
-                        }
-                    } else {
-                        logInfo("要塞当前未见调动按键，部队可能已入驻或处于驻守状态。")
-                    }
+        if (!canNavByWorld && !canNavByBookmark) {
+            logWarn(
+                "⚠️【自愈调动跳过】既未提供前线要塞世界坐标（或地图未标定），也未提供要塞书签名称——" +
+                    "无法把部队提前调往集结要塞，请人工确认主力是否已在前线。"
+            )
+            return
+        }
+
+        val centerPt: PointF? = if (canNavByWorld) {
+            logTactic("🚚【检查前线要塞进驻】目标集合要塞坐标: (${fortressCoord!!.first}, ${fortressCoord.second})")
+            when (val navResult = MapNavigator.centerOn(fortressCoord.first, fortressCoord.second)) {
+                is MapNavigator.Result.Reached -> MapProjection.viewportCenterCanvas()
+                is MapNavigator.Result.Refused -> {
+                    logWarn("世界坐标导航被拒: ${navResult.reason}")
+                    null
+                }
+                is MapNavigator.Result.Failed -> {
+                    logWarn("世界坐标导航失败: ${navResult.reason}")
+                    null
                 }
             }
+        } else null
+
+        // 世界坐标这条路没走通时，回退到"要塞书签"这条更稳的路
+        val byBookmark = if (centerPt == null && canNavByBookmark) {
+            logTactic("🔖【检查前线要塞进驻】改用官方书签 [${fortressBookmark}] 做 0 漂移对准...")
+            when (val nav = MapNavigator.jumpByBookmark(fortressBookmark!!)) {
+                is MapNavigator.Result.Reached -> {
+                    logTactic("🔖 书签 [${fortressBookmark}] 对准成功，要塞位于镜头中心。")
+                    MapProjection.viewportCenterCanvas()
+                }
+                is MapNavigator.Result.Refused -> {
+                    logWarn("要塞书签跳转被拒: ${nav.reason}")
+                    null
+                }
+                is MapNavigator.Result.Failed -> {
+                    logWarn("要塞书签跳转失败: ${nav.reason}")
+                    null
+                }
+            }
+        } else null
+
+        val target = centerPt ?: byBookmark
+        if (target == null) {
+            logWarn("⚠️【自愈调动未执行】所有对准方式均未成功，未能把部队调往前线要塞。")
             WatchdogRecovery.recoverToMainMap()
+            return
         }
+
+        EngineBridge.tap(target.x, target.y)
+        if (EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2000)) {
+            val transferOutcome = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.TRANSFER)
+            if (transferOutcome.clicked) {
+                EngineBridge.humanDelay(600, 900)
+                for (slot in checkSlots) {
+                    clickTroopSlotTab(slot)
+                    EngineBridge.humanDelay(200, 350)
+                }
+                val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
+                if (confirm.clicked) {
+                    logTactic("🚚【自愈调动成功】主力与拆迁部队已下发要塞调动指令！预计 10~15 分钟内抵达前线。")
+                } else {
+                    logWarn("⚠️【自愈调动未确认】调兵确认键未点中（${confirm.detail}），部队可能未出发。")
+                }
+            } else {
+                logInfo("要塞当前未见调动按键，部队可能已入驻或处于驻守状态。")
+            }
+        } else {
+            logWarn("未能打开要塞地块菜单（对准可能不准），本次未下发调兵指令。")
+        }
+        WatchdogRecovery.recoverToMainMap()
     }
 
     /**
@@ -404,11 +459,12 @@ class SiegeSyncFlow(
                 task.optimalDispatchEpochMs = timingPlan.optimalDispatchEpochMs
                 resultQueue.add(task)
             } else {
-                // 估算兜底 (主力默认 2分30秒，拆迁默认 6分10秒)
-                val fallbackSec = if (task.roleName.contains("主力")) 150L else 370L
-                task.marchDurationSec = fallbackSec
-                task.optimalDispatchEpochMs = task.targetHitEpochMs - fallbackSec * 1000L - config.latencyCompensationMs
-                resultQueue.add(task)
+                // Q2=A：读不到行军耗时时**不再编造** 150/370s 去压秒——用假时刻压秒比不发车更危险
+                //（会把主力送到非约定的那一秒，白白暴露兵力）。跳过该队并显式告警，交人工/重试。
+                logWarn(
+                    "❌ 未能量队读取【${task.roleName}】的行军耗时（OCR 识别失败），已将其移出本次自动压秒队列，" +
+                        "绝不用估算值冒充真实时刻。请确认部队面板可识别后重试，或手动发车。"
+                )
             }
         }
 

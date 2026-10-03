@@ -9,6 +9,7 @@ import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.EngineBridge
 import com.stzb.assistant.service.MapProjection
 import com.stzb.assistant.service.UiAnchors
+import com.stzb.assistant.runtime.TouchGate
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -43,6 +44,9 @@ open class NightSentinelFlow(
     private var lastKeepAliveTimeMs: Long = 0L
     private var lastThreatTimeMs: Long = 0L
     private var hasAlarmed = false
+
+    /** 上一次做"视觉双通道确认"的时刻；用于限流，避免持续告警时反复跑检测。 */
+    private var lastVisionCheckMs: Long = 0L
 
     /**
      * 停止暗夜哨兵巡检与警报
@@ -83,21 +87,27 @@ open class NightSentinelFlow(
 
         try {
             while (isRunning.get()) {
-                // 1. 确保大地图主界面（若有弹窗优先关窗重连，避免误入死胡同）
+                // 1. 确保大地图主界面（若有弹窗优先关窗重连，避免误入死胡同）。
+                //    动画面属于触控，必须先抢所有权；抢不到说明有前台任务正在独占画面，
+                //    本轮跳过导航，绝不与前台抢屏（抓屏/告警在锁外照常进行）。
                 val currentState = EngineBridge.detectGameState()
                 if (currentState != StzbUiMatcher.GameState.MAIN_MAP) {
-                    val dismissed = WatchdogRecovery.dismissAnyDialog()
-                    if (!dismissed) {
-                        WatchdogRecovery.recoverToMainMap()
+                    TouchGate.tryGuardedTouch {
+                        val dismissed = WatchdogRecovery.dismissAnyDialog()
+                        if (!dismissed) {
+                            WatchdogRecovery.recoverToMainMap()
+                        }
                     }
                 }
 
-                // 2. 5分钟防掉线微保活：重置游戏客户端 15 分钟无操作掉线倒计时
+                // 2. 5分钟防掉线微保活：重置游戏客户端 15 分钟无操作掉线倒计时。
+                //    属非关键触控，抢不到所有权就跳过且不更新计时（下轮继续试），
+                //    避免在别人正操作画面时多此一举地滑一下抢屏。
                 if (config.enableKeepAliveJiggle) {
                     val now = System.currentTimeMillis()
                     if (now - lastKeepAliveTimeMs >= config.keepAliveIntervalMs) {
-                        performKeepAliveJiggle()
-                        lastKeepAliveTimeMs = now
+                        val done = TouchGate.tryGuardedTouch { performKeepAliveJiggle() }
+                        if (done != null) lastKeepAliveTimeMs = now
                     }
                 }
 
@@ -153,7 +163,8 @@ open class NightSentinelFlow(
                     "  • 2 格警戒圈判定: $circleDesc\n" +
                     "  • 屏幕边缘呼吸红闪: ${report.isScreenEdgeAlert}\n" +
                     "  • 识别红线行军数: ${report.detectedVectors.size} 条\n" +
-                    "  • 受威胁目标地: (${report.playerTargetPoint?.x?.toInt()}, ${report.playerTargetPoint?.y?.toInt()})"
+                    "  • 受威胁目标地: (${report.playerTargetPoint?.x?.toInt()}, ${report.playerTargetPoint?.y?.toInt()})\n" +
+                    "  • ${corroborateWithVision()}"
         ))
 
         // 仅远距离行军且未进入警戒圈且无顶部红标：保持静默跟踪，不惊扰玩家
@@ -181,25 +192,88 @@ open class NightSentinelFlow(
         }
 
         // 步骤 2：【商业化黄金王牌——60 秒无损秒回撤退主力保命】
+        //    警报已在步骤 1 无条件拉响（不受锁约束）；下面的点击属触控，需在有限等待内取得画面所有权，
+        //    取不到（有前台任务正独占）则如实告警，绝不打断正在压秒的前台任务。
         val countdown = report.remainingCountdownSeconds
         val isEmergencyTime = countdown == null || countdown <= 60 || report.isWithinAlertCircle
         if (config.enableAutoRetreat && isEmergencyTime) {
-            executeAutoRetreat(config.retreatSquadSlots)
+            val retreated = TouchGate.guardedTouchWithTimeout(EMERGENCY_TOUCH_WAIT_MS) {
+                executeAutoRetreat(config.retreatSquadSlots)
+            }
+            if (retreated == null) {
+                logWarn(
+                    "⚠️ 画面被前台任务占用，紧急秒回撤退在 ${EMERGENCY_TOUCH_WAIT_MS / 1000}s 内未取得控制权；" +
+                        "警报已响、主力暂未撤回，请手动处置或待前台任务结束。"
+                )
+            }
         }
 
         // 步骤 3：紧急防沦闭城/坚守与焦土自保 (倒计时 <= 30s 或屏幕剧烈红闪)
         if (config.enableEmergencyFortify && ((countdown != null && countdown <= 30) || report.isScreenEdgeAlert)) {
-            executeEmergencyFortify()
+            TouchGate.guardedTouchWithTimeout(EMERGENCY_TOUCH_WAIT_MS) { executeEmergencyFortify() }
         }
 
         // 步骤 4：决策 C 自动反击 (可选配置：若玩家开启，且已成功推算出敌军源头要塞)
         if (config.enableDecisionC && report.enemyOriginPoint != null) {
-            val successC = executeDecisionC(report.enemyOriginPoint, config.counterAttackSquadSlot)
+            val successC = TouchGate.guardedTouchWithTimeout(EMERGENCY_TOUCH_WAIT_MS) {
+                executeDecisionC(report.enemyOriginPoint, config.counterAttackSquadSlot)
+            } == true
             if (successC) {
                 logTactic("⚔️【决策 C 反击大捷】已成功对敌方进攻跳板发起反攻断地出征！")
             } else {
-                logWarn("决策 C 跳板地反击受阻，已安全退回大地图坚守。")
+                logWarn("决策 C 跳板地反击受阻或未获画面控制权，已安全退回大地图坚守。")
             }
+        }
+    }
+
+    /**
+     * 视觉双通道确认（YOLO），用于**提高**敌袭判定的可信度。
+     *
+     * ## 设计红线：绝不允许削弱既有判定
+     * OpenCV 雷达（HSV 红掩膜 + 霍夫线 + 顶部红标）是当前唯一的判定依据。
+     * 这里的结果**只进日志，不参与等级决策**：
+     *   * 检出告警图标/行军红线 → 记为"双通道确认"；
+     *   * 未检出 → **不降低等级**，仅记为"单通道命中（视觉未确认）"。
+     *
+     * 为什么必须这样：视觉模型存在**漏检**可能，一旦用"视觉没检出"去下调等级，
+     * 漏检一次就等于撤掉了 60 秒秒回保护——那是本功能存在的全部意义。
+     * 宁可多一次不必要的撤退，也绝不能漏掉一次真实偷家。
+     *
+     * @return 一行诊断结论，永远非空（便于直接拼进告警文本）
+     */
+    private suspend fun corroborateWithVision(): String {
+        val now = System.currentTimeMillis()
+        if (now - lastVisionCheckMs < VISION_CORROBORATE_INTERVAL_MS) {
+            return "视觉双通道：本轮限流跳过（${VISION_CORROBORATE_INTERVAL_MS / 1000}s 内已确认过）。"
+        }
+        lastVisionCheckMs = now
+
+        val detector = com.stzb.assistant.runtime.VisionRuntime.yolo(context)
+            ?: return "视觉双通道：不可用（${com.stzb.assistant.runtime.VisionRuntime.describe()}）。"
+
+        if (!com.stzb.assistant.runtime.VisionRuntime.isNativeVisionReady()) {
+            // 只有真正的 ncnn 推理结果才能作为"证据"；几何色度回退不算数。
+            return "视觉双通道：仅几何色度回退，结论不作为证据（判定仍以 OpenCV 雷达为准）。"
+        }
+
+        val frame = EngineBridge.captureFrame() ?: return "视觉双通道：抓屏失败，跳过。"
+        return try {
+            val boxes = detector.detect(frame, confThreshold = 0.40f)
+            val alert = boxes.filter {
+                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.ICON_RADAR_ALERT ||
+                    it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.TROOP_RED_LINE
+            }
+            if (alert.isNotEmpty()) {
+                val top = alert.maxByOrNull { it.confidence }
+                "🟢 视觉双通道确认：检出「${top?.detectionClass?.label}」" +
+                    "（置信 ${"%.2f".format(top?.confidence ?: 0f)}），判定可信度提高。"
+            } else {
+                "⚠️ 视觉未检出告警图标（仅作诊断；**等级不下调**，仍按 OpenCV 雷达判定处置）。"
+            }
+        } catch (e: Exception) {
+            "视觉双通道：检测异常 ${e.message}（不影响既定处置）。"
+        } finally {
+            frame.recycle()
         }
     }
 
@@ -356,5 +430,17 @@ open class NightSentinelFlow(
 
     companion object {
         private const val TAG = "NightSentinelFlow"
+
+        /**
+         * 视觉双通道确认的最小间隔。
+         *
+         * 一次 ncnn 推理在移动端的开销在几十到几百毫秒量级；夜战告警一旦成立，
+         * `handleRaidEvent` 会按巡检周期反复进入，若每轮都跑检测就是无意义的持续开销。
+         * 因此限定 30 秒最多确认一次——它只用于**提高判定可信度**，不承担实时性职责。
+         */
+        private const val VISION_CORROBORATE_INTERVAL_MS = 30_000L
+
+        /** 守护执行关键触控时，最多等待画面所有权这么久；超时放弃（警报已响）。 */
+        private const val EMERGENCY_TOUCH_WAIT_MS = 12_000L
     }
 }
