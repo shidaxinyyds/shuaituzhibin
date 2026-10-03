@@ -68,7 +68,11 @@ object ModelAssetManager {
                 "ch_PP-OCRv3_det_infer.param", "ch_PP-OCRv3_det_infer.bin",
                 "ch_PP-OCRv3_rec_infer.param", "ch_PP-OCRv3_rec_infer.bin"
             ),
-            listOf("models/ch_PP-OCRv4_det.bin", "models/ch_PP-OCRv4_rec.bin")
+            // v4：由 tools/p1/onnx2ncnn.py 从 ONNX 转出来，落在 assets 根目录（与 v3 同层）
+            listOf(
+                "ch_PP-OCRv4_det_infer.param", "ch_PP-OCRv4_det_infer.bin",
+                "ch_PP-OCRv4_rec_infer.param", "ch_PP-OCRv4_rec_infer.bin"
+            )
         ),
         purpose = "体力/士气/坐标/倒计时/按键文字识别——所有依赖文字的判断都建立在其之上",
         buildRequirement = "构建期必须提供 ncnn + OpenCV 给 CMake，否则 native 走空桩、识别恒为空"
@@ -77,9 +81,11 @@ object ModelAssetManager {
     private val YOLO = Capability(
         displayName = "YOLO 视觉目标检测 (ncnn)",
         // ncnn 模型是 param + bin 成对的，两者都在才算齐备。
+        // n / s 两种命名都接受：工具链按训练规模选（tools/p1/train_yolo 默认 s，工程首选 n）。
         alternatives = listOf(
             listOf("models/yolov11s_multiscale_stzb.param", "models/yolov11s_multiscale_stzb.bin"),
-            listOf("models/yolov8n_stzb.param", "models/yolov8n_stzb.bin")
+            listOf("models/yolov8n_stzb.param", "models/yolov8n_stzb.bin"),
+            listOf("models/yolov8s_stzb.param", "models/yolov8s_stzb.bin")
         ),
         purpose = "出征/驻守/确定等按键与行军红线的视觉检测",
         buildRequirement = "推理代码与 JNI 已实现（native yolo/YoloNcnn.cpp）；"
@@ -102,7 +108,29 @@ object ModelAssetManager {
         buildRequirement = "已由内置向量微脑 SlgRagEngine 与语义提取器全面驱动（100% 离线、毫秒级响应、<10MB极低内存，彻底免除 LMK 杀后台风险）"
     )
 
-    private val CAPABILITIES = listOf(OCR, YOLO, RAG, SLM)
+    /** ③ bge-small-zh-v1.5 INT8：给 RAG 索引（V2, 512 维）做查询向量。 */
+    private val BGE = Capability(
+        displayName = "bge 中文向量器 (bge-small-zh-v1.5 INT8)",
+        alternatives = listOf(
+            listOf("models/bge_zh_int8.onnx", "models/bge_zh_vocab.txt")
+        ),
+        purpose = "军令/战报查询语义向量化（与索引里的 bge 向量同分布，否则检索结果不可用）",
+        buildRequirement = "依赖 onnxruntime-android 运行时（已在 app/build.gradle 引入）；"
+            + "没有它时 BgeEmbedder 会加载失败，SlgRagEngine 如实回落到 64 维哈希向量"
+    )
+
+    /** ④ 意图 + 槽位微脑：军令 → 受约束 DSL。 */
+    private val INTENT = Capability(
+        displayName = "军令意图+槽位微脑 (rbt3 微调 INT8)",
+        alternatives = listOf(
+            listOf("models/intent_slot_zh.onnx", "models/intent_slot_vocab.txt")
+        ),
+        purpose = "把自然语言军令解析成语法合法的 DSL（意图 + 目标/坐标/时间/兵力槽位）",
+        buildRequirement = "依赖 onnxruntime-android 运行时；当前 EdgeSlmEngine 仍是正则实现，"
+            + "该权重**尚未**接入推理，解析行为暂时不受它影响"
+    )
+
+    private val CAPABILITIES = listOf(OCR, YOLO, RAG, SLM, BGE, INTENT)
 
     data class ModelStatus(
         val modelName: String,

@@ -50,7 +50,8 @@ object UiAnchors {
         TROOP_TAB_3("出征面板·部队三标签", 500f / REF_WIDTH, 160f / REF_HEIGHT),
         TROOP_TAB_4("出征面板·部队四标签", 640f / REF_WIDTH, 160f / REF_HEIGHT),
         TROOP_TAB_5("出征面板·部队五标签", 780f / REF_WIDTH, 160f / REF_HEIGHT),
-        MAP_BLANK("地图空白点（收起浮层）", 640f / REF_WIDTH, 0.62f);
+        MAP_BLANK("地图空白点（收起浮层）", 640f / REF_WIDTH, 0.62f),
+        BOOKMARK_ENTRY("大地图书签/标记入口（左上侧）", 46f / REF_WIDTH, 140f / REF_HEIGHT);
 
         /** 该锚点当前是否被用户标定过（false 表示用的是折算默认值）。 */
         val isCalibrated: Boolean

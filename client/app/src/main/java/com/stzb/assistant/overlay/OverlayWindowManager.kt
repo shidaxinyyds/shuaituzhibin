@@ -30,6 +30,10 @@ import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.CoordinateTransformer
 import com.stzb.assistant.service.EngineBridge
 import com.stzb.assistant.service.UiAnchors
+import android.widget.CheckBox
+import com.stzb.assistant.ocr.TileStatusDetector
+import com.stzb.assistant.tactics.DailyLogisticsFlow
+import com.stzb.assistant.tactics.AccurateFarmingFlow
 import com.stzb.assistant.tactics.ImmunityBreakFlow
 import com.stzb.assistant.tactics.RaidDefenseFlow
 import com.stzb.assistant.tactics.RoadPavingFlow
@@ -42,7 +46,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -71,6 +77,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private val pickedPavingPoints = mutableListOf<PointF>()
     private val pickedImmunityPoints = mutableListOf<PointF>()
     private val pickedSiegePoints = mutableListOf<PointF>()
+    private var pickedFarmingPoint: PointF? = null
+    private var pickedFarmingWorld: Pair<Int, Int>? = null
 
     /**
      * 与 [pickedPavingPoints] 一一对应的**世界坐标**（大地图格坐标）。
@@ -82,6 +90,10 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
     /** 卡免目标的世界坐标（标定后才会有值）。 */
     private var pickedImmunityWorld: Pair<Int, Int>? = null
+    /** 卡免/破免官方书签名称（优先于坐标实现 0 漂移瞬间对准）。 */
+    private var pickedImmunityBookmark: String? = null
+    /** 最近一次 OCR 识别到的免战解除毫秒时间戳。 */
+    private var lastDetectedImmunityUnlockMs: Long = 0L
 
     /** 攻城目标的世界坐标（标定后才会有值）。 */
     private var pickedSiegeWorld: Pair<Int, Int>? = null
@@ -132,7 +144,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         UiAnchors.RectKey.DEFENDER_PANEL
     )
     enum class PickTarget {
-        PAVING, IMMUNITY, SIEGE,
+        PAVING, IMMUNITY, SIEGE, FARMING,
         /** 标定用：点选一块地，然后把镜头对准点的世界坐标写下来（单点或两点标定）。 */
         CALIBRATION,
         /** 标定用：点选一个"收起浮层时最安全的地图空白点"。 */
@@ -335,6 +347,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val tabPatrol = dashboardView?.findViewById<Button>(R.id.tabPatrol)
         val tabAdvisor = dashboardView?.findViewById<Button>(R.id.tabAdvisor)
         val tabSchedule = dashboardView?.findViewById<Button>(R.id.tabSchedule)
+        val tabLogistics = dashboardView?.findViewById<Button>(R.id.tabLogistics)
+        val tabFarming = dashboardView?.findViewById<Button>(R.id.tabFarming)
         val tabLogs = dashboardView?.findViewById<Button>(R.id.tabLogs)
         val tabCalibrate = dashboardView?.findViewById<Button>(R.id.tabCalibrate)
 
@@ -344,11 +358,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val panelPatrol = dashboardView?.findViewById<LinearLayout>(R.id.panelPatrol)
         val panelAdvisor = dashboardView?.findViewById<LinearLayout>(R.id.panelAdvisor)
         val panelSchedule = dashboardView?.findViewById<LinearLayout>(R.id.panelSchedule)
+        val panelLogistics = dashboardView?.findViewById<LinearLayout>(R.id.panelLogistics)
+        val panelFarming = dashboardView?.findViewById<LinearLayout>(R.id.panelFarming)
         val panelLogs = dashboardView?.findViewById<LinearLayout>(R.id.panelLogs)
         val panelCalibrate = dashboardView?.findViewById<LinearLayout>(R.id.panelCalibrate)
 
-        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabSchedule, tabLogs, tabCalibrate)
-        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelSchedule, panelLogs, panelCalibrate)
+        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabSchedule, tabLogistics, tabFarming, tabLogs, tabCalibrate)
+        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelSchedule, panelLogistics, panelFarming, panelLogs, panelCalibrate)
 
         fun switchTab(index: Int) {
             panels.forEachIndexed { i, p -> p?.visibility = if (i == index) View.VISIBLE else View.GONE }
@@ -358,7 +374,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             }
             when (index) {
                 5 -> refreshScheduleDisplay()
-                7 -> refreshCalibrateDisplay()
+                9 -> refreshCalibrateDisplay()
             }
         }
 
@@ -368,8 +384,10 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         tabPatrol?.setOnClickListener { switchTab(3) }
         tabAdvisor?.setOnClickListener { switchTab(4) }
         tabSchedule?.setOnClickListener { switchTab(5) }
-        tabLogs?.setOnClickListener { switchTab(6) }
-        tabCalibrate?.setOnClickListener { switchTab(7) }
+        tabLogistics?.setOnClickListener { switchTab(6) }
+        tabFarming?.setOnClickListener { switchTab(7) }
+        tabLogs?.setOnClickListener { switchTab(8) }
+        tabCalibrate?.setOnClickListener { switchTab(9) }
 
         switchTab(0)
 
@@ -422,49 +440,190 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             hideDashboard()
         }
 
-        // 2. 卡免
+        // 2. 卡免与一键压秒破免
+        val tvImmunityCoord = root.findViewById<TextView>(R.id.tvImmunityCoord)
+        val tvImmunityOcrResult = root.findViewById<TextView>(R.id.tvImmunityOcrResult)
+
         root.findViewById<Button>(R.id.btnPickImmunityTile)?.setOnClickListener {
             startCrosshairPicker(PickTarget.IMMUNITY)
         }
+
+        root.findViewById<Button>(R.id.btnInputImmunityBookmark)?.setOnClickListener {
+            val input = EditText(context).apply {
+                hint = "输入游戏内书签名称(如: 虎牢关/要塞1)"
+                setText(pickedImmunityBookmark ?: "")
+            }
+            val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("设置免战目标书签")
+                .setMessage("填入官方书签名称后，破免出征将自动实现 0 漂移对准地块。")
+                .setView(input)
+                .setPositiveButton("确定") { _, _ ->
+                    val text = input.text.toString().trim()
+                    if (text.isNotEmpty()) {
+                        pickedImmunityBookmark = text
+                        tvImmunityCoord?.text = "卡免目标: 🔖书签 [$text] (0 漂移对准)"
+                        Toast.makeText(context, "已锁定官方书签: [$text]", Toast.LENGTH_SHORT).show()
+                    } else {
+                        pickedImmunityBookmark = null
+                        tvImmunityCoord?.text = "卡免地块：尚未选择 (可点选或填入官方书签)"
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .create()
+            applyOverlayWindowType(dialog)
+            dialog.show()
+        }
+
+        root.findViewById<Button>(R.id.btnDetectTileImmunityOcr)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+            tvImmunityOcrResult?.text = "正在检测免战倒计时..."
+            scope.launch {
+                val bookmark = pickedImmunityBookmark
+                if (!bookmark.isNullOrBlank()) {
+                    when (val nav = com.stzb.assistant.service.MapNavigator.jumpByBookmark(bookmark)) {
+                        is com.stzb.assistant.service.MapNavigator.Result.Reached -> {
+                            Log.i("OverlayWindowManager", "已按书签 [$bookmark] 居中地块")
+                        }
+                        else -> Log.w("OverlayWindowManager", "书签跳转未完成，继续读取画面")
+                    }
+                }
+                val status = EngineBridge.detectTileImmunity()
+                withContext(Dispatchers.Main) {
+                    if (status.isImmune && status.remainingSeconds > 0) {
+                        lastDetectedImmunityUnlockMs = status.unlockTimestampMs
+                        val formattedTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(status.unlockTimestampMs))
+                        val hitTime = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(status.unlockTimestampMs + 1000L))
+                        tvImmunityOcrResult?.text = "🛡️ 免战倒计时: ${status.remainingSeconds}秒\n" +
+                            "⏰ 解锁时刻: $formattedTime · 🎯 建议触敌: $hitTime (+1000ms)"
+                        Toast.makeText(context, "成功识别免战倒计时: ${status.remainingSeconds}秒", Toast.LENGTH_SHORT).show()
+                    } else {
+                        lastDetectedImmunityUnlockMs = 0L
+                        tvImmunityOcrResult?.text = "⚠️ 未检测到有效免战罩或已过免战期！可直接出征。"
+                        Toast.makeText(context, "目标地块当前无免战光罩", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+
+        root.findViewById<Button>(R.id.btnAddImmunityToSchedule)?.setOnClickListener {
+            if (lastDetectedImmunityUnlockMs <= 0L && pickedImmunityBookmark.isNullOrBlank() && pickedImmunityPoints.isEmpty()) {
+                Toast.makeText(context, "请先点选/填写目标并测算免战倒计时", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            // 计算建议触发时间 (提前 1 分钟唤醒准备)
+            val launchEpoch = if (lastDetectedImmunityUnlockMs > 0) {
+                lastDetectedImmunityUnlockMs - 60_000L
+            } else {
+                System.currentTimeMillis() + 60_000L
+            }
+            val cal = Calendar.getInstance().apply { timeInMillis = launchEpoch }
+            val timeStr = "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+            val targetName = pickedImmunityBookmark ?: "目标地块"
+            val prefilledTask = com.stzb.assistant.tactics.ScheduledTaskManager.ScheduledTask(
+                id = "",
+                name = "破免-$targetName",
+                timeStr = timeStr,
+                taskType = TacticalState.TaskType.TACTICAL_SCHEDULE,
+                isEnabled = true,
+                targetX = pickedImmunityPoints.firstOrNull()?.x,
+                targetY = pickedImmunityPoints.firstOrNull()?.y,
+                targetWorldX = pickedImmunityWorld?.first,
+                targetWorldY = pickedImmunityWorld?.second,
+                bookmarkName = pickedImmunityBookmark,
+                actionType = StzbUiMatcher.ButtonType.ATTACK,
+                troopSlot = tacticalDefaults().immunityDefaultTroopSlot,
+                isImmunityBreak = true
+            )
+            showScheduleEditorDialog(prefilledTask)
+        }
+
         root.findViewById<Button>(R.id.btnExecBreakImmunity)?.setOnClickListener {
             if (!ensureLicense()) return@setOnClickListener
             if (!ensureEngineReady()) return@setOnClickListener
             val target = pickedImmunityPoints.firstOrNull()
-            if (target == null) {
-                Toast.makeText(context, "请先点选要卡免的目标地块", Toast.LENGTH_SHORT).show()
+            val bookmark = pickedImmunityBookmark
+            if (target == null && bookmark.isNullOrBlank()) {
+                Toast.makeText(context, "请先点选免战地块或填入官方书签", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             pipeline.startImmunityBreak(
                 ImmunityBreakFlow.ImmunityConfig(
                     mode = ImmunityBreakFlow.ImmunityMode.BREAK_IMMUNITY,
-                    targetTileCoord = target,
+                    targetTileCoord = target ?: com.stzb.assistant.service.MapProjection.viewportCenterCanvas(),
                     designatedTroopSlot = tacticalDefaults().immunityDefaultTroopSlot,
-                    targetWorldCoord = pickedImmunityWorld
+                    latencyCompensationMs = activeRules().immunityPaddingMs,
+                    targetWorldCoord = pickedImmunityWorld,
+                    bookmarkName = bookmark
                 )
             )
             hideDashboard()
         }
 
         // 3. 攻城
+        var parsedMailPlan: com.stzb.assistant.tactics.AllianceMailParser.SiegeMailPlan? = null
+
+        root.findViewById<Button>(R.id.btnParseAllianceMail)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val frame = EngineBridge.captureFrame()
+            if (frame == null) {
+                Toast.makeText(context, "截屏失败，请确保截屏通道正常", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val plan = try {
+                com.stzb.assistant.tactics.AllianceMailParser.parseFromScreen(frame)
+            } finally {
+                frame.recycle()
+            }
+
+            if (plan != null && (plan.targetWorldCoord != null || plan.targetName.isNotEmpty())) {
+                parsedMailPlan = plan
+                pickedSiegeWorld = plan.targetWorldCoord
+                val coordStr = plan.targetWorldCoord?.let { "(${it.first},${it.second})" } ?: "大地图居中"
+                val fortStr = plan.fortressWorldCoord?.let { " | 要塞:(${it.first},${it.second})" } ?: ""
+                root.findViewById<TextView>(R.id.tvSiegeCoord)?.text =
+                    "🎯 目标:${plan.targetName} $coordStr\n⏰ 触敌:${plan.targetTimeStr} (拆迁+${plan.demolitionOffsetSec}s)$fortStr"
+                Toast.makeText(context, "已解析邮件卡片: ${plan.targetName}，发车前30分钟自愈调动与双压秒已就绪！", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(context, "当前画面未识别到有效同盟法令/邮件，请先打开邮件或点选城池", Toast.LENGTH_SHORT).show()
+            }
+        }
+
         root.findViewById<Button>(R.id.btnPickSiegeCity)?.setOnClickListener {
             startCrosshairPicker(PickTarget.SIEGE)
         }
         root.findViewById<Button>(R.id.btnExecSiegeSync)?.setOnClickListener {
             if (!ensureLicense()) return@setOnClickListener
             if (!ensureEngineReady()) return@setOnClickListener
-            val target = pickedSiegePoints.firstOrNull()
-            if (target == null) {
-                Toast.makeText(context, "请先点选要集火的城池/要塞", Toast.LENGTH_SHORT).show()
+
+            val mailPlan = parsedMailPlan
+            if (mailPlan != null) {
+                pipeline.startSiegeFromMail(mailPlan)
+                hideDashboard()
                 return@setOnClickListener
             }
+
+            val target = pickedSiegePoints.firstOrNull()
+            if (target == null && pickedSiegeWorld == null) {
+                Toast.makeText(context, "请先解析邮件卡片或点选要集火的城池/要塞", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            val hitMs = System.currentTimeMillis() + 60 * 1000L
             pipeline.startSiegeSync(
                 SiegeSyncFlow.SiegeConfig(
-                    cityVirtualCoord = target,
-                    targetBaseHitEpochMs = System.currentTimeMillis() + 60 * 1000L,
+                    cityVirtualCoord = target ?: PointF(
+                        com.stzb.assistant.service.CoordinateTransformer.virtualWidth / 2f,
+                        com.stzb.assistant.service.CoordinateTransformer.virtualHeight / 2f
+                    ),
+                    targetBaseHitEpochMs = hitMs,
                     mainSquadSlot = tacticalDefaults().siegeMainSquadSlot,
                     demolitionSlots = tacticalDefaults().siegeDemolitionSlots,
                     latencyCompensationMs = activeRules().immunityPaddingMs,
-                    cityWorldCoord = pickedSiegeWorld
+                    cityWorldCoord = pickedSiegeWorld,
+                    demolitionOffsetSec = 5,
+                    enablePreFlight30MinCheck = true
                 )
             )
             hideDashboard()
@@ -474,11 +633,20 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         root.findViewById<Button>(R.id.btnExecRaidPatrol)?.setOnClickListener {
             if (!ensureLicense()) return@setOnClickListener
             if (!ensureEngineReady()) return@setOnClickListener
-            pipeline.startRaidDefense(
+            pipeline.startNightSentinel(
                 RaidDefenseFlow.DefenseConfig(
+                    baseAnchor = null,
+                    baseWorldCoord = com.stzb.assistant.service.MapProjection.baseWorld,
+                    alertCircleRadiusTiles = 2,
                     counterAttackSquadSlot = tacticalDefaults().immunityDefaultTroopSlot,
+                    retreatSquadSlots = listOf(1, 2),
+                    patrolIntervalMs = tacticalDefaults().raidPatrolIntervalMs,
                     enableAudioAlarm = tacticalDefaults().raidAlarmSound,
-                    enableDecisionC = tacticalDefaults().raidDecisionCAutoCounter
+                    enableAutoRetreat = true,
+                    enableDecisionC = tacticalDefaults().raidDecisionCAutoCounter,
+                    enableEmergencyFortify = true,
+                    enableKeepAliveJiggle = true,
+                    keepAliveIntervalMs = 300_000L
                 )
             )
             hideDashboard()
@@ -649,6 +817,42 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         root.findViewById<Button>(R.id.btnResetScheduleDefaults)?.setOnClickListener {
             showScheduleManagerDialog()
+        }
+
+        root.findViewById<Button>(R.id.btnTestBookmarkJump)?.setOnClickListener {
+            if (!ensureEngineReady()) return@setOnClickListener
+            val input = EditText(context).apply {
+                hint = "输入游戏内书签名称(如: 虎牢关/要塞1)"
+            }
+            val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("测试书签 0 漂移跳转")
+                .setMessage("测试将点击书签抽屉入口并检索该书签条目，验证能否精准瞬移居中。")
+                .setView(input)
+                .setPositiveButton("开始测试") { _, _ ->
+                    val name = input.text.toString().trim()
+                    if (name.isEmpty()) {
+                        Toast.makeText(context, "书签名称不能为空", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    hideDashboard()
+                    scope.launch {
+                        when (val res = com.stzb.assistant.service.MapNavigator.jumpByBookmark(name)) {
+                            is com.stzb.assistant.service.MapNavigator.Result.Reached -> withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "✅ 书签 [$name] 跳转成功！镜头已居中对准。", Toast.LENGTH_LONG).show()
+                            }
+                            is com.stzb.assistant.service.MapNavigator.Result.Refused -> withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "⚠️ 书签跳转被拒绝: ${res.reason}", Toast.LENGTH_LONG).show()
+                            }
+                            is com.stzb.assistant.service.MapNavigator.Result.Failed -> withContext(Dispatchers.Main) {
+                                Toast.makeText(context, "❌ 书签跳转失败: ${res.reason}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+                .setNegativeButton("取消", null)
+                .create()
+            applyOverlayWindowType(dialog)
+            dialog.show()
         }
 
         // 8. 标定（地图投影 + 关键 UI 锚点）
@@ -832,6 +1036,77 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             resetGuidedCalibration()
             refreshCalibrateDisplay()
             Toast.makeText(context, "已清除全部标定，回到默认值", Toast.LENGTH_SHORT).show()
+        }
+
+        // 9. 后勤全托管
+        root.findViewById<Button>(R.id.btnExecLogistics)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val tax = root.findViewById<CheckBox>(R.id.cbLogisticsTax)?.isChecked ?: true
+            val recruit = root.findViewById<CheckBox>(R.id.cbLogisticsRecruit)?.isChecked ?: true
+            val stamina = root.findViewById<CheckBox>(R.id.cbLogisticsStamina)?.isChecked ?: true
+            val upgrade = root.findViewById<CheckBox>(R.id.cbLogisticsUpgrade)?.isChecked ?: true
+
+            pipeline.startDailyLogistics(
+                DailyLogisticsFlow.LogisticsConfig(
+                    enableTaxLevy = tax,
+                    enableReserveRecruitment = recruit,
+                    enableStaminaProtection = stamina,
+                    enableCityConstruction = upgrade
+                )
+            )
+            hideDashboard()
+        }
+
+        // 10. 智能屯田打铁
+        val spFarmingSlot = root.findViewById<Spinner>(R.id.spFarmingSlot)
+        val spFarmingResType = root.findViewById<Spinner>(R.id.spFarmingResType)
+
+        val slotLabels = arrayOf("部队1", "部队2", "部队3", "部队4", "部队5")
+        spFarmingSlot?.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, slotLabels)
+        spFarmingSlot?.setSelection(1) // 默认二队
+
+        val resLabels = arrayOf("石料(优先)", "铁矿", "木材", "粮食")
+        val resTypes = arrayOf(
+            TileStatusDetector.ResourceType.STONE,
+            TileStatusDetector.ResourceType.IRON,
+            TileStatusDetector.ResourceType.WOOD,
+            TileStatusDetector.ResourceType.GRAIN
+        )
+        spFarmingResType?.adapter = ArrayAdapter(context, android.R.layout.simple_spinner_dropdown_item, resLabels)
+
+        root.findViewById<Button>(R.id.btnPickFarmingTile)?.setOnClickListener {
+            startCrosshairPicker(PickTarget.FARMING)
+        }
+
+        root.findViewById<Button>(R.id.btnExecFarming)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val selectedSlot = (spFarmingSlot?.selectedItemPosition ?: 1) + 1
+            val selectedResType = resTypes.getOrElse(spFarmingResType?.selectedItemPosition ?: 0) {
+                TileStatusDetector.ResourceType.STONE
+            }
+            val blacksmith = root.findViewById<CheckBox>(R.id.cbFarmingBlacksmith)?.isChecked ?: true
+
+            val targetP = pickedFarmingPoint
+            if (targetP == null && pickedFarmingWorld == null) {
+                Toast.makeText(context, "请先点选屯田地块或配置书签", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            pipeline.startAccurateFarming(
+                AccurateFarmingFlow.FarmingConfig(
+                    targetTileCoord = targetP,
+                    targetWorldCoord = pickedFarmingWorld,
+                    targetResourceType = selectedResType,
+                    farmingTroopSlot = selectedSlot,
+                    minTileLevel = 5,
+                    enableBlacksmithCheck = blacksmith
+                )
+            )
+            hideDashboard()
         }
     }
 
@@ -1122,7 +1397,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     ""
                 }
                 val targetTag = when {
-                    task.taskType == TacticalState.TaskType.RAID_DEFENSE -> ""
+                    task.taskType == TacticalState.TaskType.RAID_DEFENSE || task.taskType == TacticalState.TaskType.NIGHT_SENTINEL -> ""
+                    !task.bookmarkName.isNullOrBlank() -> " · 🔖书签[${task.bookmarkName}] (0漂移对准)"
                     !task.hasTarget() -> " · ⚠️无目标（到点将跳过而不是乱点）"
                     task.targetWorld() != null -> {
                         val w = task.targetWorld()!!
@@ -1131,9 +1407,11 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     else -> " · 目标(${task.targetX?.toInt()}, ${task.targetY?.toInt()}) ⚠️未标定世界坐标$countTag"
                 }
                 sb.append("${index + 1}. [${task.timeStr}] ${task.name}\n")
-                // 攻城的卡秒偏移必须显示出来，否则"设了 90 秒"在界面上看不出任何区别。
+                // 攻城的卡秒偏移或定时的动作槽位必须显示出来
                 val timingTag = if (task.taskType == TacticalState.TaskType.SIEGE_SYNC) {
                     " · 卡秒偏移 ${task.hitOffsetSeconds}s"
+                } else if (task.taskType == TacticalState.TaskType.TACTICAL_SCHEDULE) {
+                    " · 动作: ${task.actionType.primaryKeyword} · 第${task.troopSlot}队" + (if (task.isImmunityBreak) " [压秒破免]" else "")
                 } else {
                     ""
                 }
@@ -1151,11 +1429,11 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
      * 还可能对着城池误操作。所以这里不提供"随便取一个点"的入口，只如实展示当前可用的目标。
      */
     private fun showScheduleEditorDialog(existing: com.stzb.assistant.tactics.ScheduledTaskManager.ScheduledTask?) {
-        val typeLabels = arrayOf("深夜巡检守护", "自动铺路翻地", "同盟攻城集火")
+        val typeLabels = arrayOf("暗夜天眼哨兵", "同盟战役双压秒", "离线战术定时(含破免)")
         val typeValues = arrayOf(
-            TacticalState.TaskType.RAID_DEFENSE,
-            TacticalState.TaskType.ROAD_PAVING,
-            TacticalState.TaskType.SIEGE_SYNC
+            TacticalState.TaskType.NIGHT_SENTINEL,
+            TacticalState.TaskType.SIEGE_SYNC,
+            TacticalState.TaskType.TACTICAL_SCHEDULE
         )
 
         val pad = dp(16)
@@ -1205,9 +1483,70 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         }
         form.addView(tvTargetHint)
 
+        // 官方书签/标记名称
+        val tvBookmarkLabel = TextView(context).apply {
+            text = "官方书签/标记（选填，优先通过游戏书签 0 漂移对准）"
+            setPadding(0, dp(12), 0, 0)
+            textSize = 12f
+        }
+        form.addView(tvBookmarkLabel)
+
+        val etBookmark = EditText(context).apply {
+            hint = "例如: 虎牢关 / 主城 / 要塞1"
+            setText(existing?.bookmarkName ?: "")
+            setSingleLine()
+        }
+        form.addView(etBookmark)
+
+        // 战术动作与槽位 (出征/扫荡/屯田/驻守)
+        val actionLabels = arrayOf("出征 (ATTACK)", "扫荡 (SWEEP)", "屯田 (FARM)", "驻守 (DEFEND)")
+        val actionValues = arrayOf(
+            StzbUiMatcher.ButtonType.ATTACK,
+            StzbUiMatcher.ButtonType.SWEEP,
+            StzbUiMatcher.ButtonType.FARM,
+            StzbUiMatcher.ButtonType.DEFEND
+        )
+        val tvActionLabel = TextView(context).apply {
+            text = "执行战术动作"
+            setPadding(0, dp(12), 0, 0)
+            textSize = 12f
+        }
+        form.addView(tvActionLabel)
+
+        val spAction = Spinner(context).apply {
+            adapter = ArrayAdapter(
+                context,
+                android.R.layout.simple_spinner_dropdown_item,
+                actionLabels.toList()
+            )
+        }
+        val initialActionIdx = actionValues.indexOfFirst { it == existing?.actionType }
+        spAction.setSelection(if (initialActionIdx >= 0) initialActionIdx else 0)
+        form.addView(spAction)
+
+        val tvTroopLabel = TextView(context).apply {
+            text = "出征部队槽位 (1 ~ 5)"
+            setPadding(0, dp(12), 0, 0)
+            textSize = 12f
+        }
+        form.addView(tvTroopLabel)
+
+        val etTroopSlot = EditText(context).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "例如 1"
+            setText((existing?.troopSlot ?: 1).toString())
+            setSingleLine()
+        }
+        form.addView(etTroopSlot)
+
+        val cbImmunityBreak = CheckBox(context).apply {
+            text = "启用 OCR 压秒破免模式 (+1000ms 精准触敌)"
+            isChecked = existing?.isImmunityBreak ?: false
+            textSize = 12f
+        }
+        form.addView(cbImmunityBreak)
+
         // 攻城卡秒偏移：任务触发后经过多少秒发动总攻。
-        // 此前这个值硬编码为 60 秒、界面完全看不到，用户无法表达"要压到 21:00:00 整"。
-        // 只在攻城任务里出现，其余类型隐藏并沿用原值。
         val tvHitOffsetLabel = TextView(context).apply {
             setPadding(0, dp(12), 0, 0)
             textSize = 12f
@@ -1224,25 +1563,18 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         /**
          * 取该类型当前点选的**全部**目标（画布坐标 + 配对的世界坐标）。
-         *
-         * 原先只取 `firstOrNull()`，于是"用户在铺路页签点了 5 块地、建了定时任务"
-         * 到点只铺 1 块，而且界面没有任何提示。现在整体带走。
-         * 铺路的世界坐标列表与点位列表本就一一对应，这里按同一下标取，不会错位。
          */
         fun resolveTargets(
             type: TacticalState.TaskType
         ): List<com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint> {
-            // 注意：TargetPoint 是 object ScheduledTaskManager 的**嵌套类**，
-            // 只能通过类名限定访问，不能通过实例引用（如 `val mgr = ScheduledTaskManager; mgr.TargetPoint`）——
-            // 后者 Kotlin 会报 "Classifier accessed via instance reference"。
             return when (type) {
-                TacticalState.TaskType.ROAD_PAVING -> pickedPavingPoints.mapIndexed { i, p ->
+                TacticalState.TaskType.ROAD_PAVING,
+                TacticalState.TaskType.TACTICAL_SCHEDULE -> pickedPavingPoints.mapIndexed { i, p ->
                     val w = pickedPavingWorld.getOrNull(i)
                     com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint(p.x, p.y, w?.first, w?.second)
                 }
 
                 TacticalState.TaskType.SIEGE_SYNC -> pickedSiegePoints.firstOrNull()?.let { p ->
-                    // 攻城是集火单一城池，只保留第一座
                     listOf(com.stzb.assistant.tactics.ScheduledTaskManager.TargetPoint(p.x, p.y, pickedSiegeWorld?.first, pickedSiegeWorld?.second))
                 } ?: emptyList()
 
@@ -1256,8 +1588,19 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             val n = targets.size
             val worldCount = targets.count { it.worldX != null && it.worldY != null }
 
-            // 卡秒偏移只对攻城有意义，其它类型直接隐藏，避免留下一个"填了也没用"的输入框。
             val isSiege = type == TacticalState.TaskType.SIEGE_SYNC
+            val isSchedule = type == TacticalState.TaskType.TACTICAL_SCHEDULE
+            val isSentinel = type == TacticalState.TaskType.RAID_DEFENSE || type == TacticalState.TaskType.NIGHT_SENTINEL
+
+            tvBookmarkLabel.visibility = if (isSchedule || isSiege) View.VISIBLE else View.GONE
+            etBookmark.visibility = if (isSchedule || isSiege) View.VISIBLE else View.GONE
+
+            tvActionLabel.visibility = if (isSchedule) View.VISIBLE else View.GONE
+            spAction.visibility = if (isSchedule) View.VISIBLE else View.GONE
+            tvTroopLabel.visibility = if (isSchedule) View.VISIBLE else View.GONE
+            etTroopSlot.visibility = if (isSchedule) View.VISIBLE else View.GONE
+            cbImmunityBreak.visibility = if (isSchedule) View.VISIBLE else View.GONE
+
             tvHitOffsetLabel.visibility = if (isSiege) View.VISIBLE else View.GONE
             etHitOffset.visibility = if (isSiege) View.VISIBLE else View.GONE
             if (isSiege) {
@@ -1268,14 +1611,25 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                         "该任务将被跳过并在日志说明（不会晚打）。"
             }
             tvTargetHint.text = when {
-                type == TacticalState.TaskType.RAID_DEFENSE ->
-                    "巡检守护不需要目标地块。"
+                isSentinel ->
+                    "🛡️ 暗夜哨兵自动全天候巡检主城及周边2格，无需指定目标地块。"
+
+                isSchedule -> {
+                    val bm = etBookmark.text.toString().trim()
+                    if (bm.isNotEmpty()) {
+                        "🔖 已设置官方书签 [$bm]，到点将通过官方标记抽屉 0 漂移瞬间对准。"
+                    } else if (targets.isNotEmpty()) {
+                        "🎯 将处理点选的 ${targets.size} 处目标地块。"
+                    } else {
+                        "⚠️ 建议填入官方书签名称（0 漂移对准），或先到准星取点页签点选地块。"
+                    }
+                }
 
                 targets.isEmpty() ->
                     "⚠️ 该类型需要目标地块。请先到对应页签点选地块；" +
                         "未设目标的任务到点会被跳过，而不是乱点一处。"
 
-                type == TacticalState.TaskType.SIEGE_SYNC -> {
+                isSiege -> {
                     val t = targets.first()
                     val coord = String.format(
                         java.util.Locale.US, "(%.0f, %.0f)", t.x, t.y
@@ -1288,14 +1642,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 }
 
                 else -> buildString {
-                    append("将处理 $n 块地（你在「铺路」页签点选的全部目标）")
+                    append("将处理 $n 处目标（你在准星取点/铺路页签点选的全部目标）")
                     when {
                         worldCount == n ->
                             append("，均含世界坐标：到点会先对准镜头再点")
                         worldCount > 0 ->
                             append(
-                                "；⚠️ 其中 ${n - worldCount} 块缺世界坐标。" +
-                                    "为避免坐标错位，到点只会处理有世界坐标的 $worldCount 块，" +
+                                "；⚠️ 其中 ${n - worldCount} 处缺世界坐标。" +
+                                    "为避免坐标错位，到点只会处理有世界坐标的 $worldCount 处，" +
                                     "建议先到「标定」页签补齐"
                             )
                         else ->
@@ -1331,9 +1685,19 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 val time = "%02d:%02d".format(timePicker.hour, timePicker.minute)
                 val targets = resolveTargets(type)
                 val primary = targets.firstOrNull()
+                val bookmark = etBookmark.text.toString().trim().ifBlank { null }
 
-                if (type != TacticalState.TaskType.RAID_DEFENSE && primary == null) {
-                    val tabName = if (type == TacticalState.TaskType.ROAD_PAVING) "铺路" else "攻城"
+                if (type == TacticalState.TaskType.TACTICAL_SCHEDULE && primary == null && bookmark == null) {
+                    Toast.makeText(
+                        context,
+                        "离线战术任务请至少填入「官方书签」或到「准星取点」点选地块",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@setOnClickListener
+                }
+
+                if (type != TacticalState.TaskType.RAID_DEFENSE && type != TacticalState.TaskType.NIGHT_SENTINEL && type != TacticalState.TaskType.TACTICAL_SCHEDULE && primary == null) {
+                    val tabName = if (type == TacticalState.TaskType.SIEGE_SYNC) "攻城" else "准星取点"
                     Toast.makeText(
                         context,
                         "请先到「$tabName」页签点选目标地块，再保存该任务",
@@ -1343,8 +1707,6 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 }
 
                 // 卡秒偏移只在攻城任务里读取与校验；其它类型沿用原值（或默认 60 秒）。
-                // 这里刻意对非法输入**明确报错并中止保存**，而不是悄悄回落到 60 秒——
-                // 悄悄回落会让用户以为自己设的 90 秒生效了，到点却按 60 秒打。
                 val rawOffset = if (type == TacticalState.TaskType.SIEGE_SYNC) {
                     etHitOffset.text.toString().trim().toLongOrNull()
                 } else {
@@ -1361,6 +1723,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     return@setOnClickListener
                 }
                 val hitOffset = rawOffset ?: existing?.hitOffsetSeconds ?: 60L
+                val actionType = actionValues[spAction.selectedItemPosition]
+                val troopSlot = etTroopSlot.text.toString().trim().toIntOrNull()?.coerceIn(1, 5) ?: 1
+                val isImmunity = cbImmunityBreak.isChecked
 
                 val mgr = com.stzb.assistant.tactics.ScheduledTaskManager
                 val extra = mgr.encodeExtraTargets(targets)
@@ -1369,14 +1734,22 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                         context, name, time, type, primary?.x, primary?.y,
                         hitOffsetSeconds = hitOffset,
                         targetWorldX = primary?.worldX, targetWorldY = primary?.worldY,
-                        extraTargetsRaw = extra
+                        extraTargetsRaw = extra,
+                        bookmarkName = bookmark,
+                        actionType = actionType,
+                        troopSlot = troopSlot,
+                        isImmunityBreak = isImmunity
                     )
                 } else {
                     mgr.updateTask(
                         context, existing.id, name, time, type,
                         primary?.x, primary?.y, hitOffset,
                         targetWorldX = primary?.worldX, targetWorldY = primary?.worldY,
-                        extraTargetsRaw = extra
+                        extraTargetsRaw = extra,
+                        bookmarkName = bookmark,
+                        actionType = actionType,
+                        troopSlot = troopSlot,
+                        isImmunityBreak = isImmunity
                     )
                 }
                 if (type == TacticalState.TaskType.ROAD_PAVING && targets.size > 1) {
@@ -1776,6 +2149,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     if (pts.isEmpty()) "集火城池：尚未点选"
                     else "集火城池: ${formatPoints(pts)}${worldSuffix(pickedSiegeWorld)}"
             }
+            PickTarget.FARMING -> {
+                val p = pts.firstOrNull()
+                pickedFarmingPoint = p
+                pickedFarmingWorld = p?.let { com.stzb.assistant.service.MapProjection.screenToWorld(it.x, it.y) }
+                dashboardView?.findViewById<TextView>(R.id.tvFarmingTarget)?.text =
+                    if (p == null) "屯田地块：尚未点选（优先 Lv.5+ 最高收益地）"
+                    else "屯田地块: (${p.x.toInt()}, ${p.y.toInt()})${worldSuffix(pickedFarmingWorld)}"
+            }
             PickTarget.CALIBRATION_BLANK -> {
                 val p = pts.firstOrNull()
                 if (p != null) {
@@ -1984,7 +2365,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             pavingWorldTargets = pickedPavingWorld.toList(),
             siegeTarget = pickedSiegePoints.firstOrNull(),
             siegeWorldTarget = pickedSiegeWorld,
-            siegeHitEpochMs = 0L
+            siegeHitEpochMs = 0L,
+            dailyLogistics = true,
+            farmingTarget = pickedFarmingPoint,
+            farmingWorldTarget = pickedFarmingWorld,
+            farmingBookmark = null,
+            farmingTroopSlot = 2,
+            autoFarmingEnabled = (pickedFarmingPoint != null || pickedFarmingWorld != null)
         )
 
     private fun toggleAutoPilot() {

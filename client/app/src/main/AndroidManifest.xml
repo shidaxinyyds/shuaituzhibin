@@ -61,6 +61,12 @@
             android:enabled="true"
             android:exported="false" />
 
+        <!-- 系统硬件级 RTC 闹钟精准唤醒广播接收器 (零外部依赖，深度息屏保活) -->
+        <receiver
+            android:name=".tactics.ScheduledTaskManager$ScheduledTaskAlarmReceiver"
+            android:enabled="true"
+            android:exported="false" />
+
     </application>
 
 </manifest>

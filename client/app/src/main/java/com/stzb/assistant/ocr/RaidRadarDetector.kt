@@ -8,25 +8,28 @@ import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint
 import org.opencv.core.Point
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.sin
 
 /**
- * 深夜敌袭雷达红线检测与源头要塞反击回溯器 (RaidRadarDetector)
+ * 深夜敌袭雷达红线检测、主城警戒圈判定与源头回溯器 (RaidRadarDetector)
  * 
  * 核心痛点解决：
  *   1. 凌晨 3:00~5:00 敌盟夜战偷家全天候自动化巡检；
  *   2. OpenCV HSV 颜色空间双区间提取高饱和敌袭纯红行军线（隔离友军蓝绿箭头）；
  *   3. 霍夫概率线段变换 (HoughLinesP) 提取行军轨迹向量与起止端点；
  *   4. 屏幕边缘红光闪烁告警感知 (Screen Edge Border Alert)；
- *   5. 【决策 C 核心支撑】：源头要塞与跳板地回溯定位 (Origin Backtracer)，
- *      精准推算敌军出发地坐标，支持自动派出高机动骑兵拆迁队反扑断链接地！
+ *   5. 【2026 核心升级】：主界面顶部【原生受袭预警红标 (Top Alert Badge)】与倒计时提取；
+ *   6. 【主城 2 格警戒圈判定 (5x5 核心威胁区)】：切比雪夫距离与投影几何过滤，杜绝虚假远距报警；
+ *   7. 【决策 C 支撑】：源头要塞与跳板地回溯定位 (Origin Backtracer)，支持反击拆除敌军跳板。
  */
 object RaidRadarDetector {
 
@@ -34,8 +37,8 @@ object RaidRadarDetector {
 
     enum class ThreatLevel {
         NONE,       // 安全，无任何敌袭红线
-        WARNING,    // 远距离观测到红线行军轨迹
-        CRITICAL    // 极度危险：红线直接指向主城/要塞，或屏幕边缘红光剧烈闪烁
+        WARNING,    // 远距离观测到红线行军轨迹（主城 2 格警戒圈外）
+        CRITICAL    // 极度危险：红线直接突入主城 2 格警戒圈，或顶部出现受袭预警红标，或屏幕边缘红光剧烈闪烁
     }
 
     data class MarchVector(
@@ -52,7 +55,11 @@ object RaidRadarDetector {
         val detectedVectors: List<MarchVector>,
         val enemyOriginPoint: PointF?,  // 敌军出征源头（要塞/跳板地，用于决策 C 反击拆除）
         val playerTargetPoint: PointF?, // 受威胁的己方目标点（要塞/主城）
-        val timestampMs: Long
+        val timestampMs: Long,
+        val isTopAlertActive: Boolean = false,          // 顶部原生受袭/被攻击预警红标是否触发
+        val isWithinAlertCircle: Boolean = false,      // 威胁终点是否进入主城 2 格核心警戒圈
+        val remainingCountdownSeconds: Int? = null,    // 顶部预警倒计时剩余秒数 (若识别出)
+        val targetWorldCoord: Pair<Int, Int>? = null   // 受威胁目标的世界坐标 (若已标定)
     )
 
     // HSV 纯红阈值范围 (由于红色在 HSV 环上跨越 0 度，需分段提取双掩膜)
@@ -67,16 +74,21 @@ object RaidRadarDetector {
      * 全图敌袭雷达扫描
      * @param frame 当前 720p 虚拟画布截图
      * @param baseAnchor 己方基地参考锚点（默认画面中心，若已知主城位置可传入精确点）
+     * @param baseWorldCoord 己方主城世界坐标 (如 Pair(550, 480))
+     * @param alertRadiusTiles 警戒圈格数 (默认 2 格，5x5 威胁区)
      */
-    fun scanRaidThreats(frame: Bitmap, baseAnchor: PointF? = null): RaidReport {
+    fun scanRaidThreats(
+        frame: Bitmap,
+        baseAnchor: PointF? = null,
+        baseWorldCoord: Pair<Int, Int>? = null,
+        alertRadiusTiles: Int = 2
+    ): RaidReport {
         val now = System.currentTimeMillis()
         val srcMat = Mat()
         val hsvMat = Mat()
         val mask1 = Mat()
         val mask2 = Mat()
         val redMask = Mat()
-        val kernelOpen = Mat()
-        val kernelClose = Mat()
         val linesMat = Mat()
 
         try {
@@ -87,12 +99,15 @@ object RaidRadarDetector {
             // 1. 边缘红光闪烁告警检测
             val isEdgeAlert = detectScreenEdgeAlert(hsvMat)
 
-            // 2. 红色行军轨迹双掩膜提取
+            // 2. 顶部原生受袭/被攻击预警红标与倒计时检测
+            val (isTopAlert, countdownSecs) = detectTopAlertBadge(hsvMat, frame)
+
+            // 3. 红色行军轨迹双掩膜提取
             Core.inRange(hsvMat, LOWER_RED_1, UPPER_RED_1, mask1)
             Core.inRange(hsvMat, LOWER_RED_2, UPPER_RED_2, mask2)
             Core.bitwise_or(mask1, mask2, redMask)
 
-            // 3. 形态学滤波：过滤微小杂点，并连接行军箭头虚线
+            // 4. 形态学滤波：过滤微小杂点，并连接行军箭头虚线
             val kOpen = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
             Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_OPEN, kOpen)
             val kClose = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
@@ -100,7 +115,7 @@ object RaidRadarDetector {
             kOpen.release()
             kClose.release()
 
-            // 4. 概率霍夫线变换提取红线段
+            // 5. 概率霍夫线变换提取红线段
             // 参数针对 720p 率土行军线深度调优：最小线长 50px，最大间隙 25px
             Imgproc.HoughLinesP(redMask, linesMat, 1.0, Math.PI / 180.0, 35, 50.0, 25.0)
 
@@ -127,10 +142,10 @@ object RaidRadarDetector {
                 )
             }
 
-            // 5. 聚类合并相近的线段
+            // 6. 聚类合并相近的线段
             val clusteredVectors = clusterMarchLines(rawVectors)
 
-            if (clusteredVectors.isEmpty() && !isEdgeAlert) {
+            if (clusteredVectors.isEmpty() && !isEdgeAlert && !isTopAlert) {
                 return RaidReport(
                     hasThreat = false,
                     threatLevel = ThreatLevel.NONE,
@@ -138,36 +153,90 @@ object RaidRadarDetector {
                     detectedVectors = emptyList(),
                     enemyOriginPoint = null,
                     playerTargetPoint = null,
-                    timestampMs = now
+                    timestampMs = now,
+                    isTopAlertActive = false,
+                    isWithinAlertCircle = false,
+                    remainingCountdownSeconds = null,
+                    targetWorldCoord = null
                 )
             }
 
-            // 6. 源头要塞回溯分析 (决策 C 关键支撑)
-            // 设定基准己方点：若未传则默认为画面中心 (720p: 虚拟宽/2, 360)
+            // 7. 源头要塞回溯分析 (决策 C 关键支撑)
             val anchor = baseAnchor ?: PointF(frame.width / 2f, frame.height / 2f)
             val (enemyOrigin, playerTarget) = traceAttackOriginAndTarget(clusteredVectors, anchor)
 
-            val threatLevel = if (isEdgeAlert || clusteredVectors.any { it.length > 150f }) {
-                ThreatLevel.CRITICAL
-            } else {
-                ThreatLevel.WARNING
+            // 8. 主城 2 格警戒圈判定 (5x5 核心威胁区)
+            val baseCoord = baseWorldCoord ?: com.stzb.assistant.service.MapProjection.baseWorld
+            var isWithinCircle = false
+            var targetWorld: Pair<Int, Int>? = null
+
+            if (playerTarget != null) {
+                if (baseCoord != null && com.stzb.assistant.service.MapProjection.isCalibrated) {
+                    targetWorld = com.stzb.assistant.service.MapProjection.screenToWorld(playerTarget.x, playerTarget.y)
+                    if (targetWorld != null) {
+                        val chebyshevDist = maxOf(
+                            abs(targetWorld.first - baseCoord.first),
+                            abs(targetWorld.second - baseCoord.second)
+                        )
+                        isWithinCircle = chebyshevDist <= alertRadiusTiles
+                    }
+                }
+                if (!isWithinCircle) {
+                    // 屏幕像素距离兜底：720p 虚拟画布下每格约 120~140px，2 格警戒圈取 280px
+                    val distPx = hypot(playerTarget.x - anchor.x, playerTarget.y - anchor.y)
+                    isWithinCircle = distPx <= (alertRadiusTiles * 140f)
+                }
+            } else if (isTopAlert) {
+                // 顶部原生受袭红标触发，官方确定的本土受袭事件
+                isWithinCircle = true
             }
 
-            Log.w(TAG, "【敌袭雷达告警】威胁等级: $threatLevel, 边缘红闪: $isEdgeAlert, 红线条数: ${clusteredVectors.size}, 敌方源头: $enemyOrigin")
+            // 9. 综合判定威胁等级
+            val hasAnyMarchThreat = clusteredVectors.isNotEmpty()
+            val isCritical = isTopAlert || isEdgeAlert || (hasAnyMarchThreat && isWithinCircle)
+            val threatLevel = when {
+                isCritical -> ThreatLevel.CRITICAL
+                hasAnyMarchThreat -> ThreatLevel.WARNING
+                else -> ThreatLevel.NONE
+            }
+            val hasThreat = threatLevel != ThreatLevel.NONE
+
+            if (hasThreat) {
+                Log.w(
+                    TAG,
+                    "【夜战天眼雷达告警】等级: $threatLevel, 顶部预警: $isTopAlert (倒计时: ${countdownSecs ?: -1}s), 2格警戒圈: $isWithinCircle, 边缘红闪: $isEdgeAlert, 红线数: ${clusteredVectors.size}, 目标: $playerTarget, 敌源: $enemyOrigin"
+                )
+            }
 
             return RaidReport(
-                hasThreat = true,
+                hasThreat = hasThreat,
                 threatLevel = threatLevel,
                 isScreenEdgeAlert = isEdgeAlert,
                 detectedVectors = clusteredVectors,
                 enemyOriginPoint = enemyOrigin,
                 playerTargetPoint = playerTarget,
-                timestampMs = now
+                timestampMs = now,
+                isTopAlertActive = isTopAlert,
+                isWithinAlertCircle = isWithinCircle,
+                remainingCountdownSeconds = countdownSecs,
+                targetWorldCoord = targetWorld
             )
 
         } catch (e: Exception) {
             Log.e(TAG, "敌袭雷达图像处理异常: ${e.message}", e)
-            return RaidReport(false, ThreatLevel.NONE, false, emptyList(), null, null, now)
+            return RaidReport(
+                hasThreat = false,
+                threatLevel = ThreatLevel.NONE,
+                isScreenEdgeAlert = false,
+                detectedVectors = emptyList(),
+                enemyOriginPoint = null,
+                playerTargetPoint = null,
+                timestampMs = now,
+                isTopAlertActive = false,
+                isWithinAlertCircle = false,
+                remainingCountdownSeconds = null,
+                targetWorldCoord = null
+            )
         } finally {
             // 严控显存与 Native 内存回收，杜绝后台常驻服务 OOM
             srcMat.release()
@@ -177,6 +246,91 @@ object RaidRadarDetector {
             redMask.release()
             linesMat.release()
         }
+    }
+
+    /**
+     * 检测主界面顶部的【受袭/被攻击预警红标 (Top Alert Badge)】与倒计时
+     * @param hsvMat 已经转换好的 HSV 图像
+     * @param fullFrame 原始 Bitmap，用于必要时从顶部切片提取文字倒计时
+     */
+    private fun detectTopAlertBadge(
+        hsvMat: Mat,
+        fullFrame: Bitmap
+    ): Pair<Boolean, Int?> {
+        val width = hsvMat.cols()
+        val height = hsvMat.rows()
+        if (width <= 0 || height <= 0) return Pair(false, null)
+
+        val topHeight = (height * 0.20f).toInt().coerceAtLeast(1)
+        val topHsv = hsvMat.submat(0, topHeight, 0, width)
+        val mask1 = Mat()
+        val mask2 = Mat()
+        val redMask = Mat()
+        val contours = ArrayList<MatOfPoint>()
+        val hierarchy = Mat()
+
+        var hasRedBadge = false
+        var countdownSeconds: Int? = null
+
+        try {
+            Core.inRange(topHsv, LOWER_RED_1, UPPER_RED_1, mask1)
+            Core.inRange(topHsv, LOWER_RED_2, UPPER_RED_2, mask2)
+            Core.bitwise_or(mask1, mask2, redMask)
+
+            val k = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(3.0, 3.0))
+            Imgproc.morphologyEx(redMask, redMask, Imgproc.MORPH_OPEN, k)
+            k.release()
+
+            Imgproc.findContours(redMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+
+            for (c in contours) {
+                val area = Imgproc.contourArea(c)
+                val rect = Imgproc.boundingRect(c)
+                if (area >= 80.0 && rect.width in 12..320 && rect.height in 12..120) {
+                    hasRedBadge = true
+                    break
+                }
+            }
+
+            if (hasRedBadge && OcrManager.isEngineAvailable) {
+                val topCrop = Bitmap.createBitmap(fullFrame, 0, 0, width, topHeight)
+                val ocrResult = OcrManager.detect(topCrop)
+                topCrop.recycle()
+
+                if (ocrResult != null) {
+                    val text = ocrResult.strRes
+                    if (text.contains("受袭") || text.contains("被攻击") || text.contains("敌袭") || text.contains("警报")) {
+                        hasRedBadge = true
+                    }
+                    val timePattern = java.util.regex.Pattern.compile("(?:(\\d{1,2})[:：])?(\\d{1,2})(?:秒)?")
+                    for (block in ocrResult.textBlocks) {
+                        val m = timePattern.matcher(block.text)
+                        if (m.find()) {
+                            val minStr = m.group(1)
+                            val secStr = m.group(2)
+                            val mins = minStr?.toIntOrNull() ?: 0
+                            val secs = secStr?.toIntOrNull() ?: 0
+                            val totalSec = mins * 60 + secs
+                            if (totalSec in 1..1800) {
+                                countdownSeconds = totalSec
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "顶部受袭预警红标检测异常: ${e.message}")
+        } finally {
+            contours.forEach { it.release() }
+            hierarchy.release()
+            mask1.release()
+            mask2.release()
+            redMask.release()
+            topHsv.release()
+        }
+
+        return Pair(hasRedBadge, countdownSeconds)
     }
 
     /**

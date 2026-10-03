@@ -17,6 +17,8 @@
   6. `selftest_check_ci_shell.py`  上述校验器的反例自测
   7. `selftest_license_token.py`   授权凭证判别逻辑自测
   8. `validate_scene_fingerprint.py` 场景指纹算法在真机截图上的实测（需要截图）
+  9. `tools/p1/check_assets.py`    入包资产体检：体积预算 / RAG 索引契约 / 假权重（离线纯 stdlib）
+ 10. `tools/p1/check_bases.py`     模型权重下载清单核验（默认离线只读；`--download` 才联网）
 
 散着敲这些命令既容易漏，也没法作为"可交付的验证入口"。本脚本把它们串起来，
 并可直接在 CI 里跑（新增的 `.github/workflows/verify.yml` 就是这么用的）。
@@ -85,6 +87,17 @@ def run_checker_inprocess(name, argv):
     finally:
         sys.argv = old_argv
     return (rc or 0), buf.getvalue()
+
+
+def _has_any_base():
+    """.models/ 下是否已有任何基座文件（决定 model-bases 该不该真跑）。"""
+    root = os.path.join(REPO, ".models")
+    if not os.path.isdir(root):
+        return False
+    for dirpath, _dirs, files in os.walk(root):
+        if any(f for f in files if not f.startswith(".")):
+            return True
+    return False
 
 
 def build_checks(args):
@@ -165,6 +178,54 @@ def build_checks(args):
             "script": "validate_watchdog_logic.py",
             "argv": [],
             "required": True,
+        },
+        {
+            "id": "sentinel-logic",
+            "title": "暗夜哨兵验证（主城2格警戒圈/60s秒回/防掉线微保活）",
+            "script": "validate_sentinel_logic.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "siege-sync",
+            "title": "双压秒攻城验证（邮件法令解析/主力0s/拆迁+5s/30min自愈调动）",
+            "script": "validate_siege_sync.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "schedule-manager",
+            "title": "离线战术定时验证（书签0漂移对准/挂牌出征/OCR读倒计时一键压秒破免）",
+            "script": "validate_schedule_manager.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "logistics-farming",
+            "title": "日常后勤与屯田打铁验证（主城税收/伤兵补兵/体力防溢/最高级地屯田/3令防溢出/工坊打铁）",
+            "script": "validate_logistics_farming.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "asset-budget",
+            "title": "入包资产体检（体积预算 / RAG 索引契约 / 假权重）",
+            "script": "p1/check_assets.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "model-bases",
+            "title": "模型权重下载清单核验（缺失只警告，严格模式下算失败）",
+            "script": "p1/check_bases.py",
+            "argv": [],
+            "required": False,
+            # 只有 .models/ 里一个基座文件都没有时才跳过；
+            # 否则必须真跑校验器，否则「已下载」会被永远跳成 SKIP，
+            # 权重坏了也照样绿灯（与之前踩过的假成功同一类问题）。
+            "skip_reason": None if _has_any_base() else (
+                "基座权重未下载（离线环境或尚未执行下载）；"
+                "下载方补齐 .models/ 后用 python tools/p1/check_bases.py 复核"),
         },
         {
             "id": "acceptance-selftest",

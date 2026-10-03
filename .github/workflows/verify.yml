@@ -54,6 +54,11 @@ jobs:
           python tools/run_all_checks.py 2>&1 | tee static_checks.log
           exit ${PIPESTATUS[0]}
 
+      - name: Model asset checks
+        # 入包资产体检：体积预算（上限 185MB）/ RAG 索引 V1·V2 契约 / 假权重（0 字节、非 ONNX 魔数、
+        # 非 ncnn 魔数）。纯 stdlib 离线可跑；缺权重只会如实报「缺失」，绝不伪造同尺寸空文件。
+        run: python tools/p1/check_assets.py
+
       - name: Summarize results
         if: always()
         run: |

@@ -2,233 +2,34 @@ package com.stzb.assistant.tactics
 
 import android.content.Context
 import android.graphics.PointF
-import android.util.Log
-import com.stzb.assistant.ocr.RaidRadarDetector
-import com.stzb.assistant.ocr.StzbUiMatcher
-import com.stzb.assistant.service.EngineBridge
-import com.stzb.assistant.service.UiAnchors
-import kotlinx.coroutines.delay
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 深夜敌袭应急处置总控与决策 C 自动反击中枢 (RaidDefenseFlow)
- * 
- * 核心痛点与用户最高优先级决策落地：
- *   1. 凌晨 3:00~5:00 真实沙盘夜战偷家全天候 24h 自动化巡检守护；
- *   2. 发现敌袭红线后，瞬间触发 AlarmRinger 高分贝鸣镝警报 + 强节奏马达震动 + 保持屏幕常亮唤醒；
- *   3. 【商业化王牌战术 - 决策 C：自动反击——拆除敌人跳板要塞与断其链接地】：
- *      不再被动坐以待毙或单纯丢弃资源，而是依托 RaidRadarDetector 源头回溯算法定位敌军出发要塞/前排跳板地，
- *      自动指挥高机动骑兵/斯巴达拆迁队反扑该跳板地，断其补给链与行军前线！
- *   4. 【决策 A 兜底防御】：若敌方跳板地超出视野或无法触达，自动切换为被袭主基地紧急调兵驻守拦截。
+ * 深夜敌袭应急处置总控与防沦中枢 (RaidDefenseFlow)
+ *
+ * 继承并全面升级为 [NightSentinelFlow]，保持原有 API 与调用方 100% 兼容。
  */
 class RaidDefenseFlow(
-    private val context: Context,
-    private val listener: TacticalState.TacticalEventListener? = null
-) {
+    context: Context,
+    listener: TacticalState.TacticalEventListener? = null
+) : NightSentinelFlow(context, listener) {
 
-    private val isRunning = AtomicBoolean(false)
-
+    /**
+     * 保持向后兼容的配置模型
+     */
     data class DefenseConfig(
         val baseAnchor: PointF? = null,              // 己方主城/防守核心要塞虚拟锚点 (默认居中)
+        val baseWorldCoord: Pair<Int, Int>? = null,  // 己方主城大地图世界坐标 (如 Pair(550, 480))
+        val alertCircleRadiusTiles: Int = 2,        // 主城警戒圈格数 (默认 2 格，5x5 核心威胁区)
         val counterAttackSquadSlot: Int = 1,        // 决策 C 反击所用的高机动拆迁骑兵槽位
+        val retreatSquadSlots: List<Int> = listOf(1, 2), // 60s 紧急秒回撤退的主力编队槽位 (默认 1、2 队)
         val patrolIntervalMs: Long = 4000L,         // 夜战雷达巡检周期 (毫秒)
         val enableAudioAlarm: Boolean = true,       // 是否拉响高分贝警报与震动
-        val enableDecisionC: Boolean = true         // 是否全自动执行决策 C 反击拆除
+        val enableAutoRetreat: Boolean = true,      // 60秒紧急自动撤退主力保命 (核心王牌)
+        val enableDecisionC: Boolean = false,       // 是否全自动执行决策 C 反击拆除 (高危，默认关闭优先保命)
+        val enableEmergencyFortify: Boolean = true, // 是否在危急时刻尝试启动【闭城/坚守】
+        val enableKeepAliveJiggle: Boolean = true,  // 5分钟安全微保活防掉线
+        val keepAliveIntervalMs: Long = 300_000L    // 防掉线微保活周期 (5 分钟)
     )
-
-    fun stop() {
-        isRunning.set(false)
-        AlarmRinger.stopAlarm(context)
-        log(TacticalState.TacticalLog(
-            taskType = TacticalState.TaskType.RAID_DEFENSE,
-            level = "WARN",
-            message = "⏹️ 深夜敌袭巡检总控已安全关闭，警报已复位。"
-        ))
-    }
-
-    /**
-     * 启动深夜敌袭雷达守护巡检常驻协程
-     */
-    suspend fun startPatrol(config: DefenseConfig) {
-        if (!isRunning.compareAndSet(false, true)) {
-            Log.w(TAG, "敌袭防御巡检已在运行中。")
-            return
-        }
-
-        listener?.onStatusChanged(
-            TacticalState.TaskType.RAID_DEFENSE,
-            TacticalState.Status.RUNNING,
-            "深夜敌袭巡检雷达已全天候激活，守护中..."
-        )
-
-        logTactic("🛡️【深夜雷达巡检已启动】巡检频率: ${config.patrolIntervalMs}ms/次，决策 C 自动断路反击已就绪。")
-
-        try {
-            while (isRunning.get()) {
-                // 1. 确保大地图主界面
-                val currentState = EngineBridge.detectGameState()
-                if (currentState != StzbUiMatcher.GameState.MAIN_MAP) {
-                    WatchdogRecovery.recoverToMainMap()
-                }
-
-                // 2. OpenCV 扫描全景敌袭红线与边缘呼吸警报光晕
-                val raidReport = EngineBridge.scanRaidThreats(config.baseAnchor)
-
-                if (raidReport.hasThreat) {
-                    handleRaidEvent(raidReport, config)
-                }
-
-                // 3. 拟人随机周期休眠
-                delay(config.patrolIntervalMs)
-            }
-        } catch (e: Exception) {
-            log(TacticalState.TacticalLog(
-                taskType = TacticalState.TaskType.RAID_DEFENSE,
-                level = "ERROR",
-                message = "敌袭防御总控巡检异常: ${e.message}"
-            ))
-        } finally {
-            isRunning.set(false)
-        }
-    }
-
-    /**
-     * 突发敌袭综合处置流
-     */
-    private suspend fun handleRaidEvent(report: RaidRadarDetector.RaidReport, config: DefenseConfig) {
-        val levelStr = if (report.threatLevel == RaidRadarDetector.ThreatLevel.CRITICAL) "CRITICAL (极度高危)" else "WARNING (中度预警)"
-
-        log(TacticalState.TacticalLog(
-            taskType = TacticalState.TaskType.RAID_DEFENSE,
-            level = "ERROR",
-            message = "🚨【警报！发现深夜敌袭夜战偷家】\n" +
-                    "  • 威胁等级: $levelStr\n" +
-                    "  • 屏幕边缘呼吸红光: ${report.isScreenEdgeAlert}\n" +
-                    "  • 识别红线行军轨迹: ${report.detectedVectors.size} 条\n" +
-                    "  • 受威胁己方基地: (${report.playerTargetPoint?.x?.toInt()}, ${report.playerTargetPoint?.y?.toInt()})\n" +
-                    "  • 敌方进攻源头跳板地: (${report.enemyOriginPoint?.x?.toInt()}, ${report.enemyOriginPoint?.y?.toInt()})"
-        ))
-
-        listener?.onStatusChanged(
-            TacticalState.TaskType.RAID_DEFENSE,
-            TacticalState.Status.RUNNING,
-            "🚨 发现敌袭偷家！正在执行紧急处置与反击..."
-        )
-
-        // 步骤 1：立即拉响高分贝鸣镝警报，唤醒熟睡中的玩家
-        if (config.enableAudioAlarm) {
-            AlarmRinger.startAlarm(context)
-        }
-
-        // 步骤 2：全自动执行【决策 C：拆除敌人跳板要塞与断其链接地】
-        if (config.enableDecisionC && report.enemyOriginPoint != null) {
-            val successC = executeDecisionC(report.enemyOriginPoint, config.counterAttackSquadSlot)
-            if (successC) {
-                logTactic("⚔️【决策 C 执行大捷】已成功对敌方进攻跳板发起反攻断地出征！")
-                return
-            } else {
-                logWarn("决策 C 跳板地点击出征受阻，平滑降级执行【决策 A：紧急调兵驻守】！")
-            }
-        }
-
-        // 步骤 3：降级兜底方案【决策 A：己方受袭基地紧急驻守】
-        if (report.playerTargetPoint != null) {
-            executeDecisionA(report.playerTargetPoint, config.counterAttackSquadSlot)
-        }
-    }
-
-    /**
-     * 【决策 C 核心实现】：自动反击——拆除敌人跳板要塞与断其链接地
-     */
-    private suspend fun executeDecisionC(enemyOriginPoint: PointF, squadSlot: Int): Boolean {
-        logTactic("🎯【执行决策 C 反击】正在锁定敌方源头跳板要塞/链接地: (${enemyOriginPoint.x.toInt()}, ${enemyOriginPoint.y.toInt()})")
-
-        // 1. 点击敌军源头地块
-        EngineBridge.tap(enemyOriginPoint.x, enemyOriginPoint.y)
-        val menuOpened = EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2500)
-        if (!menuOpened) {
-            logWarn("未能打开敌方源头地块菜单，尝试二次点击...")
-            EngineBridge.tap(enemyOriginPoint.x, enemyOriginPoint.y)
-            if (!EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2000)) {
-                return false
-            }
-        }
-
-        // 2+3. 点击【出征】发起反击，并当场确认选队面板弹出
-        val attack = EngineBridge.clickAndExpect(
-            StzbUiMatcher.ButtonType.ATTACK,
-            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
-            timeoutMs = 3000L,
-            attempts = 2
-        )
-        if (!attack.ok) {
-            logWarn("敌方跳板地未能进入出征面板：${attack.detail}")
-            return false
-        }
-
-        // 4. 切换至高机动拆迁骑兵队
-        clickTroopSlotTab(squadSlot)
-        EngineBridge.humanDelay(300, 500)
-
-        // 5. 点击【确定出征】
-        val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
-        if (!confirm.clicked) {
-            logWarn("反击时未能点击【确定出征】：${confirm.detail}")
-        }
-        EngineBridge.humanDelay(800, 1200)
-
-        // 6. 恢复大地图
-        WatchdogRecovery.recoverToMainMap()
-        return confirm.clicked
-    }
-
-    /**
-     * 【决策 A 核心实现】：己方受威胁要塞/主城紧急调兵驻守拦截
-     */
-    private suspend fun executeDecisionA(playerBasePoint: PointF, squadSlot: Int): Boolean {
-        logTactic("🛡️【执行决策 A 驻守】正在紧急驰援己方目标地: (${playerBasePoint.x.toInt()}, ${playerBasePoint.y.toInt()})")
-
-        EngineBridge.tap(playerBasePoint.x, playerBasePoint.y)
-        EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2000)
-
-        // 点击【驻守】并当场确认选队面板弹出
-        val defend = EngineBridge.clickAndExpect(
-            StzbUiMatcher.ButtonType.DEFEND,
-            StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
-            timeoutMs = 2500L,
-            attempts = 2
-        )
-        if (!defend.ok) {
-            logWarn("驻守时未能进入出征选队面板：${defend.detail}")
-            return false
-        }
-
-        clickTroopSlotTab(squadSlot)
-        EngineBridge.humanDelay(300, 500)
-
-        val confirm = EngineBridge.clickButtonDiagnosed(StzbUiMatcher.ButtonType.CONFIRM)
-        if (!confirm.clicked) {
-            logWarn("驻守时未能点击【确定出征】：${confirm.detail}")
-        }
-        EngineBridge.humanDelay(800, 1200)
-        WatchdogRecovery.recoverToMainMap()
-        return confirm.clicked
-    }
-
-    private suspend fun clickTroopSlotTab(slot: Int) {
-        // 统一锚点表，不再按 1280 宽画布写死 220/140/160
-        val p = UiAnchors.troopTab(slot)
-        EngineBridge.tap(p.x, p.y)
-    }
-
-    private fun logInfo(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.RAID_DEFENSE, "INFO", msg))
-    private fun logWarn(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.RAID_DEFENSE, "WARN", msg))
-    private fun logTactic(msg: String) = log(TacticalState.TacticalLog(TacticalState.TaskType.RAID_DEFENSE, "TACTIC", msg))
-
-    private fun log(entry: TacticalState.TacticalLog) {
-        Log.i(TAG, "[${entry.level}] ${entry.message}")
-        listener?.onLogEmitted(entry)
-    }
 
     companion object {
         private const val TAG = "RaidDefenseFlow"

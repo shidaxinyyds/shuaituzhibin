@@ -416,14 +416,30 @@ object EngineBridge {
     // ==========================================
 
     /**
-     * 全图巡检敌袭红线与边缘闪烁报警
+     * 全图巡检敌袭红线、主城警戒圈判定与顶部受袭红标
      * @param baseAnchor 己方基地参考点（默认居中）
+     * @param baseWorldCoord 己方基地世界坐标
+     * @param alertRadiusTiles 主城警戒圈格数 (默认 2 格，5x5 威胁区)
      */
-    fun scanRaidThreats(baseAnchor: PointF? = null): RaidRadarDetector.RaidReport {
+    fun scanRaidThreats(
+        baseAnchor: PointF? = null,
+        baseWorldCoord: Pair<Int, Int>? = null,
+        alertRadiusTiles: Int = 2
+    ): RaidRadarDetector.RaidReport {
         val frame = captureFrame() ?: return RaidRadarDetector.RaidReport(
-            false, RaidRadarDetector.ThreatLevel.NONE, false, emptyList(), null, null, System.currentTimeMillis()
+            hasThreat = false,
+            threatLevel = RaidRadarDetector.ThreatLevel.NONE,
+            isScreenEdgeAlert = false,
+            detectedVectors = emptyList(),
+            enemyOriginPoint = null,
+            playerTargetPoint = null,
+            timestampMs = System.currentTimeMillis(),
+            isTopAlertActive = false,
+            isWithinAlertCircle = false,
+            remainingCountdownSeconds = null,
+            targetWorldCoord = null
         )
-        val report = RaidRadarDetector.scanRaidThreats(frame, baseAnchor)
+        val report = RaidRadarDetector.scanRaidThreats(frame, baseAnchor, baseWorldCoord, alertRadiusTiles)
         frame.recycle()
         return report
     }

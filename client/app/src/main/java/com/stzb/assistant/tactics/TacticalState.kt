@@ -6,11 +6,19 @@ package com.stzb.assistant.tactics
 object TacticalState {
 
     enum class TaskType(val displayName: String) {
-        ROAD_PAVING("自动铺路翻地"),
-        IMMUNITY_BREAK("极限卡免与压秒破免"),
-        SIEGE_SYNC("同盟集火攻城毫秒卡秒"),
-        RAID_DEFENSE("深夜敌袭应急处置总控"),
-        STAMINA_ROTATION("主力体能动态轮班扫荡")
+        // --- 2026 商业化 5 大黄金中枢 ---
+        NIGHT_SENTINEL("暗夜天眼防沦哨兵"),
+        SIEGE_SYNC("全盟战役双压秒全勤王"),
+        TACTICAL_SCHEDULE("离线战术定时管家"),
+        TACTICAL_HUD("端侧RAG战术智脑HUD"),
+        LOGISTICS_STEWARD("单账号日常后勤全托管"),
+        FARMING_STEWARD("全自动屯田打铁管家"),
+
+        // --- 历史兼顾兼容项（平滑过渡）---
+        ROAD_PAVING("自动铺路翻地(已平替)"),
+        IMMUNITY_BREAK("极限破免(已并入定时管家)"),
+        RAID_DEFENSE("深夜应急总控(已升级哨兵)"),
+        STAMINA_ROTATION("主力体能轮换(已并入后勤)")
     }
 
     enum class Status(val desc: String) {

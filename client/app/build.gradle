@@ -12,8 +12,8 @@ android {
         applicationId "com.stzb.assistant"
         minSdk 26
         targetSdk 34
-        versionCode 107
-        versionName "1.0.7-commercial-stable"
+        versionCode 108
+        versionName "1.0.8-commercial-stable"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -117,4 +117,8 @@ dependencies {
 
     // 预留网络库（用于最后阶段对接 Supabase 鉴权）
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+
+    // ONNX Runtime Mobile：③bge 中文向量 / ④意图+槽位微脑 的端侧推理运行时
+    // （ARM64 约 12MB，与 assets/models 下的 INT8 权重配合；缺权重时只是加载失败，不影响编译）
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.22.0'
 }

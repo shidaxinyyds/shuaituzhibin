@@ -137,6 +137,30 @@
                 android:textSize="11sp" />
 
             <Button
+                android:id="@+id/tabLogistics"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_tab_inactive"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="后勤"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabFarming"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_tab_inactive"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="屯田"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
                 android:id="@+id/tabLogs"
                 android:layout_width="wrap_content"
                 android:layout_height="26dp"
@@ -219,19 +243,56 @@
                 android:id="@+id/tvImmunityCoord"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="卡免地块：尚未选择"
+                android:text="卡免地块：尚未选择 (可点选或填入官方书签)"
                 android:textColor="#FFE082"
                 android:textSize="11sp" />
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnPickImmunityTile"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="🎯 点选地块"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp" />
+
+                <Button
+                    android:id="@+id/btnInputImmunityBookmark"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="🔖 官方书签"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp" />
+            </LinearLayout>
+
             <Button
-                android:id="@+id/btnPickImmunityTile"
+                android:id="@+id/btnDetectTileImmunityOcr"
                 android:layout_width="match_parent"
                 android:layout_height="36dp"
                 android:layout_marginTop="6dp"
                 android:background="@drawable/bg_pill"
-                android:text="🎯 点选免战地块"
+                android:text="🔍 OCR 智能测算地块免战倒计时"
                 android:textColor="#FFFFFF"
                 android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/tvImmunityOcrResult"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:text="免战倒计时测算：尚未进行"
+                android:textColor="#80DEEA"
+                android:textSize="10sp" />
 
             <Button
                 android:id="@+id/btnExecBreakImmunity"
@@ -239,9 +300,19 @@
                 android:layout_height="38dp"
                 android:layout_marginTop="6dp"
                 android:background="@drawable/bg_btn_primary"
-                android:text="启动压秒破免"
+                android:text="🚀 启动一键压秒破免 (+1000ms触敌)"
                 android:textColor="#FFFFFF"
-                android:textSize="13sp" />
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/btnAddImmunityToSchedule"
+                android:layout_width="match_parent"
+                android:layout_height="34dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/bg_pill"
+                android:text="📅 将测算结果转为战术定时任务"
+                android:textColor="#B2DFDB"
+                android:textSize="11sp" />
         </LinearLayout>
 
         <!-- 3. 攻城面板 -->
@@ -256,9 +327,19 @@
                 android:id="@+id/tvSiegeCoord"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="集火城池：尚未点选"
+                android:text="集火城池：尚未点选 (支持邮件一键解析)"
                 android:textColor="#CE93D8"
                 android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btnParseAllianceMail"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_pill"
+                android:text="📧 一键解析同盟邮件卡片"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
 
             <Button
                 android:id="@+id/btnPickSiegeCity"
@@ -276,7 +357,7 @@
                 android:layout_height="38dp"
                 android:layout_marginTop="6dp"
                 android:background="@drawable/bg_btn_primary"
-                android:text="启动集火攻城"
+                android:text="启动双压秒集火攻城"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
         </LinearLayout>
@@ -292,7 +373,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="全天候红线巡检与自动反击守护"
+                android:text="主城2格警戒圈判定 + 60秒秒回撤退主力 + 5分钟防掉线微保活"
                 android:textColor="#EF9A9A"
                 android:textSize="11sp" />
 
@@ -302,7 +383,7 @@
                 android:layout_height="42dp"
                 android:layout_marginTop="16dp"
                 android:background="@drawable/bg_btn_danger"
-                android:text="开启敌袭巡检与反击"
+                android:text="开启暗夜天眼防沦哨兵"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
         </LinearLayout>
@@ -462,7 +543,7 @@
                     android:layout_height="match_parent"
                     android:layout_weight="1"
                     android:background="@drawable/bg_pill"
-                    android:text="＋ 新建定时任务"
+                    android:text="＋ 新建任务"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
 
@@ -476,10 +557,199 @@
                     android:text="管理任务"
                     android:textColor="#FFFFFF"
                     android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnTestBookmarkJump"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="🔖 测试书签"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 7. 日志面板 -->
+        <!-- 7. 后勤全托管面板 -->
+        <LinearLayout
+            android:id="@+id/panelLogistics"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvLogisticsStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="日常后勤：待命中（税收/补兵/防溢出/城建）"
+                android:textColor="#90CAF9"
+                android:textSize="11sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:orientation="horizontal">
+
+                <CheckBox
+                    android:id="@+id/cbLogisticsTax"
+                    android:layout_width="0dp"
+                    android:layout_height="24dp"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="自动征税"
+                    android:textColor="#ECEFF1"
+                    android:textSize="10sp" />
+
+                <CheckBox
+                    android:id="@+id/cbLogisticsRecruit"
+                    android:layout_width="0dp"
+                    android:layout_height="24dp"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="快速补兵"
+                    android:textColor="#ECEFF1"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <CheckBox
+                    android:id="@+id/cbLogisticsStamina"
+                    android:layout_width="0dp"
+                    android:layout_height="24dp"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="体力防溢"
+                    android:textColor="#ECEFF1"
+                    android:textSize="10sp" />
+
+                <CheckBox
+                    android:id="@+id/cbLogisticsUpgrade"
+                    android:layout_width="0dp"
+                    android:layout_height="24dp"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="城建排队"
+                    android:textColor="#ECEFF1"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnExecLogistics"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/bg_btn_primary"
+                android:text="立即执行后勤全托管"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 8. 智能屯田打铁面板 -->
+        <LinearLayout
+            android:id="@+id/panelFarming"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/tvFarmingTarget"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="屯田地块：尚未点选（优先 Lv.5+ 最高收益地）"
+                android:textColor="#90CAF9"
+                android:textSize="11sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="3dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnPickFarmingTile"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill"
+                    android:text="🎯 点选屯田地"
+                    android:textColor="#FFFFFF"
+                    android:textSize="10sp" />
+
+                <CheckBox
+                    android:id="@+id/cbFarmingBlacksmith"
+                    android:layout_width="0dp"
+                    android:layout_height="28dp"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:checked="true"
+                    android:text="工坊打铁/宝物"
+                    android:textColor="#ECEFF1"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="部队槽位:"
+                    android:textColor="#CFD8DC"
+                    android:textSize="10sp" />
+
+                <Spinner
+                    android:id="@+id/spFarmingSlot"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill" />
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="偏好:"
+                    android:textColor="#CFD8DC"
+                    android:textSize="10sp" />
+
+                <Spinner
+                    android:id="@+id/spFarmingResType"
+                    android:layout_width="0dp"
+                    android:layout_height="26dp"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/bg_pill" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnExecFarming"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:layout_marginTop="4dp"
+                android:background="@drawable/bg_btn_primary"
+                android:text="开始智能屯田与打铁"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 9. 日志面板 -->
         <LinearLayout
             android:id="@+id/panelLogs"
             android:layout_width="match_parent"

@@ -25,8 +25,11 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
 
     val roadPavingFlow = RoadPavingFlow(this)
     val immunityBreakFlow = ImmunityBreakFlow(this)
-    val siegeSyncFlow = SiegeSyncFlow(this)
+    val siegeSyncFlow = SiegeSyncFlow(context, this)
     val raidDefenseFlow = RaidDefenseFlow(context, this)
+    val nightSentinelFlow: NightSentinelFlow get() = raidDefenseFlow
+    val dailyLogisticsFlow = DailyLogisticsFlow(context, this)
+    val accurateFarmingFlow = AccurateFarmingFlow(context, this)
 
     private val listeners = CopyOnWriteArrayList<TacticalState.TacticalEventListener>()
     private val logHistory = CopyOnWriteArrayList<TacticalState.TacticalLog>()
@@ -124,6 +127,153 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         }
     }
 
+    data class TimedDispatchConfig(
+        val taskName: String,
+        val bookmarkName: String? = null,
+        val targetTileCoord: android.graphics.PointF,
+        val targetWorldCoord: Pair<Int, Int>? = null,
+        val actionType: com.stzb.assistant.ocr.StzbUiMatcher.ButtonType = com.stzb.assistant.ocr.StzbUiMatcher.ButtonType.ATTACK,
+        val troopSlot: Int = 1,
+        val latencyCompensationMs: Long = 110L
+    )
+
+    /**
+     * 启动挂牌到点出征 / 扫荡 / 屯田 / 驻守定时任务
+     */
+    fun startTimedDispatch(config: TimedDispatchConfig) {
+        launchTask(TacticalState.TaskType.TACTICAL_SCHEDULE) {
+            executeTimedDispatch(config)
+        }
+    }
+
+    private suspend fun executeTimedDispatch(config: TimedDispatchConfig): Boolean {
+        onStatusChanged(
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            TacticalState.Status.RUNNING,
+            "开始执行定时任务 [${config.taskName}]，目标动作: ${config.actionType.primaryKeyword}，槽位: ${config.troopSlot}"
+        )
+        onLogEmitted(TacticalState.TacticalLog(
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            "INFO",
+            "🚀 定时战术启动: ${config.taskName} (动作=${config.actionType.primaryKeyword}, 部队=${config.troopSlot}队)"
+        ))
+
+        // 1. 确保大地图就绪
+        WatchdogRecovery.recoverToMainMap()
+
+        // 2. 目标对准：官方书签优先 (0 漂移)，其次世界坐标导航，最后屏幕坐标
+        var tapPoint: android.graphics.PointF = config.targetTileCoord
+        if (!config.bookmarkName.isNullOrBlank()) {
+            onLogEmitted(TacticalState.TacticalLog(
+                TacticalState.TaskType.TACTICAL_SCHEDULE,
+                "INFO",
+                "🔖 正在通过官方书签检索 [${config.bookmarkName}] 实施 0 漂移对准..."
+            ))
+            when (val nav = com.stzb.assistant.service.MapNavigator.jumpByBookmark(config.bookmarkName)) {
+                is com.stzb.assistant.service.MapNavigator.Result.Reached -> {
+                    tapPoint = com.stzb.assistant.service.MapProjection.viewportCenterCanvas()
+                    onLogEmitted(TacticalState.TacticalLog(
+                        TacticalState.TaskType.TACTICAL_SCHEDULE,
+                        "INFO",
+                        "🔖 官方书签 [${config.bookmarkName}] 对准完成，锁定镜头中心"
+                    ))
+                }
+                is com.stzb.assistant.service.MapNavigator.Result.Refused -> {
+                    onLogEmitted(TacticalState.TacticalLog(
+                        TacticalState.TaskType.TACTICAL_SCHEDULE,
+                        "WARN",
+                        "书签跳转被拒绝: ${nav.reason}，回退使用坐标对准"
+                    ))
+                }
+                is com.stzb.assistant.service.MapNavigator.Result.Failed -> {
+                    onLogEmitted(TacticalState.TacticalLog(
+                        TacticalState.TaskType.TACTICAL_SCHEDULE,
+                        "WARN",
+                        "书签跳转失败: ${nav.reason}，回退使用坐标对准"
+                    ))
+                }
+            }
+        }
+
+        if (tapPoint == config.targetTileCoord && config.targetWorldCoord != null && com.stzb.assistant.service.MapProjection.isCalibrated) {
+            val (wx, wy) = config.targetWorldCoord
+            when (val nav = com.stzb.assistant.service.MapNavigator.centerOn(wx, wy)) {
+                is com.stzb.assistant.service.MapNavigator.Result.Reached -> {
+                    tapPoint = com.stzb.assistant.service.MapProjection.viewportCenterCanvas()
+                    onLogEmitted(TacticalState.TacticalLog(
+                        TacticalState.TaskType.TACTICAL_SCHEDULE,
+                        "INFO",
+                        "🧭 已按世界坐标 ($wx, $wy) 对准目标地块镜头中心"
+                    ))
+                }
+                is com.stzb.assistant.service.MapNavigator.Result.Refused ->
+                    onLogEmitted(TacticalState.TacticalLog(TacticalState.TaskType.TACTICAL_SCHEDULE, "WARN", "世界坐标导航被拒绝: ${nav.reason}"))
+                is com.stzb.assistant.service.MapNavigator.Result.Failed ->
+                    onLogEmitted(TacticalState.TacticalLog(TacticalState.TaskType.TACTICAL_SCHEDULE, "WARN", "世界坐标导航失败: ${nav.reason}"))
+            }
+        }
+
+        // 3. 点击地块唤起操作轮盘
+        com.stzb.assistant.service.EngineBridge.tap(tapPoint.x, tapPoint.y)
+        com.stzb.assistant.service.EngineBridge.waitForState(com.stzb.assistant.ocr.StzbUiMatcher.GameState.TILE_ACTION_MENU, 2500)
+
+        // 4. 点击指定动作按键 (出征/扫荡/屯田/驻守) 并等待出征面板
+        val actionRes = com.stzb.assistant.service.EngineBridge.clickAndExpect(
+            config.actionType,
+            com.stzb.assistant.ocr.StzbUiMatcher.GameState.TROOP_DISPATCH_DIALOG,
+            timeoutMs = 3000L,
+            attempts = 2
+        )
+        if (!actionRes.ok) {
+            onLogEmitted(TacticalState.TacticalLog(
+                TacticalState.TaskType.TACTICAL_SCHEDULE,
+                "WARN",
+                "未能进入出征选队面板：${actionRes.detail}"
+            ))
+            WatchdogRecovery.recoverToMainMap()
+            onStatusChanged(
+                TacticalState.TaskType.TACTICAL_SCHEDULE,
+                TacticalState.Status.FAILED,
+                "未能点击【${config.actionType.primaryKeyword}】按键"
+            )
+            return false
+        }
+
+        // 5. 选中指定部队槽位
+        val tabPoint = com.stzb.assistant.service.UiAnchors.troopTab(config.troopSlot)
+        com.stzb.assistant.service.EngineBridge.tap(tabPoint.x, tabPoint.y)
+        com.stzb.assistant.service.EngineBridge.humanDelay(300, 600)
+
+        // 6. 确认出征
+        val confirmRes = com.stzb.assistant.service.EngineBridge.clickButtonDiagnosed(com.stzb.assistant.ocr.StzbUiMatcher.ButtonType.CONFIRM)
+        if (!confirmRes.ok) {
+            onLogEmitted(TacticalState.TacticalLog(
+                TacticalState.TaskType.TACTICAL_SCHEDULE,
+                "WARN",
+                "点击【确定】按键未成功：${confirmRes.detail}"
+            ))
+            WatchdogRecovery.recoverToMainMap()
+            onStatusChanged(
+                TacticalState.TaskType.TACTICAL_SCHEDULE,
+                TacticalState.Status.FAILED,
+                "未能完成出征确认"
+            )
+            return false
+        }
+
+        onLogEmitted(TacticalState.TacticalLog(
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            "INFO",
+            "✅ 定时任务 [${config.taskName}] 派发成功！动作: ${config.actionType.primaryKeyword}，第 ${config.troopSlot} 队已出征。"
+        ))
+        onStatusChanged(
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            TacticalState.Status.COMPLETED,
+            "定时任务 [${config.taskName}] 已顺利派发出征"
+        )
+        return true
+    }
+
     /**
      * 启动同盟集火攻城卡秒排队任务
      */
@@ -134,11 +284,60 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     }
 
     /**
+     * 根据同盟邮件法令卡片一键启动双压秒全勤攻城
+     */
+    fun startSiegeFromMail(mailPlan: AllianceMailParser.SiegeMailPlan) {
+        val screenCenter = android.graphics.PointF(
+            com.stzb.assistant.service.CoordinateTransformer.virtualWidth / 2f,
+            com.stzb.assistant.service.CoordinateTransformer.virtualHeight / 2f
+        )
+        val config = SiegeSyncFlow.SiegeConfig(
+            cityVirtualCoord = screenCenter,
+            targetBaseHitEpochMs = mailPlan.targetHitEpochMs,
+            mainSquadSlot = 1,
+            demolitionSlots = listOf(2, 3),
+            demolitionOffsetSec = mailPlan.demolitionOffsetSec,
+            cityWorldCoord = mailPlan.targetWorldCoord,
+            fortressWorldCoord = mailPlan.fortressWorldCoord,
+            fortressName = mailPlan.fortressName,
+            enablePreFlight30MinCheck = true
+        )
+        startSiegeSync(config)
+    }
+
+    /**
      * 启动深夜敌袭巡检与决策 C 自动反击守护任务
      */
     fun startRaidDefense(config: RaidDefenseFlow.DefenseConfig) {
-        launchTask(TacticalState.TaskType.RAID_DEFENSE) {
+        launchTask(TacticalState.TaskType.NIGHT_SENTINEL) {
             raidDefenseFlow.startPatrol(config)
+        }
+    }
+
+    /**
+     * 启动暗夜天眼哨兵守护流
+     */
+    fun startNightSentinel(config: RaidDefenseFlow.DefenseConfig) {
+        launchTask(TacticalState.TaskType.NIGHT_SENTINEL) {
+            raidDefenseFlow.startPatrol(config)
+        }
+    }
+
+    /**
+     * 启动单账号日常后勤全托管流程 (税收/伤兵征兵/体力防溢/城建升级)
+     */
+    fun startDailyLogistics(config: DailyLogisticsFlow.LogisticsConfig) {
+        launchTask(TacticalState.TaskType.LOGISTICS_STEWARD) {
+            dailyLogisticsFlow.execute(config)
+        }
+    }
+
+    /**
+     * 启动全自动屯田打铁管家流程 (高等级资源地屯田/3令防溢出/工坊宝物锻造)
+     */
+    fun startAccurateFarming(config: AccurateFarmingFlow.FarmingConfig) {
+        launchTask(TacticalState.TaskType.FARMING_STEWARD) {
+            accurateFarmingFlow.execute(config)
         }
     }
 
@@ -149,9 +348,13 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         val prev = activeTaskType
         when (prev) {
             TacticalState.TaskType.ROAD_PAVING -> roadPavingFlow.stop()
-            TacticalState.TaskType.IMMUNITY_BREAK -> immunityBreakFlow.stop()
+            TacticalState.TaskType.IMMUNITY_BREAK,
+            TacticalState.TaskType.TACTICAL_SCHEDULE -> immunityBreakFlow.stop()
             TacticalState.TaskType.SIEGE_SYNC -> siegeSyncFlow.stop()
-            TacticalState.TaskType.RAID_DEFENSE -> raidDefenseFlow.stop()
+            TacticalState.TaskType.RAID_DEFENSE,
+            TacticalState.TaskType.NIGHT_SENTINEL -> raidDefenseFlow.stop()
+            TacticalState.TaskType.LOGISTICS_STEWARD -> dailyLogisticsFlow.stop()
+            TacticalState.TaskType.FARMING_STEWARD -> accurateFarmingFlow.stop()
             else -> {}
         }
         currentJob?.cancel()
@@ -170,6 +373,8 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         immunityBreakFlow.stop()
         siegeSyncFlow.stop()
         raidDefenseFlow.stop()
+        dailyLogisticsFlow.stop()
+        accurateFarmingFlow.stop()
         AlarmRinger.stopAlarm(context)
 
         currentJob?.cancel()

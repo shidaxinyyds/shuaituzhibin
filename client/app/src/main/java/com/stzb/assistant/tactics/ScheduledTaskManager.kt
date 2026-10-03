@@ -1,8 +1,14 @@
 package com.stzb.assistant.tactics
 
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
 import android.graphics.PointF
+import android.os.Build
 import android.util.Log
+import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.EngineBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -68,7 +74,18 @@ object ScheduledTaskManager {
          * 「我选了 5 块，结果只铺了 1 块」，而且**界面从头到尾没有任何提示**。
          * 主字段 [targetX]/[targetY] 保持不变，以兼容已经存到本地的旧数据。
          */
-        var extraTargetsRaw: String = ""
+        var extraTargetsRaw: String = "",
+        /**
+         * 官方书签/标记名称（如 "主城", "虎牢关", "要塞1"）。
+         * 优先于坐标，通过 MapNavigator.jumpByBookmark 实现 0 漂移对准。
+         */
+        var bookmarkName: String? = null,
+        /** 动作类型：出征 ATTACK, 扫荡 SWEEP, 屯田 FARM, 驻守 DEFEND */
+        var actionType: StzbUiMatcher.ButtonType = StzbUiMatcher.ButtonType.ATTACK,
+        /** 指定出征部队槽位 (1 ~ 5) */
+        var troopSlot: Int = 1,
+        /** 是否为一键压秒破免模式（读取地块免战倒计时并在解锁时刻 +1000ms 触敌） */
+        var isImmunityBreak: Boolean = false
     ) {
         /** 目标点；未设置时为 null，调用方必须据此拒绝执行而不是退化成屏幕中心。 */
         fun targetPoint(): PointF? {
@@ -77,7 +94,7 @@ object ScheduledTaskManager {
             return PointF(x, y)
         }
 
-        fun hasTarget(): Boolean = targetX != null && targetY != null
+        fun hasTarget(): Boolean = (targetX != null && targetY != null) || !bookmarkName.isNullOrBlank()
 
         /** 目标的世界坐标；未记录时为 null。 */
         fun targetWorld(): Pair<Int, Int>? {
@@ -161,6 +178,9 @@ object ScheduledTaskManager {
         listeners.remove(listener)
     }
 
+    private var appContext: Context? = null
+    private var activePipeline: TacticalPipeline? = null
+
     /**
      * 启动调度器。**幂等**：可被多处调用（主程序、屏幕捕获服务、悬浮窗），
      * 重复调用不会重开时钟、也不会清掉用户已配置的任务。
@@ -171,12 +191,15 @@ object ScheduledTaskManager {
      */
     @Synchronized
     fun init(context: Context, pipeline: TacticalPipeline) {
+        appContext = context.applicationContext
+        activePipeline = pipeline
         if (!started) {
             loadTasks(context)
             started = true
             Log.i(TAG, "定时任务管理器已启动，已加载 ${tasks.size} 项定时计划。")
         }
         startTicker(pipeline)
+        syncNextExactAlarm()
     }
 
     fun getTasks(): List<ScheduledTask> = tasks.toList()
@@ -192,7 +215,11 @@ object ScheduledTaskManager {
         hitOffsetSeconds: Long = 60L,
         targetWorldX: Int? = null,
         targetWorldY: Int? = null,
-        extraTargetsRaw: String = ""
+        extraTargetsRaw: String = "",
+        bookmarkName: String? = null,
+        actionType: StzbUiMatcher.ButtonType = StzbUiMatcher.ButtonType.ATTACK,
+        troopSlot: Int = 1,
+        isImmunityBreak: Boolean = false
     ): ScheduledTask {
         val newTask = ScheduledTask(
             id = "SCH-" + System.currentTimeMillis().toString().takeLast(7),
@@ -205,7 +232,11 @@ object ScheduledTaskManager {
             targetWorldX = targetWorldX,
             targetWorldY = targetWorldY,
             hitOffsetSeconds = hitOffsetSeconds,
-            extraTargetsRaw = extraTargetsRaw
+            extraTargetsRaw = extraTargetsRaw,
+            bookmarkName = bookmarkName,
+            actionType = actionType,
+            troopSlot = troopSlot,
+            isImmunityBreak = isImmunityBreak
         )
         tasks.add(newTask)
         saveTasks(context)
@@ -226,7 +257,11 @@ object ScheduledTaskManager {
         hitOffsetSeconds: Long,
         targetWorldX: Int? = null,
         targetWorldY: Int? = null,
-        extraTargetsRaw: String = ""
+        extraTargetsRaw: String = "",
+        bookmarkName: String? = null,
+        actionType: StzbUiMatcher.ButtonType = StzbUiMatcher.ButtonType.ATTACK,
+        troopSlot: Int = 1,
+        isImmunityBreak: Boolean = false
     ): Boolean {
         val task = tasks.find { it.id == id } ?: return false
         task.name = name
@@ -238,6 +273,10 @@ object ScheduledTaskManager {
         task.targetWorldY = targetWorldY
         task.hitOffsetSeconds = hitOffsetSeconds
         task.extraTargetsRaw = extraTargetsRaw
+        task.bookmarkName = bookmarkName
+        task.actionType = actionType
+        task.troopSlot = troopSlot
+        task.isImmunityBreak = isImmunityBreak
         saveTasks(context)
         notifyListeners()
         Log.i(TAG, "已更新定时任务: $id")
@@ -286,6 +325,17 @@ object ScheduledTaskManager {
                     } catch (e: Exception) {
                         TacticalState.TaskType.RAID_DEFENSE
                     }
+                    val bookmarkName = if (obj.has("bookmarkName") && !obj.isNull("bookmarkName")) {
+                        obj.getString("bookmarkName")
+                    } else null
+                    val actionTypeStr = obj.optString("actionType", StzbUiMatcher.ButtonType.ATTACK.name)
+                    val actionType = try {
+                        StzbUiMatcher.ButtonType.valueOf(actionTypeStr)
+                    } catch (e: Exception) {
+                        StzbUiMatcher.ButtonType.ATTACK
+                    }
+                    val troopSlot = obj.optInt("troopSlot", 1)
+                    val isImmunityBreak = obj.optBoolean("isImmunityBreak", false)
                     tasks.add(
                         ScheduledTask(
                             id = obj.getString("id"),
@@ -306,7 +356,11 @@ object ScheduledTaskManager {
                                 obj.getInt("targetWorldY")
                             } else null,
                             hitOffsetSeconds = obj.optLong("hitOffsetSeconds", 60L),
-                            extraTargetsRaw = obj.optString("extraTargetsRaw", "")
+                            extraTargetsRaw = obj.optString("extraTargetsRaw", ""),
+                            bookmarkName = bookmarkName,
+                            actionType = actionType,
+                            troopSlot = troopSlot,
+                            isImmunityBreak = isImmunityBreak
                         )
                     )
                 }
@@ -334,11 +388,111 @@ object ScheduledTaskManager {
                 put("hitOffsetSeconds", task.hitOffsetSeconds)
                 // 附加目标一并持久化：漏掉这一行就会表现为"任务能存进去，重启后目标变少"
                 put("extraTargetsRaw", task.extraTargetsRaw)
+                if (task.bookmarkName != null) put("bookmarkName", task.bookmarkName!!) else put("bookmarkName", JSONObject.NULL)
+                put("actionType", task.actionType.name)
+                put("troopSlot", task.troopSlot)
+                put("isImmunityBreak", task.isImmunityBreak)
             }
             array.put(obj)
         }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().putString(KEY_TASKS_JSON, array.toString()).apply()
+        syncNextExactAlarm()
+    }
+
+    /**
+     * 【2026 商业级纯原生最优解】：同步设置 Android 系统原生 AlarmManager 硬件级 RTC 闹钟。
+     *
+     * 解决的致命痛点：
+     *   手机深度息屏后进入 Doze 模式，后台协程会进入深睡眠挂起导致任务无法准点执行。
+     *   通过系统原生 AlarmManager.setExactAndAllowWhileIdle()，由手机硬件 RTC 芯片强行唤醒 CPU！
+     *   零第三方守护包、零 Shizuku、100% 纯原生保障！
+     */
+    fun syncNextExactAlarm() {
+        val ctx = appContext ?: return
+        val alarmManager = ctx.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+
+        // 计算所有已开启任务中最近的一个未来触发时刻
+        val now = System.currentTimeMillis()
+        var nextTriggerMs: Long? = null
+
+        for (task in tasks) {
+            if (!task.isEnabled) continue
+            var epoch = scheduledEpochMsFor(task) ?: continue
+            if (epoch <= now) {
+                // 如果今天的这个时间点已过，则是明天的该时刻
+                epoch += 24 * 60 * 60 * 1000L
+            }
+            if (nextTriggerMs == null || epoch < nextTriggerMs!!) {
+                nextTriggerMs = epoch
+            }
+        }
+
+        val intent = Intent(ctx, ScheduledTaskAlarmReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            ctx,
+            8881,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        )
+
+        if (nextTriggerMs == null) {
+            alarmManager.cancel(pendingIntent)
+            Log.i(TAG, "当前无待执行任务，已取消原生 RTC 唤醒定时。")
+            return
+        }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
+            } else {
+                alarmManager.setExact(AlarmManager.RTC_WAKEUP, nextTriggerMs, pendingIntent)
+            }
+            val formatted = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(nextTriggerMs))
+            Log.i(TAG, "已注册系统底层硬件级 RTC 闹钟，下次唤醒时间: $formatted")
+        } catch (e: SecurityException) {
+            Log.w(TAG, "系统缺少精确闹钟权限，继续依赖协程轮询调度: ${e.message}")
+        }
+    }
+
+    /**
+     * 系统 RTC 闹钟唤醒触发广播接收器
+     */
+    class ScheduledTaskAlarmReceiver : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            Log.i(TAG, "⏰ 收到系统底层 RTC 闹钟强行唤醒广播，正在核查任务...")
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val wakeLock = pm?.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                "stzb:ScheduledTaskRtcWakeLock"
+            )
+            wakeLock?.acquire(60_000L)
+
+            try {
+                @Suppress("DEPRECATION")
+                val screenLock = pm?.newWakeLock(
+                    android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                        android.os.PowerManager.ON_AFTER_RELEASE,
+                    "stzb:ScheduledTaskScreenOn"
+                )
+                screenLock?.acquire(10_000L)
+            } catch (e: Exception) {
+                Log.d(TAG, "亮屏唤醒忽略异常: ${e.message}")
+            }
+
+            val pipeline = activePipeline
+            if (pipeline != null) {
+                val currentMinute = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date())
+                val matched = tasks.filter { it.isEnabled && it.timeStr == currentMinute }
+                for (task in matched) {
+                    Log.i(TAG, "⏰ RTC 唤醒触发任务: [${task.timeStr}] ${task.name}")
+                    triggerTask(task, pipeline)
+                }
+            }
+            // 调度下一次闹钟
+            syncNextExactAlarm()
+        }
     }
 
     private fun startTicker(pipeline: TacticalPipeline) {
@@ -413,14 +567,52 @@ object ScheduledTaskManager {
         val rules = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
 
         when (task.taskType) {
-            TacticalState.TaskType.RAID_DEFENSE -> {
-                pipeline.startRaidDefense(
+            TacticalState.TaskType.RAID_DEFENSE,
+            TacticalState.TaskType.NIGHT_SENTINEL -> {
+                pipeline.startNightSentinel(
                     RaidDefenseFlow.DefenseConfig(
                         counterAttackSquadSlot = defaults.immunityDefaultTroopSlot,
                         enableAudioAlarm = defaults.raidAlarmSound,
                         enableDecisionC = defaults.raidDecisionCAutoCounter
                     )
                 )
+            }
+
+            TacticalState.TaskType.TACTICAL_SCHEDULE,
+            TacticalState.TaskType.IMMUNITY_BREAK -> {
+                if (!task.hasTarget()) {
+                    Log.w(TAG, "跳过战术定时任务「${task.name}」：未设置目标（未指定地块坐标且未填写官方书签）。")
+                    return
+                }
+
+                val target = task.allTargets().firstOrNull()
+                val targetPoint = target?.let { PointF(it.x, it.y) }
+                    ?: com.stzb.assistant.service.MapProjection.viewportCenterCanvas()
+
+                if (task.isImmunityBreak || task.taskType == TacticalState.TaskType.IMMUNITY_BREAK) {
+                    pipeline.startImmunityBreak(
+                        ImmunityBreakFlow.ImmunityConfig(
+                            mode = ImmunityBreakFlow.ImmunityMode.BREAK_IMMUNITY,
+                            targetTileCoord = targetPoint,
+                            designatedTroopSlot = task.troopSlot,
+                            latencyCompensationMs = rules.immunityPaddingMs,
+                            targetWorldCoord = if (target?.worldX != null && target?.worldY != null) Pair(target.worldX, target.worldY) else null,
+                            bookmarkName = task.bookmarkName
+                        )
+                    )
+                } else {
+                    pipeline.startTimedDispatch(
+                        TacticalPipeline.TimedDispatchConfig(
+                            taskName = task.name,
+                            bookmarkName = task.bookmarkName,
+                            targetTileCoord = targetPoint,
+                            targetWorldCoord = if (target?.worldX != null && target?.worldY != null) Pair(target.worldX, target.worldY) else null,
+                            actionType = task.actionType,
+                            troopSlot = task.troopSlot,
+                            latencyCompensationMs = rules.immunityPaddingMs
+                        )
+                    )
+                }
             }
 
             TacticalState.TaskType.ROAD_PAVING -> {

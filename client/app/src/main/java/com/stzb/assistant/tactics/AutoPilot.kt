@@ -46,7 +46,13 @@ object AutoPilot {
         val siegeTarget: PointF? = null,
         /** 攻城目标的世界坐标（未标定时为 null）。 */
         val siegeWorldTarget: Pair<Int, Int>? = null,
-        val siegeHitEpochMs: Long = 0L
+        val siegeHitEpochMs: Long = 0L,
+        val dailyLogistics: Boolean = false,
+        val farmingTarget: PointF? = null,
+        val farmingWorldTarget: Pair<Int, Int>? = null,
+        val farmingBookmark: String? = null,
+        val farmingTroopSlot: Int = 2,
+        val autoFarmingEnabled: Boolean = false
     )
 
     /** 启动失败的原因，供 UI 原样展示。 */
@@ -90,11 +96,20 @@ object AutoPilot {
     /** 已下发的攻城签名（目标或命中时刻一变就重新下发）。 */
     private var siegeSignature = ""
 
+    /** 已下发的屯田目标签名。 */
+    private var farmingSignature = ""
+
+    /** 后勤任务最近一次执行时间戳。 */
+    private var logisticsLastRunAtMs = 0L
+
     /** 巡检守护距上次拉起不足该时长时不再重拉，避免巡检自身反复失败形成热循环。 */
     private const val RAID_RESTART_COOLDOWN_MS = 60_000L
 
     /** 攻城提前量：到达命中时刻前多久开始下发。 */
     private const val SIEGE_LEAD_MS = 60_000L
+
+    /** 后勤全托管周期执行间隔 (默认 30 分钟)。 */
+    private const val LOGISTICS_INTERVAL_MS = 1800_000L
 
     /** 每次 start() 重置运行期状态，避免上一次运行的残留影响本次。 */
     private fun resetRuntimeState() {
@@ -102,6 +117,8 @@ object AutoPilot {
         raidLastStartAtMs = 0L
         pavingSignature = ""
         siegeSignature = ""
+        farmingSignature = ""
+        logisticsLastRunAtMs = 0L
     }
 
     fun registerListener(l: Listener) {
@@ -180,6 +197,8 @@ object AutoPilot {
                                 ActionKind.RAID -> "拉起夜间巡检守护"
                                 ActionKind.PAVING -> "下发铺路翻地（${intents.pavingTargets.size} 块）"
                                 ActionKind.SIEGE -> "下发集火攻城"
+                                ActionKind.FARMING -> "下发高等级地块屯田与打铁巡检"
+                                ActionKind.LOGISTICS -> "下发单账号日常后勤全托管"
                                 ActionKind.NONE -> action.desc
                             }
                             tick("大地图空闲", msg)
@@ -221,7 +240,7 @@ object AutoPilot {
         emit(pipeline, "WARN", "无人托管循环已退出。")
     }
 
-    private enum class ActionKind { RAID, PAVING, SIEGE, NONE }
+    private enum class ActionKind { RAID, PAVING, SIEGE, FARMING, LOGISTICS, NONE }
 
     private data class Action(val kind: ActionKind, val signature: String = "", val desc: String = "")
 
@@ -316,6 +335,39 @@ object AutoPilot {
             }
         }
 
+        // 4) 屯田打铁管家：配置了屯田地块或启用了自动屯田打铁
+        if (intents.autoFarmingEnabled && (intents.farmingTarget != null || intents.farmingWorldTarget != null || !intents.farmingBookmark.isNullOrBlank())) {
+            val sig = farmingSignatureOf(intents)
+            if (sig != farmingSignature) {
+                pipeline.startAccurateFarming(
+                    AccurateFarmingFlow.FarmingConfig(
+                        targetTileCoord = intents.farmingTarget,
+                        targetWorldCoord = intents.farmingWorldTarget,
+                        bookmarkName = intents.farmingBookmark,
+                        farmingTroopSlot = intents.farmingTroopSlot,
+                        minTileLevel = 5,
+                        enableBlacksmithCheck = true
+                    )
+                )
+                farmingSignature = sig
+                return Action(ActionKind.FARMING, signature = sig)
+            }
+        }
+
+        // 5) 日常后勤全托管：税收/伤兵补兵/体力防溢/城建升级
+        if (intents.dailyLogistics && (now - logisticsLastRunAtMs >= LOGISTICS_INTERVAL_MS)) {
+            pipeline.startDailyLogistics(
+                DailyLogisticsFlow.LogisticsConfig(
+                    enableTaxLevy = true,
+                    enableReserveRecruitment = true,
+                    enableStaminaProtection = true,
+                    enableCityConstruction = true
+                )
+            )
+            logisticsLastRunAtMs = now
+            return Action(ActionKind.LOGISTICS)
+        }
+
         return Action(ActionKind.NONE, desc = describeIdle(intents, now))
     }
 
@@ -332,14 +384,26 @@ object AutoPilot {
         intents.siegeWorldTarget?.let { append("#${it.first},${it.second}") }
     }
 
+    private fun farmingSignatureOf(intents: Intents): String = buildString {
+        append(intents.farmingBookmark ?: "")
+        append('#')
+        intents.farmingTarget?.let { append("${it.x.toInt()},${it.y.toInt()}") }
+        append('#')
+        intents.farmingWorldTarget?.let { append("${it.first},${it.second}") }
+        append("@slot${intents.farmingTroopSlot}")
+    }
+
     /** 无事可做时给出**可操作**的说明，而不是默默什么都不做。 */
     private fun describeIdle(intents: Intents, nowMs: Long): String {
-        val noTargets = intents.pavingTargets.isEmpty() && intents.siegeTarget == null
+        val noTargets = intents.pavingTargets.isEmpty() && intents.siegeTarget == null &&
+            !intents.autoFarmingEnabled && !intents.dailyLogistics
         return when {
-            noTargets && intents.raidDefense -> "巡检守护运行中，尚未配置铺路/攻城目标"
-            noTargets -> "尚未配置任何托管目标：请先在铺路/攻城页签点选地块，或开启巡检守护"
+            noTargets && intents.raidDefense -> "巡检守护运行中，尚未配置铺路/攻城/屯田/后勤目标"
+            noTargets -> "尚未配置任何托管目标：请在各页签配置目标，或开启巡检守护"
             intents.siegeTarget != null && intents.siegeHitEpochMs > nowMs ->
                 "攻城目标已武装，等到命中时刻前 ${SIEGE_LEAD_MS / 1000} 秒才会下发"
+            intents.autoFarmingEnabled -> "屯田打铁已武装，正在监控策令与空闲窗口"
+            intents.dailyLogistics -> "日常后勤全托管运行中，定期巡查税收与伤兵"
             else -> "已配置的目标均已下发，等待其完成（改选目标可重新下发）"
         }
     }

@@ -45,9 +45,18 @@ ENV/
 Thumbs.db
 [Ee]xcluded/
 
+# IDE & Assistant
+.workbuddy/
+acceptance_report.txt
+
 # 模型权重：本项目选择「二进制直接入库」（非 git-lfs）。
 # 上面的 **/bin/ 只匹配名为 bin 的目录、不会误伤 *.bin 文件；这里再显式放行
 # assets/models 下的权重，固化意图，防止将来新增通配规则时把模型漏掉。
 !client/app/src/main/assets/models/*.bin
 !client/app/src/main/assets/models/*.param
 !client/app/src/main/assets/models/*.gguf
+
+# .models/ 是下载下来的「基座」缓存（yolov8s.pt / PP-OCRv4 / bge / rbt3，约 279MB）。
+# 入包的是 tools/p1 转换后的产物，那些才入 git；基座可由
+# `python tools/p1/check_bases.py --download` 重新获取，不入库。
+.models/

@@ -14,14 +14,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 极限卡免与压秒破免执行器 (ImmunityBreakFlow)
- * 
- * 核心痛点解决：
- *   1. 【压秒破免 (00:00:01 触敌)】：手工掐秒表容易慢 2 秒或快 1 秒（快 1 秒会被系统判定为“土地免战中”
- *      原路弹回白耗体力；慢 2 秒会被敌人补上驻守防线）。本执行器依托阶段二毫秒级倒计时，自动扣除
- *      行军时长与触控网络时延，实现 00:00:01.000 压秒破免秒杀！
- *   2. 【极限接力卡免 (无限免战阵地战)】：己方关隘要塞前排地免战即将到期时，自动派斯巴达在 00:00:01 刷新
- *      重新挂起 1 小时免战罩，将敌盟彻底堵在关口之外。
+ *
+ * @deprecated 在 2026 商业级架构中，卡免破免已作为「一键破免模式」统一融入「离线战术定时管家 (ScheduledTaskManager)」，
+ *             避免多入口割裂，本类保留作为底层具体执行实现与向前兼容。
  */
+@Deprecated("已统一融入 ScheduledTaskManager (离线战术定时管家) 作为一键破免模式")
 class ImmunityBreakFlow(
     private val listener: TacticalState.TacticalEventListener? = null
 ) {
@@ -42,7 +39,11 @@ class ImmunityBreakFlow(
          * 目标地块的**世界坐标**（大地图格坐标）。提供且地图投影已标定时，
          * 流程会先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
          */
-        val targetWorldCoord: Pair<Int, Int>? = null
+        val targetWorldCoord: Pair<Int, Int>? = null,
+        /**
+         * 官方书签/标记名称（优先于世界坐标，0 像素累积漂移瞬间对准）。
+         */
+        val bookmarkName: String? = null
     )
 
     fun stop() {
@@ -74,7 +75,10 @@ class ImmunityBreakFlow(
             // 1. 确保大地图就绪
             WatchdogRecovery.recoverToMainMap()
 
-            // 2. 检测地块当前免战倒计时
+            // 2. 锁定并对准目标地块（优先书签 0 漂移，次选世界坐标，后选屏幕取点）
+            val tapPoint = resolveTileTapPoint(config)
+
+            // 3. 检测目标地块当前免战倒计时
             logTactic("🔍 正在通过 OpenCV 金色光罩与局部 RapidOCR 读取地块免战剩余时间...")
             val immunityStatus = EngineBridge.detectTileImmunity()
             if (!immunityStatus.isImmune || immunityStatus.remainingSeconds <= 0L) {
@@ -93,9 +97,7 @@ class ImmunityBreakFlow(
 
             logInfo("⏱️ 目标地块免战解锁时间戳: $unlockTimestampMs (剩余: ${immunityStatus.remainingSeconds}秒)")
 
-            // 3. 点击地块打开操作菜单
-            //    已标定世界坐标时，先把镜头对准该格再点镜头中心，目标不会因镜头移动而失效。
-            val tapPoint = resolveTileTapPoint(config)
+            // 4. 点击地块打开操作菜单
             EngineBridge.tap(tapPoint.x, tapPoint.y)
             EngineBridge.waitForState(StzbUiMatcher.GameState.TILE_ACTION_MENU, 2500)
 
@@ -240,6 +242,22 @@ class ImmunityBreakFlow(
      * 有世界坐标且已标定时先对准镜头、点镜头中心；否则回退取点屏幕坐标。
      */
     private suspend fun resolveTileTapPoint(config: ImmunityConfig): PointF {
+        // 1. 优先使用官方书签 0 漂移瞬间居中对准
+        val bookmark = config.bookmarkName
+        if (!bookmark.isNullOrBlank()) {
+            when (val nav = MapNavigator.jumpByBookmark(bookmark)) {
+                is MapNavigator.Result.Reached -> {
+                    logInfo("🔖 已通过官方书签 [$bookmark] 0 漂移居中锁定目标地块")
+                    return MapProjection.viewportCenterCanvas()
+                }
+                is MapNavigator.Result.Refused ->
+                    logWarn("书签跳转被拒绝: ${nav.reason}，尝试坐标回退")
+                is MapNavigator.Result.Failed ->
+                    logWarn("书签跳转失败: ${nav.reason}，尝试坐标回退")
+            }
+        }
+
+        // 2. 世界坐标大地图对准
         val world = config.targetWorldCoord
         if (world != null && MapProjection.isCalibrated) {
             when (val nav = MapNavigator.centerOn(world.first, world.second)) {

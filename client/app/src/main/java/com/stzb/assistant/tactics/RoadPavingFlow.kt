@@ -15,14 +15,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 自动铺路翻地与体力动态轮班机 (RoadPavingFlow)
- * 
- * 核心痛点解决：
- *   1. 解决跨州大战机械铺路数小时、手指点废的痛点；
- *   2. 多部队动态轮班 (Troop 1 -> Troop 2 -> Troop 3)：谁体力充足选谁，彻底规避 120 点体力满溢惩罚；
- *   3. 2026 征服赛季士气校验：低于 100 士气严禁出征，避免低士气战力骤降白送；
- *   4. 结合 WatchdogRecovery 自动处理“免战中”、“占领上限”、“不相连”等异常提示；
- *   5. 全程三次贝塞尔曲线 + 2D 高斯离散随机触控，高度拟人防封。
+ *
+ * @deprecated 在 2026 年版本中，网易官方已原生支持连续出征；且大地图长途多格铺路易受透视漂移影响卡死。
+ *             已被「离线战术定时管家 (ScheduledTaskManager)」与「单账号日常后勤全托管」平替，
+ *             本类仅保留作为向前兼容。
  */
+@Deprecated("官方已出连续出征，长途铺路属于易卡死的伪痛点，由离线战术管家与后勤托管平替")
 class RoadPavingFlow(
     private val listener: TacticalState.TacticalEventListener? = null
 ) {

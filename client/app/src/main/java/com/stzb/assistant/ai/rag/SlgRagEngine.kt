@@ -27,8 +27,17 @@ import kotlin.math.sqrt
 object SlgRagEngine {
 
     private const val TAG = "SlgRagEngine"
+    /** 哈希降级向量的维度（对应 V1 索引 / 内置种子库）。 */
     private const val VECTOR_DIM = 64
+    /** 实际索引维度：由文件头读出（V2 索引用 bge 时是 512）。 */
+    private var vectorDim = VECTOR_DIM
     private const val ASSET_FILE = "models/slg_knowledge_vector_hnsw.bin"
+
+    /** V2 容器尾部带的 HNSW 第 0 层邻接表；为空表示按全量精确检索。 */
+    private val hnswGraph = ArrayList<IntArray>()
+    /** 索引维度不是 64 时，必须用 bge 给查询 embedd，否则余弦不可比。 */
+    @Volatile
+    private var useBge = false
 
     data class RagEntry(
         val id: String,
@@ -121,7 +130,8 @@ object SlgRagEngine {
             val magicBytes = ByteArray(16)
             buffer.get(magicBytes)
             val magicStr = String(magicBytes).trimEnd('\u0000')
-            if (!magicStr.startsWith("SLG_HNSW_RAG_V1")) {
+            // V1 = 64 维哈希向量；V2 = bge 512 维 + 尾部 HNSW 图区
+            if (!magicStr.startsWith("SLG_HNSW_RAG_V1") && !magicStr.startsWith("SLG_HNSW_RAG_V2")) {
                 Log.w(TAG, "RAG 向量库 Magic 不匹配: $magicStr")
                 return false
             }
@@ -130,9 +140,24 @@ object SlgRagEngine {
             val itemCount = buffer.int
             val dim = buffer.int
 
-            if (dim != VECTOR_DIM || itemCount <= 0) {
+            if (itemCount <= 0 || dim <= 0) {
                 Log.w(TAG, "RAG 向量库参数异常: version=$version, items=$itemCount, dim=$dim")
                 return false
+            }
+            vectorDim = dim
+
+            // 维度不是 64 说明索引是 V2（bge 512 维）；此时查询侧必须也用 bge，
+            // 否则拿 64 维哈希向量去比 512 维，检索结果全是噪声。
+            if (dim != VECTOR_DIM) {
+                useBge = BgeEmbedder.ensureLoaded(context) && BgeEmbedder.vectorDim() == dim
+                if (!useBge) {
+                    Log.w(TAG, "索引维度 $dim 与降级向量维度 $VECTOR_DIM 不符，且 bge 未就绪，"
+                        + "丢弃该索引以防误检索。")
+                    knowledgeBase.clear()
+                    return false
+                }
+            } else {
+                useBge = BgeEmbedder.isLoaded()
             }
 
             knowledgeBase.clear()
@@ -177,13 +202,46 @@ object SlgRagEngine {
                 )
             }
 
-            Log.i(TAG, "成功解析二进制 RAG 向量知识库: $itemCount 个条目, 向量维度: $dim")
+            // V2：解析尾部 HNSW 图区，成功后走近似检索，失败退化为全量精确检索
+            if (version == 2) parseHnswGraph(bytes, buffer.position(), itemCount)
+
+            Log.i(TAG, "成功解析二进制 RAG 向量知识库: $itemCount 个条目, 向量维度: $dim"
+                + (if (hnswGraph.isEmpty()) "" else ", HNSW 图区 ${hnswGraph.size} 节点")
+                + (if (useBge) ", 查询侧用 bge 向量" else ", 查询侧用哈希向量降级"))
             return true
         } catch (e: Exception) {
             Log.w(TAG, "读取 RAG 二进制资产异常: ${e.message}")
             return false
         } finally {
             try { input?.close() } catch (ignored: Exception) {}
+        }
+    }
+
+    /** 解析 V2 尾部的 HNSW 第 0 层邻接表（小端 u32）。 */
+    private fun parseHnswGraph(bytes: ByteArray, from: Int, itemCount: Int) {
+        hnswGraph.clear()
+        if (from + 4 > bytes.size) {
+            Log.w(TAG, "HNSW 图区长度字段越界，退化为全量检索。")
+            return
+        }
+        val glen = ByteBuffer.wrap(bytes, from, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        var p = from + 4
+        val end = (p + glen).coerceAtMost(bytes.size)
+        while (p + 4 <= end) {
+            val deg = ByteBuffer.wrap(bytes, p, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            p += 4
+            val nbrs = IntArray(deg)
+            var filled = 0
+            while (filled < deg && p + 4 <= end) {
+                nbrs[filled] = ByteBuffer.wrap(bytes, p, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                p += 4
+                filled++
+            }
+            hnswGraph.add(nbrs)
+        }
+        if (hnswGraph.size != itemCount) {
+            Log.w(TAG, "HNSW 图区节点数 ${hnswGraph.size} 与条目数 $itemCount 不符，退化为全量检索。")
+            hnswGraph.clear()
         }
     }
 
@@ -197,8 +255,21 @@ object SlgRagEngine {
         if (cleanQuery.isEmpty()) return emptyList()
 
         val queryVec = computeTextEmbedding(cleanQuery)
-        val candidates = if (category != null) {
-            knowledgeBase.filter { it.category == category }
+        val filterCat = category != null
+        val candidates = if (filterCat) {
+            knowledgeBase.filter { it.category == category }.toList()
+        } else if (hnswGraph.isNotEmpty()) {
+            // 有 HNSW 图：只取图里可达的候选（近似检索，避免全量扫）
+            val seen = HashSet<Int>()
+            val queue = java.util.ArrayDeque<Int>()
+            hnswGraph.indices.forEach { queue.add(it) }
+            while (!queue.isEmpty()) {
+                val n = queue.removeFirst()
+                if (!seen.add(n)) continue
+                for (nb in hnswGraph[n]) if (seen.add(nb)) queue.add(nb)
+                if (seen.size > 4096) break
+            }
+            knowledgeBase.filterIndexed { idx, _ -> seen.contains(idx) }
         } else {
             knowledgeBase.toList()
         }
@@ -380,6 +451,10 @@ object SlgRagEngine {
     // ----------------------------------------------------
 
     private fun computeTextEmbedding(text: String): FloatArray {
+        // 索引是 512 维（V2）时，查询侧必须走 bge，否则两段向量不可比
+        if (useBge) {
+            BgeEmbedder.embed(text)?.let { return it }
+        }
         val vec = FloatArray(VECTOR_DIM)
         val clean = text.trim()
         if (clean.isEmpty()) return vec
@@ -412,7 +487,7 @@ object SlgRagEngine {
     private fun processToken(token: String, weight: Float, md5: MessageDigest, vec: FloatArray) {
         md5.reset()
         val hash = md5.digest(token.toByteArray(Charsets.UTF_8))
-        val idx = (hash[0].toInt() and 0xFF) % VECTOR_DIM
+        val idx = (hash[0].toInt() and 0xFF) % vectorDim
         val sign = if ((hash[1].toInt() and 0x01) == 0) 1.0f else -1.0f
         vec[idx] += sign * weight
     }

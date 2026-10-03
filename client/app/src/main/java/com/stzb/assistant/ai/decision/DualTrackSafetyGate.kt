@@ -163,8 +163,8 @@ class DualTrackSafetyGate(private val context: Context) {
                         enableAudioAlarm = true,
                         enableDecisionC = true
                     )
-                    pipeline.startRaidDefense(config)
-                    callback?.onExecutionDispatched(TacticalState.TaskType.RAID_DEFENSE, "已启动关口要塞驻守与反击任务: ${order.targetName}")
+                    pipeline.startNightSentinel(config)
+                    callback?.onExecutionDispatched(TacticalState.TaskType.NIGHT_SENTINEL, "已启动暗夜哨兵主城与要塞守护: ${order.targetName}")
                 }
 
                 OrderIntent.SPARTAN_SCOUT -> {

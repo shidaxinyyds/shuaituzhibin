@@ -1748,6 +1748,8 @@ _VIEW_HIERARCHY = {
     "HorizontalScrollView": {"FrameLayout", "ViewGroup", "View"},
     "Spinner": {"ViewGroup", "View"},
     "TimePicker": {"FrameLayout", "ViewGroup", "View"},
+    "CheckBox": {"CompoundButton", "Button", "TextView", "View"},
+    "CompoundButton": {"Button", "TextView", "View"},
     "androidx.appcompat.widget.AppCompatTextView": {"TextView", "View"},
     "androidx.appcompat.widget.AppCompatButton": {"Button", "TextView", "View"},
 }
@@ -1791,14 +1793,18 @@ def check_find_view_by_id(java_root, id_tags, rep):
             want = _TYPE_ALIAS.get(raw_type, raw_type)
             # 短名也要能对上 XML 里的全限定标签
             want_short = want.split(".")[-1]
+            known_any = False
             for tag in tags:
                 if tag not in _VIEW_HIERARCHY:
                     continue  # 未知元素（自定义 View）不判定，避免误报
+                known_any = True
                 allowed = {tag} | _VIEW_HIERARCHY[tag]
                 allowed_short = {a.split(".")[-1] for a in allowed}
                 if want in allowed or want_short in allowed_short:
                     break
             else:
+                if not known_any:
+                    continue  # 全部是未知元素时跳过，避免误报
                 line = text.count("\n", 0, m.start()) + 1
                 rep.error(
                     path,

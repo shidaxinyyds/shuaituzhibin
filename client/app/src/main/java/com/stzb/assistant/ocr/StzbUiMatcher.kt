@@ -53,7 +53,10 @@ object StzbUiMatcher {
         RETREAT("撤退", listOf("撤 退", "立即撤退")),
         RECRUIT("征兵", listOf("征 兵", "快速征兵")),
         COORDINATE("坐标", listOf("座标", "跳转", "查坐标")),
-        JUMP("跳转", listOf("跳 转", "前往"))
+        JUMP("跳转", listOf("跳 转", "前往")),
+        TAX("税收", listOf("征税", "强征", "征 税", "税额", "课税")),
+        UPGRADE("升级", listOf("升 级", "扩建", "建筑升级", "即刻升级")),
+        FORGE("锻造", listOf("打铁", "工匠", "宝物", "打造", "精炼", "寻访"))
     }
 
     /**
