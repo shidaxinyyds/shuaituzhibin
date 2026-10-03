@@ -613,16 +613,56 @@ object EngineBridge {
     // ==========================================
 
     /**
-     * 评估守军难度 (传入“查看守军”面板的武将名显示区域)
+     * 评估守军难度：双通道融合。
+     *
+     *  - **头像通道（主）**：对全屏帧按固定归一化槽位裁三行立绘，与 defender_refs
+     *    模板库比对，识别守将身份（不依赖 OCR 是否读清名字）。
+     *  - **OCR 名字通道（辅）**：只采信「命中守军库」的名字，避免把
+     *    “土地Lv/出征/推荐/数字”等无关文本当守将而凭空虚增危险度。
+     *
+     * 两通道结果合并去重后交给 [DefenderEvaluator.evaluate]；一个都没识别到时，
+     * evaluate 会返回 UNKNOWN（不会误报 SAFE）。nameRoi 为“武将名区”小矩形（供 OCR）。
      */
-    fun evaluateDefenderPanel(roi: Rect): DefenderEvaluator.EvaluationResult? {
-        val bmp = captureRoi(roi) ?: return null
-        val ocrResult = OcrManager.detect(bmp)
-        bmp.recycle()
-        if (ocrResult == null) return null
+    fun evaluateDefenderPanel(nameRoi: Rect): DefenderEvaluator.EvaluationResult? {
+        val frame = captureFrame() ?: return null
+        return try {
+            // A：确定性头像库识别
+            val portraitHeroes = com.stzb.assistant.ocr.DefenderTemplateClassifier.classify(frame)
 
-        val names = ocrResult.textBlocks.map { it.text.trim() }
-        return DefenderEvaluator.evaluate(names)
+            // B：OCR 名字，仅保留命中守军库者
+            val ocrNames = cropBitmap(frame, nameRoi)?.let { crop ->
+                try {
+                    OcrManager.detect(crop)?.textBlocks?.map { it.text.trim().replace(" ", "") }
+                        ?: emptyList()
+                } finally {
+                    if (crop !== frame) crop.recycle()
+                }
+            } ?: emptyList()
+            val knownOcrNames = DefenderEvaluator.filterKnownHeroes(ocrNames)
+
+            val merged = (portraitHeroes + knownOcrNames).distinct()
+            Log.d(
+                "EngineBridge",
+                "守军评估: 头像=${portraitHeroes.size} OCR命中=${knownOcrNames.size} 合计=${merged.size}"
+            )
+            DefenderEvaluator.evaluate(merged)
+        } finally {
+            frame.recycle()
+        }
+    }
+
+    /** 从已有全屏位图按矩形裁剪子区域（钳制越界）；矩形覆盖全图时可能直接返回原图。 */
+    private fun cropBitmap(src: Bitmap, roi: Rect): Bitmap? {
+        val l = roi.left.coerceIn(0, src.width - 1)
+        val t = roi.top.coerceIn(0, src.height - 1)
+        val r = roi.right.coerceIn(l + 1, src.width)
+        val b = roi.bottom.coerceIn(t + 1, src.height)
+        return try {
+            Bitmap.createBitmap(src, l, t, r - l, b - t)
+        } catch (e: Throwable) {
+            Log.w("EngineBridge", "裁剪守军名区失败: ${e.message}")
+            null
+        }
     }
 
     /**

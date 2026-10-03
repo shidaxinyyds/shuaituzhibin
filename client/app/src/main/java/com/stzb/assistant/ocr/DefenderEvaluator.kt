@@ -102,6 +102,28 @@ object DefenderEvaluator {
         )
     }
 
+    /**
+     * 从一堆 OCR 文本里**只挑出确实像守将名字**的：即与守军库中某武将名互相包含者。
+     *
+     * 这是「收紧守将名提取」的关键一步。历史上 [evaluate] 的调用方会把整块面板
+     * OCR 出来的**所有文本**（“土地Lv.5”“出征”“推荐兵力”“3600”等）一股脑当守将名传入，
+     * 未命中库的文本又在 [findMatch] 兜底成 MODERATE，于是**凭空虚增危险度**、
+     * 把能打的地说成难打。这里先用守军库把非名字过滤掉，再交给评估。
+     *
+     * 注：既不在头像库、也不在守军库的真·陌生守将，OCR 通道会漏；但这类应由
+     * [DefenderTemplateClassifier] 的头像通道兜住。两通道互补，覆盖面最大化。
+     */
+    fun filterKnownHeroes(names: List<String>): List<String> {
+        val db = KnowledgeBaseManager.activeProfile.defenderDb
+        val all = db.dangerHeroes + db.hardHeroes + db.moderateHeroes + db.safeHeroes
+        return names.map { it.trim().replace(" ", "") }
+            .filter { n -> n.isNotBlank() && all.any { hero ->
+                val hn = hero.name.replace(" ", "")
+                n.contains(hn) || hn.contains(n)
+            } }
+            .distinct()
+    }
+
     private fun findMatch(name: String, db: com.stzb.assistant.knowledge.DefenderDatabase): DefenderMatch {
         // 1. 危险武将探测
         for (hero in db.dangerHeroes) {

@@ -73,6 +73,8 @@ class App : Application() {
         CoroutineScope(Dispatchers.IO).launch {
             val ocrOk = OcrManager.init(this@App)
             val cvOk = com.stzb.assistant.ocr.OpenCvMatcher.init(this@App)
+            // 守军头像确定性分类器：仅登记上下文，模板在首次真正评估守军时惰性载入。
+            com.stzb.assistant.ocr.DefenderTemplateClassifier.init(this@App)
             // 如实汇报预热结果：这里曾无条件打印「AI 权重已就绪」，
             // 而 assets/models 下其实一个权重文件都没有，属于把失败伪装成成功。
             val modelReport = com.stzb.assistant.ai.assets.ModelAssetManager
