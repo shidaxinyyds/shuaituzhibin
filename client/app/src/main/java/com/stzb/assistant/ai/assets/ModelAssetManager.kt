@@ -72,6 +72,11 @@ object ModelAssetManager {
             listOf(
                 "ch_PP-OCRv4_det_infer.param", "ch_PP-OCRv4_det_infer.bin",
                 "ch_PP-OCRv4_rec_infer.param", "ch_PP-OCRv4_rec_infer.bin"
+            ),
+            // v5（方案 A++）：由 tools/a_plus_plus/export_ppocrv5.py 落地，同样在 assets 根目录
+            listOf(
+                "ch_PP-OCRv5_det_infer.param", "ch_PP-OCRv5_det_infer.bin",
+                "ch_PP-OCRv5_rec_infer.param", "ch_PP-OCRv5_rec_infer.bin"
             )
         ),
         purpose = "体力/士气/坐标/倒计时/按键文字识别——所有依赖文字的判断都建立在其之上",
@@ -81,15 +86,19 @@ object ModelAssetManager {
     private val YOLO = Capability(
         displayName = "YOLO 视觉目标检测 (ncnn)",
         // ncnn 模型是 param + bin 成对的，两者都在才算齐备。
-        // n / s 两种命名都接受：工具链按训练规模选（tools/p1/train_yolo 默认 s，工程首选 n）。
+        // 命名容错：YOLO26(A++ 首选) / v11 / v8 n/s 都接受；工具链按训练规模选。
+        // 注意：Ultralytics 对 ncnn 导出回落到标准 [1,4+nc,anchors] 布局，与 YoloNcnn.cpp 解码兼容，
+        // 因此 YOLO26 权重可直接被现有 native 加载，无需改 native。
         alternatives = listOf(
+            listOf("models/yolo26s_stzb.param", "models/yolo26s_stzb.bin"),
+            listOf("models/yolo26n_stzb.param", "models/yolo26n_stzb.bin"),
             listOf("models/yolov11s_multiscale_stzb.param", "models/yolov11s_multiscale_stzb.bin"),
             listOf("models/yolov8n_stzb.param", "models/yolov8n_stzb.bin"),
             listOf("models/yolov8s_stzb.param", "models/yolov8s_stzb.bin")
         ),
         purpose = "出征/驻守/确定等按键与行军红线的视觉检测",
-        buildRequirement = "推理代码与 JNI 已实现（native yolo/YoloNcnn.cpp）；"
-            + "但游戏专属权重无公开源，需自行采集率土截图训练并导出 ncnn（见 tools/train_yolo/）"
+        buildRequirement = "推理代码与 JNI 已实现（native yolo/YoloNcnn.cpp，兼容 v8/v11/v26 ncnn）；"
+            + "但游戏专属权重无公开源，需自行采集率土截图训练并导出 ncnn INT8（见 tools/a_plus_plus/train_yolo26.py）"
     )
 
     private val RAG = Capability(
@@ -123,11 +132,14 @@ object ModelAssetManager {
     private val INTENT = Capability(
         displayName = "军令意图+槽位微脑 (rbt3 微调 INT8)",
         alternatives = listOf(
-            listOf("models/intent_slot_zh.onnx", "models/intent_slot_vocab.txt")
+            listOf(
+                "models/intent_slot_zh.onnx", "models/intent_slot_vocab.txt",
+                "models/intent_slot_token_vocab.txt"
+            )
         ),
         purpose = "把自然语言军令解析成语法合法的 DSL（意图 + 目标/坐标/时间/兵力槽位）",
-        buildRequirement = "依赖 onnxruntime-android 运行时；当前 EdgeSlmEngine 仍是正则实现，"
-            + "该权重**尚未**接入推理，解析行为暂时不受它影响"
+        buildRequirement = "依赖 onnxruntime-android 运行时；IntentSlotModel 已接入——"
+            + "权重存在即走真推理（意图/坐标/时间/兵力等受约束槽位解码），缺失则 EdgeSlmEngine 自动回落正则（行为不变）"
     )
 
     private val CAPABILITIES = listOf(OCR, YOLO, RAG, SLM, BGE, INTENT)

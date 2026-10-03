@@ -77,25 +77,18 @@ class YoloDetector(private val context: Context) {
 
     private var isNativeModelLoaded = false
 
-    /**
-     * ncnn 主通道是否真的就绪。
-     *
-     * 之前它是 private，外部无从判断"当前跑的是真推理还是几何色度回退"，
-     * 于是调用方可能把回退结果当成真实检测结果使用。现在显式暴露，
-     * 由 [com.stzb.assistant.runtime.VisionRuntime] 决定要不要采信其结论。
-     */
-    val isNativeReady: Boolean
-        get() = isNativeModelLoaded
-
     init {
         // 尝试探测本地存储或 assets 中的模型资产
         initModel()
     }
 
     private fun initModel() {
-        // 候选权重基名（ncnn 需要 .param + .bin 成对）。优先更大/更新的模型。
+        // 候选权重基名（ncnn 需要 .param + .bin 成对）。优先 A++ 的 YOLO26，再回 v11/v8。
         val candidates = listOf(
+            "yolo26s_stzb",
+            "yolo26n_stzb",
             "yolov11s_multiscale_stzb",
+            "yolov8s_stzb",
             "yolov8n_stzb"
         )
         try {

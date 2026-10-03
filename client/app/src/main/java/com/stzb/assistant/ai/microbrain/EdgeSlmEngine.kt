@@ -43,13 +43,13 @@ class EdgeSlmEngine(private val context: Context) {
      */
     private fun probeOptionalAssets() {
         try {
-            val slm360 = probeAsset("slm_microbrain_360m.bin", 20L * 1024 * 1024)
-            val slm135 = probeAsset("slm_microbrain_135m.bin", 10L * 1024 * 1024)
+            val intent = probeAsset("intent_slot_zh.onnx", 1L * 1024 * 1024)
+            val bge = probeAsset("bge_zh_int8.onnx", 5L * 1024 * 1024)
             val hnsw = probeAsset("slg_knowledge_vector_hnsw.bin", 5L * 1024 * 1024)
-
+    
             val found = buildList {
-                if (slm360) add("slm_microbrain_360m.bin")
-                if (slm135) add("slm_microbrain_135m.bin")
+                if (intent) add("intent_slot_zh.onnx")
+                if (bge) add("bge_zh_int8.onnx")
                 if (hnsw) add("slg_knowledge_vector_hnsw.bin")
             }
             if (found.isEmpty()) {
@@ -58,10 +58,10 @@ class EdgeSlmEngine(private val context: Context) {
                     "未发现端侧权重资产，军令/战报解析由内建正则语义提取器完成（这是当前唯一实现，非降级）。"
                 )
             } else {
-                Log.w(
+                Log.i(
                     TAG,
-                    "发现权重资产 ${found.joinToString()}，但工程内**没有**加载并推理它们的实现，" +
-                        "因此解析仍走正则通道，这些文件不影响任何行为。"
+                    "发现端侧权重 ${found.joinToString()}；IntentSlotModel/BgeEmbedder 会在资产齐备且内存足够时"
+                        + "自动启用真推理，否则如实回落正则/64维哈希通道。"
                 )
             }
         } catch (e: Exception) {
@@ -109,20 +109,34 @@ class EdgeSlmEngine(private val context: Context) {
         // 8. 结合 RAG 向量检索丰富战术操作指南与应急预案
         val ragMatch = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanText)
 
+        // 8.5 A++ 意图+槽位微脑（ONNX 真推理）：权重存在且置信足够时，用受约束槽位结论覆盖正则。
+        //       缺权重 / 内存不足 / 低置信 → parse 返回 null，保留上面的正则结论，行为不变（fail-safe）。
+        IntentSlotModel.ensureLoaded(context)
+        val modelParse = IntentSlotModel.parse(cleanText)
+            ?.takeIf { it.confidence >= 0.60f && it.intent != null }
+        val effIntent = modelParse?.intent ?: intent
+        val effTargetName = modelParse?.target?.takeIf { it.isNotBlank() } ?: targetName
+        val effCoord = modelParse?.coord ?: targetCoord
+        val effConfidence = modelParse?.confidence?.let { 0.80f + 0.18f * it }
+            ?: if (targetName != "未明目标") 0.96f else 0.82f
+        if (modelParse != null) {
+            Log.i(TAG, "\ud83e\udde0 意图微脑覆盖正则：intent=${effIntent.desc} conf=${modelParse.confidence}")
+        }
+
         // 9. 实时生成军师思考推演流
-        val thinking = generateThinkingStream(intent, targetName, targetCoord, targetTime, advanceSeconds, contingency, ragMatch.executionTimingAdvice)
+        val thinking = generateThinkingStream(effIntent, effTargetName, effCoord, targetTime, advanceSeconds, contingency, ragMatch.executionTimingAdvice)
 
         return TacticalOrder(
             orderId = "ORD-" + UUID.randomUUID().toString().substring(0, 8).uppercase(),
-            intent = intent,
-            targetName = targetName,
-            targetCoord = targetCoord,
+            intent = effIntent,
+            targetName = effTargetName,
+            targetCoord = effCoord,
             targetTime = targetTime,
             advanceSeconds = advanceSeconds,
             assignedTeams = assignedTeams,
             contingencyPlan = contingency,
             advisorThinking = thinking,
-            confidence = if (targetName != "未明目标") 0.96f else 0.82f,
+            confidence = effConfidence,
             rawDecreeText = cleanText
         )
     }
@@ -300,7 +314,7 @@ class EdgeSlmEngine(private val context: Context) {
 
     /** 获取当前军师大脑激活模式描述 */
     fun getBrainDescription(): String {
-        return "端侧离线微脑 (SLG-RAG 向量底座 + 语义引擎，内存 < 15MB)"
+        return "端侧离线微脑（" + IntentSlotModel.describe() + " | SLG-RAG 向量底座，纯离线毫秒级）"
     }
 
     /**

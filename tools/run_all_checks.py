@@ -21,6 +21,7 @@
  10. `tools/p1/check_bases.py`     模型权重下载清单核验（默认离线只读；`--download` 才联网）
  11. `check_undeclared_receivers.py` 接收者标识符声明对账（拦 `Unresolved reference: scope` 这类）
  12. `check_ctor_named_args.py`    具名构造参数对账（拦 `No parameter with name` 这类）
+ 13. `check_kotlin_api_pitfalls.py` 把「只有真编译才暴露」的第三方 API 误用（ORT getEnv/shape-Int/Result.close、Pattern 当 Regex、TextBlock.box）固化成本机闸门
 
 > 11 / 12 是补上 `verify_refs.py` 的射程盲区：它只对账**枚举常量**与**整对象成员**
 > （`ButtonType.X` / `EngineBridge.x`），查不到 `局部变量.属性`、`this 成员`
@@ -159,6 +160,20 @@ def build_checks(args):
             "title": "具名构造参数对账（拦 No parameter with name）",
             "script": "check_ctor_named_args.py",
             "argv": ["--root", os.path.join("client", "app", "src", "main")],
+            "required": True,
+        },
+        {
+            "id": "kotlin-api-pitfalls",
+            "title": "Kotlin 第三方 API 误用闸门（ORT/Regex/TextBlock 编译期坑）",
+            "script": "check_kotlin_api_pitfalls.py",
+            "argv": ["--root", os.path.join("client", "app", "src", "main")],
+            "required": True,
+        },
+        {
+            "id": "kotlin-api-pitfalls-selftest",
+            "title": "API 误用闸门的反例自测",
+            "script": "check_kotlin_api_pitfalls.py",
+            "argv": ["--selftest"],
             "required": True,
         },
         {
