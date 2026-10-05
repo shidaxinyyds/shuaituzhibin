@@ -621,7 +621,7 @@ object EngineBridge {
      *  - **OCR 名字通道（辅）**：只采信「命中守军库」的名字，避免把
      *    “土地Lv/出征/推荐/数字”等无关文本当守将而凭空虚增危险度。
      */
-    private fun collectDefenderHeroes(frame: Bitmap, nameRoi: Rect): List<String> {
+    fun collectDefenderHeroes(frame: Bitmap, nameRoi: Rect): List<String> {
         val portraitHeroes = com.stzb.assistant.ocr.DefenderTemplateClassifier.classify(frame)
         val ocrNames = cropBitmap(frame, nameRoi)?.let { crop ->
             try {
@@ -663,8 +663,8 @@ object EngineBridge {
     ): DefenderEvaluator.EvaluationResult? {
         val frame = captureFrame() ?: return null
         val team1: List<String>
-        val tab2: OcrManager.KeywordMatch?
-        val tab1: OcrManager.KeywordMatch?
+        val tab2: com.stzb.assistant.ocr.KeywordMatch?
+        val tab1: com.stzb.assistant.ocr.KeywordMatch?
         try {
             team1 = collectDefenderHeroes(frame, nameRoi)
             // 切页前两侧页签都在原位（分页只换主区三行，左侧页签不移动）；
