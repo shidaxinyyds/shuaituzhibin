@@ -56,6 +56,13 @@ EXPECT = [
     ("② OCR v4", "ch_PP-OCRv4_det_infer.bin", "同上"),
     ("② OCR v4", "ch_PP-OCRv4_rec_infer.param", "同上"),
     ("② OCR v4", "ch_PP-OCRv4_rec_infer.bin", "同上"),
+    # v5（方案 A++）：未入包是**当前期望态**——P2 跑分闸门尚未放行。
+    # 列进清单是为了让「缺什么」显式可见，而不是根本没出现在报表里。
+    # 配套硬约束由 ocr_regression/check_ocr_asset_contract.py 执行
+    # （rec 输出类别数必须 == 词典行数 + 2，半套一律拒）。
+    ("② OCR v5", "ch_PP-OCRv5_det_infer.param", "P2 迁移闸门未放行，故缺失（属预期）"),
+    ("② OCR v5", "ch_PP-OCRv5_rec_infer.param", "同上"),
+    ("② OCR v5", "ppocr_keys_v5.txt", "v5 词典（需 18383 行以配 18385 类 rec），离线不可得"),
     ("③ bge", "models/bge_zh_int8.onnx", "bge-small-zh-v1.5 INT8"),
     ("③ bge", "models/bge_zh_vocab.txt", "bge 词表"),
     ("③ 索引", "models/slg_knowledge_vector_hnsw.bin", "RAG 向量索引（V1/V2）"),

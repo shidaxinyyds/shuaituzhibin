@@ -70,3 +70,8 @@ tools/train_yolo/dataset/
 tools/train_yolo/dataset_tiled/
 tools/train_yolo/dataset_vis/
 tools/train_yolo/templates/
+
+# P2 OCR 跑分的真机原始截图（约 180MB，且是用户本机地图/战报画面）。
+# 留档在本地即可：跑分结论与判定闸门已落在 ocr_regression/ 的报告与脚本里，
+# 截图本身既不该进仓库也不该对外发布。
+tools/ocr_regression/raw/
