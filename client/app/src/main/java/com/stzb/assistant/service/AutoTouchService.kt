@@ -163,6 +163,9 @@ class AutoTouchService : AccessibilityService() {
         return try {
             val builder = GestureDescription.Builder()
             var previous: GestureDescription.StrokeDescription? = null
+            // StrokeDescription 不对外暴露自己的时长与结束时刻（Android 没给 getter），
+            // 所以续笔的 startDelay 只能由我们自己维护一条时间游标 cursorMs。
+            var cursorMs = 0L
             for ((idx, seg) in plan.withIndex()) {
                 if (seg.points.size < 2) {
                     Log.w(TAG, "第 $idx 段采样点不足 2 个，放弃多段手势。")
@@ -172,16 +175,19 @@ class AutoTouchService : AccessibilityService() {
                 val duration = seg.durationMs.coerceAtLeast(1L)
                 val isLast = idx == plan.size - 1
                 val last = previous
+                // 规划结果本应无缝，仍兜一层：负缝隙（段与段重叠）会被夹成 0，
+                // 保证交给系统的时间轴单调递增，绝不出现负的续笔延迟。
+                val gap = if (last == null) 0L else (seg.startMs - cursorMs).coerceAtLeast(0L)
                 val stroke = if (last == null) {
                     // 首段：从 0 时刻起笔，后面一定有人续
                     GestureDescription.StrokeDescription(path, 0L, duration, true)
                 } else {
                     // 续笔：startDelay = 与上一段结束的间隔（规划结果恒为 0）
-                    val startDelay = (seg.startMs - last.endMs).coerceAtLeast(0L)
-                    last.continueStroke(path, startDelay, duration, isLast.not())
+                    last.continueStroke(path, gap, duration, isLast.not())
                 }
                 builder.addStroke(stroke)
                 previous = stroke
+                cursorMs += gap + duration
             }
             builder.build()
         } catch (t: Throwable) {

@@ -20,6 +20,16 @@ API 签名**。于是下面这几类错误能一路绿灯过本地闸门，直�
   5. `textBlock.box.left/.top/.right/.bottom` —— OCR 的 TextBlock 只有 `boxPoint: ArrayList<Point>`
   6. `ai.onnxruntime.Value`                     —— 本绑定无此类；Result 索引出来是 `OnnxValue`
 
+同一类别的三个纯语法坑（CI Run #53 真实栽掉的三条，同属“只有真编译才暴露”）：
+
+  7. `for (((s, e), budget) in cases)`          —— for 头部**不支持嵌套解构**，直接
+                                                 报 `Expecting a name`
+  8. `"首=$d0ms 中=$dMidms"`                    —— Kotlin 把 `$d0ms` 整体当成标识符
+                                                 `d0ms`，报 `Unresolved reference`；
+                                                 必须写 `${d0}ms`
+  9. `stroke.endMs`                             —— StrokeDescription 没有时长 getter，
+                                                 续笔延迟需自己累加时间游标
+
 本闸门把这些"编译期才看得见"的坑固化成规则，推送前就能拦下，不必每轮靠 CI 兜底。
 
 它刻意只做**高精度**的文本级判定（宁可漏报不误报），命中即说明"为什么 + 正确写法"。
@@ -57,6 +67,12 @@ RULES = [
     ("pattern-kotlin-regex-api",
      "java.util.regex.Pattern 没有 .find()/.findAll()/.groupValues（那是 Kotlin Regex 的 MatchResult）；改用 .matcher(x).find() 或 Regex()",
      None),  # 需要两遍扫描，见下
+    ("strokeds-hidden-duration",
+     "GestureDescription.StrokeDescription 没有公开的 endMs/durationMs getter；续笔的 startDelay 只能自己维护一条时间游标累加",
+     re.compile(r"\b(?:previous|prevStroke|lastStroke|previousStroke|stroke|curStroke|firstStroke)\w*\s*\??\.\s*(endMs|durationMs)\b")),
+    ("for-nested-destructuring",
+     "for 头部不支持嵌套解构（Kotlin 只认 for ((a, b) in …)）；先解外层、循环体内再 val (s, e) = pair",
+     re.compile(r"for\s*\(\s*\(\s*\(")),
 ]
 
 KT_EXTS = (".kt",)
@@ -160,6 +176,88 @@ def scan_create_tensor_shape(path, lines):
     return hits
 
 
+# ------------------------------------------------- 字符串模板漏写花括号（CI #53）
+#
+# `"$d0ms"` 在 Kotlin 里不是“d0 加上字面量 ms”，而是一个名叫 `d0ms` 的引用。
+# 这类坑靠读代码几乎看不出来（中文提示串里尤其隐蔽），但真编译必炸。
+# 判定方式（高精度）：模板名本身在**整个文件的代码区**里从未出现，
+# 但它的某个前缀是被 val/var/fun/class **声明过**的名字 —— 那就是漏写了 ${}。
+
+_TPL_NAME = re.compile(r"\$(\{)?([A-Za-z_][A-Za-z0-9_]*)(\})?")
+_DECL_NAME = re.compile(r"\b(?:val|var|fun|class)\s+([A-Za-z_][A-Za-z0-9_]*)")
+_DECL_DESTRUCT = re.compile(r"\bval\s*\(([^)]*)\)")
+
+
+def strip_comments(text):
+    """去掉 // 与 /* */ 注释，但**保留字符串字面量**（模板就住在字符串里）。
+
+    必须自己写状态机：正则扫注释会不小心吃掉 `"http://…"` 里的双斜杠。
+    """
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if c == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            out.append(" ")
+            i = n if j < 0 else j + 2
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            out.append(text[i:min(j + 1, n)])
+            i = j + 1
+            continue
+        if c == "'":
+            j = i + 1
+            while j < n and text[j] != "'":
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1])
+            i = j + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def scan_template_braces(path, text):
+    """找出 `$name` 被后缀吞掉、而真正声明的是 `name` 前缀的情况。"""
+    code = strip_comments(text)
+    outside = re.sub(r'"(?:\\.|[^"\\])*"', " ", code)
+    seen_idents = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", outside))
+    declared = set(_DECL_NAME.findall(outside))
+    for grp in _DECL_DESTRUCT.findall(outside):
+        for part in grp.split(","):
+            part = part.strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+                declared.add(part)
+    hits = []
+    for m in _TPL_NAME.finditer(code):
+        braced, name = m.group(1), m.group(2)
+        if braced:            # ${x} 形式已显式定界，不可能被后缀吞掉
+            continue
+        if name in seen_idents:   # 这个名字真的存在，正常
+            continue
+        prefix = [name[:k] for k in range(len(name) - 1, 1, -1) if name[:k] in declared]
+        if prefix:
+            lineno = code[:m.start()].count("\n") + 1
+            best = max(prefix, key=len)
+            hits.append((lineno, "template-missing-braces",
+                         "字符串里的 $%s 会被当成标识符 %s（未声明）；本文件声明的是 %s，应写 ${%s}"
+                         % (name, name, best, best)))
+    return hits
+
+
 def scan_file(path):
     findings = []
     try:
@@ -179,6 +277,7 @@ def scan_file(path):
                 findings.append((i, name, fix))
     findings += scan_pattern_regex_misuse(path, lines)
     findings += scan_create_tensor_shape(path, lines)
+    findings += scan_template_braces(path, "".join(lines))
     return findings
 
 
@@ -199,6 +298,24 @@ BAD_SAMPLES = [
     ("textblock-dot-box", "val x = matchResult.box.left"),
     ("ort-value-vs-onnxvalue", "private fun headVec(v: ai.onnxruntime.Value?): FloatArray"),
     ("pattern-kotlin-regex-api", "private val P = Pattern.compile(\"x\")\nval m = P.find(text)"),
+    ("for-nested-destructuring", "for (((s, e), budget) in cases) { plan(s, e, budget) }"),
+    ("strokeds-hidden-duration", "val startDelay = (seg.startMs - previous.endMs).coerceAtLeast(0L)"),
+    ("strokeds-hidden-duration", "val totalDur = stroke?.durationMs ?: 0L"),
+]
+
+# 模板漏花括号需要“声明 + 使用”跨行才能判，单独走 scan_template_braces
+# （这两条就是 CI Run #53 真正炸掉的原文）
+BAD_TEXT = [
+    "fun f() {\n    val d0 = 12L\n    problems += \"首=$d0ms 中=3ms\"\n}",
+    "fun f() {\n    val dMid = 3L\n    val dLast = 4L\n    problems += \"中=$dMidms 尾=$dLastms\"\n}",
+]
+GOOD_TEXT = [
+    "fun f() {\n    val d0 = 12L\n    problems += \"首=${d0}ms\"\n}",
+    # packageName 是父类属性，本文件没有 val package……不该误报
+    "fun f() {\n    Log.d(TAG, \"pkg=$packageName\")\n}",
+    # $total 后面的中文不是标识符字符，Kotlin 能正确截断，不该误报
+    "fun f() {\n    val total = 9\n    Log.d(TAG, \"总计$total个\")\n}",
+    "// 注释里写 $d0ms 不算命中：\nfun f() {\n    val d0 = 1L\n    Log.d(TAG, \"ok $d0\")\n}",
 ]
 GOOD_SAMPLES = [
     "val e = OrtEnvironment.getEnvironment()",
@@ -223,6 +340,7 @@ def selftest():
                     got.append(name)
         got += [n for _l, n, _f in scan_pattern_regex_misuse("", lines)]
         got += [n for _l, n, _f in scan_create_tensor_shape("", lines)]
+        got += [n for _l, n, _f in scan_template_braces("", snippet)]
         if expect_name not in got:
             print("❌ 反例未被拦截: %s | %s" % (expect_name, snippet.replace("\n", " ")[:70]))
             ok = False
@@ -238,8 +356,18 @@ def selftest():
                     got.append(name)
         got += [n for _l, n, _f in scan_pattern_regex_misuse("", lines)]
         got += [n for _l, n, _f in scan_create_tensor_shape("", lines)]
+        got += [n for _l, n, _f in scan_template_braces("", snippet)]
         if got:
             print("❌ 正例被误报: %s -> %s" % (snippet[:60], got))
+            ok = False
+    for snippet in GOOD_TEXT:
+        got = [n for _l, n, _f in scan_template_braces("", snippet)]
+        if got:
+            print("❌ 正例被误报: %s -> %s" % (snippet.replace("\n", " ")[:60], got))
+            ok = False
+    for text in BAD_TEXT:
+        if not scan_template_braces("", text):
+            print("❌ 反例未被拦截(模板): %s" % text.replace("\n", " ")[:70])
             ok = False
     if ok:
         print("[selftest] 全部通过：%d 反例均被拦、%d 正例均不误报" % (len(BAD_SAMPLES), len(GOOD_SAMPLES)))
@@ -262,9 +390,9 @@ def main():
     root = args.root if os.path.isabs(args.root) else os.path.join(REPO, args.root)
     bad = run_scan(root)
     if not bad:
-        print("[OK] 未发现 Kotlin 第三方 API 误用（ORT/Regex/TextBlock 三类坑）")
+        print("[OK] 未发现「只有真编译才暴露」的误用（ORT/Regex/TextBlock API + 三类语法坑）")
         return 0
-    print("❌ 发现 %d 处「只有真编译才暴露」的 API 误用：\n" % len(bad))
+    print("❌ 发现 %d 处「只有真编译才暴露」的 API 误用 / 语法坑：\n" % len(bad))
     for rel, lineno, name, fix in bad:
         print("  %s:%d  [%s]\n        → %s" % (rel, lineno, name, fix))
     print("\n修法见每条箭头后。这些是本地闸门过去拦不住、CI 才炸的类别，务必改完再推。")

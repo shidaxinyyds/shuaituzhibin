@@ -325,7 +325,10 @@ object TrajectoryPlanner {
             Pair(PointF(300f, 300f), PointF(306f, 303f)) to 180L    // 超短距（应退化成单段）
         )
 
-        for (((s, e), budget) in cases) {
+        // 注意：Kotlin 的 for 头部**不支持嵌套解构**（`for (((s, e), budget) in …)` 会
+        // 直接编译失败）。这里只能先解出外层，再在循环体里解内层。
+        for ((endpointPair, budget) in cases) {
+            val (s, e) = endpointPair
             val plan = plan(s, e, budget, bounds, random = rng)
             val tag = "用例(${s.x.toInt()},${s.y.toInt()})->(${e.x.toInt()},${e.y.toInt()})"
 
@@ -380,7 +383,7 @@ object TrajectoryPlanner {
                 val dMid = plan[plan.size / 2].durationMs
                 val dLast = plan.last().durationMs
                 if (!(dMid < d0 && dMid < dLast)) {
-                    problems += "速度剖面非钟形: 首=$d0ms 中=$dMidms 尾=$dLastms（中段应明显更快）"
+                    problems += "速度剖面非钟形: 首=${d0}ms 中=${dMid}ms 尾=${dLast}ms（中段应明显更快）"
                 }
                 val arcs = plan.map { seg ->
                     val a = cumulativeLength(seg.points)
