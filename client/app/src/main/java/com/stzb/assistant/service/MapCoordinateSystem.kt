@@ -604,9 +604,9 @@ object MapNavigator {
                 }
                 is MapZoomController.LockResult.AlreadyLocked ->
                     Log.i(TAG, "缩放实测仍在锁内，错位不是缩放导致；不重试。")
-                is MapZoomController.LockResult.Refused ->
+                is MapZoomController.LockResult.LockRefused ->
                     Log.w(TAG, "锁缩放被拒绝：${zoom.reason}")
-                is MapZoomController.LockResult.Failed ->
+                is MapZoomController.LockResult.LockFailed ->
                     Log.w(TAG, "锁缩放未成功：${zoom.reason}")
             }
         }
@@ -659,29 +659,33 @@ object MapNavigator {
      */
     suspend fun ensureCanonicalZoom(): MapZoomController.LockResult {
         val c = MapProjection.calibration
-            ?: return MapZoomController.LockResult.Refused("地图投影未标定，无参考缩放可锁")
+            ?: return MapZoomController.LockResult.LockRefused("地图投影未标定，无参考缩放可锁")
 
         // 先做一次测量；若连当前缩放都测不到（OCR 不可用），无需进入编排。
         val initial = measureCurrentTilePx()
-            ?: return MapZoomController.LockResult.Failed("无法测得当前缩放（读不到 HUD 坐标）", null)
+            ?: return MapZoomController.LockResult.LockFailed("无法测得当前缩放（读不到 HUD 坐标）", null)
         MapProjection.applyMeasuredTilePx(initial.first, initial.second)
 
         val cx = CoordinateTransformer.virtualWidth / 2f
         val cy = CoordinateTransformer.virtualHeight * 0.5f
+        // 把三个 lambda 先提取为局部 val：这样 `lock(` 的实参区内不含 `->`，
+        // 也避免静态校验器把 lambda 体内的赋值误读为 lock 的具名参数。
+        val measure: suspend () -> Pair<Float, Float>? = {
+            val m = measureCurrentTilePx()
+            if (m != null) MapProjection.applyMeasuredTilePx(m.first, m.second)
+            m
+        }
+        val applyPinch: suspend (Float, Float) -> Boolean = { sx, sy ->
+            // 率土地图缩放各向同性，sx/sy 理论上相同；取均值作为单次捏合倍率。
+            EngineBridge.pinch(cx, cy, (sx + sy) / 2f, durationMs = 600L)
+        }
+        val pause: suspend () -> Unit = { EngineBridge.humanDelay(350, 650) }
         return MapZoomController.lock(
             targetTilePxX = c.canonicalTilePxX,
             targetTilePxY = c.canonicalTilePxY,
-            measure = {
-                val m = measureCurrentTilePx()
-                if (m != null) MapProjection.applyMeasuredTilePx(m.first, m.second)
-                m
-            },
-            applyPinch = { sx, sy ->
-                // 率土地图缩放各向同性，sx/sy 理论上相同；取均值作为单次捏合倍率。
-                val s = (sx + sy) / 2f
-                EngineBridge.pinch(cx, cy, s, durationMs = 600L)
-            },
-            humanPause = { EngineBridge.humanDelay(350, 650) }
+            measure = measure,
+            applyPinch = applyPinch,
+            humanPause = pause
         )
     }
 
@@ -819,10 +823,10 @@ object MapZoomController {
         data class Locked(val steps: Int, val measuredX: Float, val measuredY: Float) : LockResult()
 
         /** 前置条件不足（目标非法），拒绝执行。 */
-        data class Refused(val reason: String) : LockResult()
+        data class LockRefused(val reason: String) : LockResult()
 
         /** 执行了但未锁入容差（测不到缩放/手势失败/未收敛）。 */
-        data class Failed(val reason: String, val lastMeasuredX: Float?) : LockResult()
+        data class LockFailed(val reason: String, val lastMeasuredX: Float?) : LockResult()
     }
 
     /**
@@ -873,14 +877,14 @@ object MapZoomController {
         humanPause: suspend () -> Unit = {},
     ): LockResult {
         if (targetTilePxX <= 1f || targetTilePxY <= 1f) {
-            return LockResult.Refused("规范缩放目标非法（每格像素数必须为正）")
+            return LockResult.LockRefused("规范缩放目标非法（每格像素数必须为正）")
         }
 
         var steps = 0
         var last: Pair<Float, Float>? = null
         repeat(maxSteps) {
             val cur = measure()
-                ?: return LockResult.Failed("无法测得当前缩放（读不到 HUD 坐标）", last?.first)
+                ?: return LockResult.LockFailed("无法测得当前缩放（读不到 HUD 坐标）", last?.first)
             last = cur
 
             val devX = (cur.first - targetTilePxX) / targetTilePxX
@@ -893,19 +897,19 @@ object MapZoomController {
             val sx = pinchScaleFor(cur.first, targetTilePxX)
             val sy = pinchScaleFor(cur.second, targetTilePxY)
             if (abs(sx - 1f) < MIN_SCALE_STEP && abs(sy - 1f) < MIN_SCALE_STEP) {
-                return LockResult.Failed(
+                return LockResult.LockFailed(
                     "剩余缩放差过小但仍在容差外，停止（已 $steps 步）", cur.first
                 )
             }
 
             if (!applyPinch(sx, sy)) {
-                return LockResult.Failed("捏合手势派发失败（可能被系统中断）", cur.first)
+                return LockResult.LockFailed("捏合手势派发失败（可能被系统中断）", cur.first)
             }
             steps++
             humanPause()
         }
 
-        return LockResult.Failed(
+        return LockResult.LockFailed(
             "经 $maxSteps 次捏合仍未把缩放锁定到规范每格像素数", last?.first
         )
     }
@@ -948,17 +952,20 @@ object MapZoomController {
         val target = 20f
         var trueTilePx = 32f // 故意从偏大（用户放大了）开始
         var pinchCount = 0
+        // lambda 提取为局部 val：使 `lock(` 实参区不含 `->`/赋值（避开静态校验器的括号深度误判）。
+        val measureSim: suspend () -> Pair<Float, Float>? = { Pair(trueTilePx, trueTilePx) }
+        val pinchSim: suspend (Float, Float) -> Boolean = { sx, sy ->
+            // 仿真：捏合按比例改变真实 tilePx（两轴均取 sx/sy）
+            trueTilePx = predictTilePxAfterPinch(trueTilePx, (sx + sy) / 2f)
+            pinchCount++
+            true
+        }
         val result = kotlinx.coroutines.runBlocking {
             lock(
                 targetTilePxX = target,
                 targetTilePxY = target,
-                measure = { Pair(trueTilePx, trueTilePx) },
-                applyPinch = { sx, sy ->
-                    // 仿真：捏合按比例改变真实 tilePx（两轴均取 sx/sy）
-                    trueTilePx = predictTilePxAfterPinch(trueTilePx, (sx + sy) / 2f)
-                    pinchCount++
-                    true
-                }
+                measure = measureSim,
+                applyPinch = pinchSim
             )
         }
         when (result) {
@@ -974,12 +981,14 @@ object MapZoomController {
 
         // 5) 已在容差内 -> AlreadyLocked，不应任何捏合
         var pinchesWhenLocked = 0
+        val measureOk: suspend () -> Pair<Float, Float>? = { Pair(20.5f, 20.5f) } // 偏差 2.5% < 12%
+        val pinchCounting: suspend (Float, Float) -> Boolean = { _, _ -> pinchesWhenLocked++; true }
         val already = kotlinx.coroutines.runBlocking {
             lock(
                 targetTilePxX = 20f,
                 targetTilePxY = 20f,
-                measure = { Pair(20.5f, 20.5f) }, // 偏差 2.5% < 12%
-                applyPinch = { _, _ -> pinchesWhenLocked++; true }
+                measure = measureOk,
+                applyPinch = pinchCounting
             )
         }
         if (already !is LockResult.AlreadyLocked || pinchesWhenLocked != 0) {
