@@ -110,4 +110,101 @@ object KineticTouchEngine {
         Log.d(TAG, "生成惯性过冲滑动轨迹: 距离=${distance.toInt()}px, 过冲量=${"%.1f".format(overshootDist)}px")
         return path
     }
+
+    /**
+     * 规划一条带**非均匀速度剖面**的滑动（拆成多条连续 stroke）。
+     *
+     * 为什么不能只用上面的 [createInertialSwipePath]：
+     * `StrokeDescription(path, startTime, duration)` 对 path 是**弧长均匀 + 时间线性**
+     * 采样的，于是整条滑动虽然是弯的、却是**恒速**的——恒速本身就是最强的机器特征。
+     * 本方法把几何交给 [TrajectoryPlanner]，得到若干段时长满钟形剖面的连续子手势。
+     *
+     * @param bounds 物理像素可用区；过冲与弧度都会被夹在里面，避免坐标越界被系统丢手势
+     */
+    fun planInertialSwipe(
+        start: PointF,
+        end: PointF,
+        totalMs: Long,
+        bounds: TrajectoryPlanner.Bounds
+    ): List<TrajectoryPlanner.StrokeSegment> =
+        TrajectoryPlanner.plan(start, end, totalMs, bounds, random = Random)
+
+    /** 把采样点串成框架 Path（子段采样点足够密，交系统线性采样也不会出棱角）。 */
+    fun toPath(points: List<PointF>): Path {
+        val path = Path()
+        if (points.isEmpty()) return path
+        path.moveTo(points[0].x, points[0].y)
+        for (i in 1 until points.size) path.lineTo(points[i].x, points[i].y)
+        return path
+    }
+
+    /**
+     * 运行期自检：不依赖真机、不依赖 OCR，纯数学闭环。
+     *
+     * 验证的是“拟人参数是否真的在区间内”与“多段轨迹是否真的既连续又发钟形”，
+     * 这两类一旦失效都是**静默**的（看上去一切正常，但特征已经变成机器）。
+     *
+     * @return 失败原因列表；为空表示通过
+     */
+    fun selfTest(): List<String> {
+        val problems = mutableListOf<String>()
+
+        // 1) 轨迹规划器几何与时序不变量
+        problems += TrajectoryPlanner.selfTest().map { "轨迹: $it" }
+
+        // 2) 按压时长必须落在声明的 [68,178]ms 里，且不是常数
+        run {
+            var min = Long.MAX_VALUE
+            var max = Long.MIN_VALUE
+            var outOfRange = 0
+            repeat(4000) {
+                val d = generateContactDuration()
+                if (d < 68L || d > 178L) outOfRange++
+                if (d < min) min = d
+                if (d > max) max = d
+            }
+            if (outOfRange > 0) problems += "按压时长越界 $outOfRange/4000 次（声明区间 [68,178]）"
+            if (max - min < 40L) problems += "按压时长几乎恒定: [$min,$max]，指腹弹性特征已丢失"
+        }
+
+        // 3) 拖动偏差不应超出声明半径
+        run {
+            var exceeded = 0
+            repeat(4000) {
+                val p = generateJitteredPoint(400f, 300f, 7f)
+                if (hypot((p.x - 400f).toDouble(), (p.y - 300f).toDouble()) > 7.001) exceeded++
+            }
+            if (exceeded > 0) problems += "拖动半径超出声明值 $exceeded/4000 次（maxRadius=7px）"
+        }
+
+        // 4) 多点轨迹确实被拆开了，且首尾对齐
+        run {
+            val bounds = TrajectoryPlanner.Bounds(0f, 0f, 1280f, 720f)
+            val s = PointF(640f, 500f)
+            val e = PointF(640f, 200f)
+            val plan = TrajectoryPlanner.plan(s, e, 500L, bounds, random = Random(4242))
+            if (plan.size < 2) problems += "长滑动未拆成多段: ${plan.size}"
+            val toPathFirst = plan.first().points.first()
+            if (hypot((toPathFirst.x - s.x).toDouble(), (toPathFirst.y - s.y).toDouble()) > 0.6f) {
+                problems += "轨迹起点未对齐请求起点"
+            }
+            val path = toPath(plan.last().points)
+            if (path.isEmpty) problems += "末段转 Path 为空"
+        }
+
+        return problems
+    }
+
+    /**
+     * 启动期自检并落日志（与 `CoordinateTransformer` / `MapZoomController.logSelfTest()`
+     * 同一约定：失效必须一开机就写进日志）。
+     */
+    fun logSelfTest() {
+        val problems = selfTest()
+        if (problems.isEmpty()) {
+            Log.i(TAG, "拟人触控自检通过：多段变速轨迹既连续又真的非恒速，按压时长/抖动半径均在声明契约内。")
+        } else {
+            Log.e(TAG, "拟人触控自检失败: " + problems.joinToString("; "))
+        }
+    }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.util.Log
+import com.stzb.assistant.antiban.TimingFingerprintEngine
 import com.stzb.assistant.ai.rag.SlgRagEngine
 import com.stzb.assistant.ocr.OcrManager
 import com.stzb.assistant.ocr.StzbUiMatcher
@@ -159,6 +160,10 @@ class GarrisonStripperFlow(
 
     /**
      * 等待新战报到达并点击打开
+     *
+     * 轮询周期不再固定：固定 `delay(500)` 的抓屏+OCR 红点检测循环，在
+     * 时刻序列上就是一根尖峰。现在改成均值 500ms 的泊松间隔，且**不跨过
+     * deadline**（旧写法最坏情况会多等 500ms 才退出）。
      */
     private suspend fun waitForBattleReport(maxWaitSec: Int): Boolean {
         val deadline = System.currentTimeMillis() + maxWaitSec * 1000L
@@ -171,7 +176,9 @@ class GarrisonStripperFlow(
                 EngineBridge.humanDelay(800, 1500)
                 return true
             }
-            delay(500)
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0L) break
+            delay(minOf(TimingFingerprintEngine.poissonIntervalMs(REPORT_POLL_MEAN_MS), remaining))
         }
         return false
     }
@@ -389,6 +396,9 @@ class GarrisonStripperFlow(
 
     companion object {
         private const val TAG = "GarrisonStripperFlow"
+
+        /** 战报红点轮询的**期望**周期（实际间隔由泊松采样，不是固定值）。 */
+        private const val REPORT_POLL_MEAN_MS = 500L
 
         val KNOWN_HEROES = listOf(
             "吕蒙", "陆逊", "周瑜", "灵帝", "朱儁", "陈宫", "张机", "孙权", "关银屏",

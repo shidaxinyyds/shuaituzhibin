@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.util.Log
+import com.stzb.assistant.antiban.AntiBanCoordinator
 import com.stzb.assistant.ocr.OcrManager
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.ocr.TroopStatusDetector
@@ -181,7 +182,11 @@ class SquadLevelingFlow(
 
                 // 7. 等待扫荡战斗结算（常规土地往返与碰撞约 25~45 秒）
                 notifyStatus(TacticalState.Status.WAITING_COUNTDOWN, "等待扫荡部队触敌与回营...")
-                EngineBridge.humanDelay(20000, 30000)
+                //    预算必须覆盖上面写的 25~45s：`humanDelay` 现在**硬上限**
+                //    （这正是 P3a 的修复），旧的 (20000, 30000) 在夜里反而能“意外
+                //    等多久算多久”，而现在最多就是 maxMs——继续沿用会让第 8 步
+                //    的战损复核读到“还没回营”的旧画面（比真实战损乐观）。
+                EngineBridge.humanDelay(30000, 45000)
 
                 // 8. 战损复核与单场战损硬熔断检查
                 val postCheck = inspectBattleLoss(currentSlot, curTroops)
@@ -202,6 +207,18 @@ class SquadLevelingFlow(
                 logTactic("✅ 第 $completedRounds 轮扫荡顺利完成，战损极低，经验值已获取！")
                 WatchdogRecovery.recoverToMainMap()
                 EngineBridge.humanDelay(1500, 2500)
+
+                // 9. 轮间安全缝：到点才歇（每 45~80 分钟一次，一次 2~5 分钟）。
+                //    这里是全链路里**唯一**该放长休息的位置：本轮已结算完毕、
+                //    已回到主地图、下一轮尚未开始，停几分钟不破任何时序契约；
+                //    而它抹掉的是“连续数小时零停顿”这条最易提取的 24h 挂机指纹。
+                //    注意末尾一轮不再歇：否则流程会在一句“圆满完成”前白等三分钟。
+                if (isRunning && completedRounds < config.maxRounds) {
+                    val rested = AntiBanCoordinator.maybeTakeMicroBreak { isRunning }
+                    if (rested > 0L) {
+                        logTactic("☕ 已模拟真实玩家离开 ${rested / 1000} 秒，继续第 ${completedRounds + 1} 轮。")
+                    }
+                }
             }
 
             val finalMsg = "练级流水线圆满完成！累计完成 $completedRounds 轮低损扫荡，武将经验高效入账"

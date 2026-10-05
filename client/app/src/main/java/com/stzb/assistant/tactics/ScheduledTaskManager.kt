@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
+import com.stzb.assistant.antiban.TimingFingerprintEngine
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.EngineBridge
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,16 @@ object ScheduledTaskManager {
     private const val TAG = "ScheduledTaskManager"
     private const val PREFS_NAME = "stzb_scheduled_tasks"
     private const val KEY_TASKS_JSON = "tasks_json"
+
+    /**
+     * 时钟轮询的**期望**周期。
+     *
+     * 上界必须小于 60 秒：任务是按 "HH:mm" 整分字符串匹配的，只要相邻两次
+     * 采样间隔小于 60 秒，任何一个分钟窗口里至少会有一次采样，不致因抖动
+     * 而漏触发（RTC 精确闹钟仍是主通道，ticker 只是补位）。
+     * `poissonIntervalMs` 的默认上界是 3×均值 = 45000ms < 60000ms，正好满足。
+     */
+    private const val TICKER_MEAN_MS = 15000L
 
     data class ScheduledTask(
         val id: String,
@@ -620,7 +631,7 @@ object ScheduledTaskManager {
                         lastTriggeredMinute = currentMinute
                     }
                 }
-                delay(15000) // 每 15 秒轮询一次时钟
+                delay(TimingFingerprintEngine.poissonIntervalMs(TICKER_MEAN_MS)) // 均值 15s 的无记忆周期，最坏 45s
             }
         }
     }

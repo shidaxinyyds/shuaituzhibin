@@ -12,6 +12,7 @@ import com.stzb.assistant.ocr.RaidRadarDetector
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.ocr.TileStatusDetector
 import com.stzb.assistant.ocr.TroopStatusDetector
+import com.stzb.assistant.antiban.TimingFingerprintEngine
 import kotlinx.coroutines.delay
 import kotlin.random.Random
 
@@ -37,6 +38,16 @@ object EngineBridge {
      * 但也不能太长——压秒类操作对时间很敏感，因此只给 250ms。
      */
     private const val RETRY_SETTLE_MS = 250L
+
+    /**
+     * UI 轮询的**期望**周期（不再是固定周期）。
+     *
+     * 固定的 `delay(250)` 抓屏+识别循环在时间序列上就是一根尖峰：对
+     * 截图时刻做傅里叶分析能直接看到它，而这是比“点击坐标不准”更难辩
+     * 护的机器指纹。这里把它当均值交给泊松采样器，实际间隔在
+     * ~112ms..750ms 之间连续变化（均值仍≈ 250ms，响应延迟不变差）。
+     */
+    private const val POLL_INTERVAL_MS = 250L
 
     val isCaptureReady: Boolean
         get() = ScreenCaptureService.isCapturing.get()
@@ -435,11 +446,14 @@ object EngineBridge {
      */
     suspend fun waitForState(targetState: StzbUiMatcher.GameState, timeoutMs: Long = 3000L): Boolean {
         val start = System.currentTimeMillis()
-        while (System.currentTimeMillis() - start < timeoutMs) {
+        while (true) {
             if (detectGameState() == targetState) return true
-            delay(250)
+            val elapsed = System.currentTimeMillis() - start
+            if (elapsed >= timeoutMs) return false
+            // 泊松周期去周期性；**绝不超过剩余预算**，所以本方法的
+            // 契约从旧的“最多 timeoutMs+250ms”收紧为硬 timeoutMs。
+            delay(minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed))
         }
-        return false
     }
 
     /**
@@ -447,12 +461,13 @@ object EngineBridge {
      */
     suspend fun waitForButton(type: StzbUiMatcher.ButtonType, timeoutMs: Long = 3000L): StzbUiMatcher.ButtonResult? {
         val start = System.currentTimeMillis()
-        while (System.currentTimeMillis() - start < timeoutMs) {
+        while (true) {
             val btn = findButton(type)
             if (btn != null) return btn
-            delay(250)
+            val elapsed = System.currentTimeMillis() - start
+            if (elapsed >= timeoutMs) return null
+            delay(minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed))
         }
-        return null
     }
 
     // ==========================================
@@ -759,11 +774,17 @@ object EngineBridge {
     }
 
     /**
-     * 模拟真实人类思考随机停顿 (抗大数据行为检测，集成外高斯长尾与生理微歇)
+     * 模拟真实人类思考随机停顿。
+     *
+     * **硬契约：结果一定落在 [minMs, maxMs] 内。**调用点（地图拖动每步、
+     * 抽屉动画、页签切换、扫荡等结算）都是按“不超过 maxMs”安排自己的
+     * 时间预算的，因此这里不允许旧实现那种“节律×疲劳×指数长尾”把 350ms
+     * 拖成十几秒，也不允许在两次动作之间塞进分钟的微歇（那会直接错过
+     * 撤退/压秒的战术窗口）。分布形状与昼夜语义由
+     * [TimingFingerprintEngine.generateBoundedDelayMs] 在**区间内**完成。
      */
     suspend fun humanDelay(minMs: Long = 1200, maxMs: Long = 2500) {
-        val variance = (maxMs - minMs) / 3
-        com.stzb.assistant.antiban.AntiBanCoordinator.injectActionDelay(minMs, variance)
+        com.stzb.assistant.antiban.AntiBanCoordinator.injectActionDelay(minMs, maxMs)
     }
 
     /**

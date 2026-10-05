@@ -22,6 +22,11 @@
  11. `check_undeclared_receivers.py` 接收者标识符声明对账（拦 `Unresolved reference: scope` 这类）
  12. `check_ctor_named_args.py`    具名构造参数对账（拦 `No parameter with name` 这类）
  13. `check_kotlin_api_pitfalls.py` 把「只有真编译才暴露」的第三方 API 误用（ORT getEnv/shape-Int/Result.close、Pattern 当 Regex、TextBlock.box）固化成本机闸门
+ 14. `ocr_regression/check_ocr_asset_contract.py` OCR rec 输出类别数 ↔ 词典行数 配套契约（拦「v5 权重 + v3 词典」这类能一路绿灯入包、上机才变乱码的半套资产）
+ 15. `ocr_regression/decision_gate.py --selftest` P2 迁移判定闸门的阈值自测（其真实裁决 STAY_V3 属期望态，故不作为必需项）
+ 16. `validate_antiban_math.py`         P3 拟人数学镜像：从 Kotlin 源码正则取常数，逐式验证速度剖面/有界延迟/泊松间隔的分布性质
+ 17. `p3/check_antiban_wiring.py`       P3 接线契约：拟人能力是否真的接在调用链上（拦「代码写对但没人调」这类静默失效）
+ 18. `p3/check_antiban_wiring.py --selftest` 上述闸门的反例自测（注入 9 条已知回退形态）
 
 > 11 / 12 是补上 `verify_refs.py` 的射程盲区：它只对账**枚举常量**与**整对象成员**
 > （`ButtonType.X` / `EngineBridge.x`），查不到 `局部变量.属性`、`this 成员`
@@ -223,6 +228,30 @@ def build_checks(args):
             "required": True,
         },
         {
+            "id": "antiban-math",
+            "title": "防封拟人数学实测（速度剖面/有界延迟不贴边/泊松去周期性）",
+            "script": "validate_antiban_math.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            # 数学性质成立 ≠ 产品生效。本仓库真实栽过：`BezierTrajectory.easeInOut`
+            # 写得完全正确，但**没有任何调用者**，于是速度剖面从来没生效过。
+            # 这一对闸门守的就是「能力有没有接在链路上」与「跨文件数值不变量」。
+            "id": "antiban-wiring",
+            "title": "P3 防封能力接线契约（拦「写了不接」与固定周期回退）",
+            "script": "p3/check_antiban_wiring.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "antiban-wiring-selftest",
+            "title": "接线闸门的反例自测（注入 9 条已知回退形态）",
+            "script": "p3/check_antiban_wiring.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
             "id": "decision-logic",
             "title": "决策逻辑验证（守军评级性质 + 选队门槛，枚举输入空间）",
             "script": "validate_decision_logic.py",
@@ -276,6 +305,34 @@ def build_checks(args):
             "title": "入包资产体检（体积预算 / RAG 索引契约 / 假权重）",
             "script": "p1/check_assets.py",
             "argv": [],
+            "required": True,
+        },
+        {
+            # P2 OCR 迁移的两道静态闸门。
+            #
+            # 刻意**只注册契约校验与自测，不注册 decision_gate 的真实裁决**：
+            # 闸门的正常输出就是 `STAY_V3`（退出码 1）——那是**期望状态**，
+            # 不是构建失败。把它当必需项会让 CI 长期飘红，而长期飘红的唯一后果
+            # 是所有人开始忽略它（本仓库已在别处栽过这个跟头）。
+            # 需要裁决时手动跑：python tools/ocr_regression/decision_gate.py
+            "id": "ocr-contract",
+            "title": "OCR 权重↔词典配套契约（拦半套权重上机）",
+            "script": "ocr_regression/check_ocr_asset_contract.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            "id": "ocr-contract-selftest",
+            "title": "OCR 配套契约闸门的反例自测（注入半套/破损词典）",
+            "script": "ocr_regression/check_ocr_asset_contract.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
+            "id": "ocr-gate-selftest",
+            "title": "P2 迁移判定闸门的阈值翻转自测（合成跑分）",
+            "script": "ocr_regression/decision_gate.py",
+            "argv": ["--selftest"],
             "required": True,
         },
         {

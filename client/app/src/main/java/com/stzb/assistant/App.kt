@@ -62,6 +62,11 @@ class App : Application() {
         com.stzb.assistant.service.MapProjection.logSelfTest()
         // 地图缩放锁定自检（确定性仿真，不依赖真机）：验证捏合缩放数学与收敛编排。
         com.stzb.assistant.service.MapZoomController.logSelfTest()
+        // 防封拟人数学自检（纯数学、不依赖真机）：滑动沿程速度是否真的钟形、
+        // 有界延迟是否真的不贴边界、轮询是否真的去了周期性。这三类一旦失效
+        // 都是**静默**的——看上去一切正常，但特征已经变成机器，所以必须开机就落日志。
+        com.stzb.assistant.antiban.KineticTouchEngine.logSelfTest()
+        com.stzb.assistant.antiban.TimingFingerprintEngine.logSelfTest()
         Log.i(
             "StzbApp",
             com.stzb.assistant.service.UiAnchors.describeAll() +

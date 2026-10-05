@@ -73,7 +73,22 @@ class AutoTouchService : AccessibilityService() {
 
     /**
      * 拟人化平滑贝塞尔滑动 (拖动大地图或翻找目标)
-     * 传入起止自适应虚拟坐标
+     * 传入起止自适应虚拟坐标。
+     *
+     * ## 为什么不是“一条 Path 一个 stroke”（这是真实缺陷的修复）
+     * `StrokeDescription(path, 0, duration)` 对 Path 是**弧长均匀 + 时间线性**
+     * 采样的。旧实现虽然轨迹是弯的，但**整条滑动是恒速**的——真实手指
+     * 绝对是起按慢、中段最快、入位减速。恒速本身就是极易提取的机器特征
+     * （对采样点做一阶差分就能看出来）。
+     *
+     * 现在改成 [KineticTouchEngine.planInertialSwipe] 规划出的**多段连续 stroke**
+     * （首段 `willContinue=true`，其余 `continueStroke` 链式续笔）：对手指来说
+     * 仍是一次不抬指的连续滑动，但沿程速度变成了钟形剖面，且总时长严格
+     * 等于调用方给的 `durationMs`（不会因子段划分而漂）。
+     *
+     * ## fail-closed 回退
+     * 短距离（<24px）不值得拆段；规划/构造异常、或系统**根本没有开始**这条
+     * 手势时，退回旧的单条 stroke 通道。“拆段”失败不应该让整个拖动失效。
      */
     suspend fun swipeVirtual(
         vStartX: Float, vStartY: Float,
@@ -82,13 +97,98 @@ class AutoTouchService : AccessibilityService() {
     ): Boolean = withContext(Dispatchers.Default) {
         val p0 = CoordinateTransformer.toReal(vStartX, vStartY)
         val p3 = CoordinateTransformer.toReal(vEndX, vEndY)
+        val totalMs = durationMs.coerceAtLeast(1L)
 
-        // 生成带惯性过冲与微回弹的平滑三次贝塞尔路径
-        val path = BezierTrajectory.createHumanPath(p0, p3)
-        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val chained = buildVariableSpeedSwipe(p0, p3, totalMs)
+        if (chained == null) {
+            // 回退：旧的单条贝塞尔路径（弯但恒速），至少拖动本身仍然可靠
+            val gesture = GestureDescription.Builder()
+                .addStroke(
+                    GestureDescription.StrokeDescription(
+                        BezierTrajectory.createHumanPath(p0, p3), 0L, totalMs
+                    )
+                )
+                .build()
+            return@withContext dispatchGestureAsync(gesture)
+        }
 
-        dispatchGestureAsync(gesture)
+        return@withContext when (dispatchOutcome(chained)) {
+            DispatchResult.COMPLETED -> true
+            DispatchResult.CANCELLED -> false
+            DispatchResult.NOT_STARTED -> {
+                // 系统连开始都没开始（部分 OEM ROM 对 willContinue 支持不全），
+                // 此时重试单条 stroke 是安全的：上一手势从未注入过任何事件。
+                Log.w(TAG, "多段变速手势未被系统接受，回退单条恒速滑动。")
+                val legacy = GestureDescription.Builder()
+                    .addStroke(
+                        GestureDescription.StrokeDescription(
+                            BezierTrajectory.createHumanPath(p0, p3), 0L, totalMs
+                        )
+                    )
+                    .build()
+                dispatchGestureAsync(legacy)
+            }
+        }
+    }
+
+    /**
+     * 把一次滑动编成多段连续 stroke。不可拆段或构造失败时返回 null。
+     *
+     * 注意两个系统硬约束，它们都是会抛异常的：
+     *   1. 续笔的 Path **必须**从上一段的终点起笔（浮点严格相等），否则
+     *      `continueStroke` 直接抛 IllegalArgumentException——[TrajectoryPlanner]
+     *      的重采样让相邻段**共享同一个边界点对象值**，因此天然成立；
+     *   2. 只有被标 `willContinue=true` 的段才能被续笔，且**最后一段必须
+     *      是 false**——否则手指永远不抬起，手势挂住不结束。
+     */
+    private fun buildVariableSpeedSwipe(
+        start: PointF,
+        end: PointF,
+        totalMs: Long
+    ): GestureDescription? {
+        val bounds = com.stzb.assistant.antiban.TrajectoryPlanner.Bounds(
+            0f, 0f,
+            CoordinateTransformer.physicalWidth.toFloat(),
+            CoordinateTransformer.physicalHeight.toFloat()
+        )
+
+        val plan = try {
+            KineticTouchEngine.planInertialSwipe(start, end, totalMs, bounds)
+        } catch (t: Throwable) {
+            Log.w(TAG, "变速轨迹规划异常，回退单条滑动: ${t.javaClass.simpleName} ${t.message}")
+            return null
+        }
+        if (plan.size < 2) return null  // 短滑/退化：不值得拆段
+
+        return try {
+            val builder = GestureDescription.Builder()
+            var previous: GestureDescription.StrokeDescription? = null
+            for ((idx, seg) in plan.withIndex()) {
+                if (seg.points.size < 2) {
+                    Log.w(TAG, "第 $idx 段采样点不足 2 个，放弃多段手势。")
+                    return null
+                }
+                val path = KineticTouchEngine.toPath(seg.points)
+                val duration = seg.durationMs.coerceAtLeast(1L)
+                val isLast = idx == plan.size - 1
+                val last = previous
+                val stroke = if (last == null) {
+                    // 首段：从 0 时刻起笔，后面一定有人续
+                    GestureDescription.StrokeDescription(path, 0L, duration, true)
+                } else {
+                    // 续笔：startDelay = 与上一段结束的间隔（规划结果恒为 0）
+                    val startDelay = (seg.startMs - last.endMs).coerceAtLeast(0L)
+                    last.continueStroke(path, startDelay, duration, isLast.not())
+                }
+                builder.addStroke(stroke)
+                previous = stroke
+            }
+            builder.build()
+        } catch (t: Throwable) {
+            // 包括 IllegalArgumentException（端点不连续/时长非法）：一律回退旧路径
+            Log.w(TAG, "多段手势构造失败，回退单条滑动: ${t.javaClass.simpleName} ${t.message}")
+            null
+        }
     }
 
     /**
@@ -146,24 +246,34 @@ class AutoTouchService : AccessibilityService() {
      * 异步派发手势并等待系统回调确认
      */
     private suspend fun dispatchGestureAsync(gesture: GestureDescription): Boolean {
-        val deferred = CompletableDeferred<Boolean>()
+        return dispatchOutcome(gesture) == DispatchResult.COMPLETED
+    }
+
+    /**
+     * 派发结果的**三态**版本。区分“系统根本没接受”与“接受了但中途被取消”
+     * 是必要的：前者重试是安全的（一个事件都没注入过），后者重试会变成
+     * “拖了两下”，对地图来说就是双倍位移。
+     */
+    private suspend fun dispatchOutcome(gesture: GestureDescription): DispatchResult {
+        val deferred = CompletableDeferred<DispatchResult>()
         val callback = object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                deferred.complete(true)
+                deferred.complete(DispatchResult.COMPLETED)
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
                 Log.w(TAG, "手势派发被系统中断或被用户按压拦截。")
-                deferred.complete(false)
+                deferred.complete(DispatchResult.CANCELLED)
             }
         }
 
         val dispatched = dispatchGesture(gesture, callback, null)
-        return if (!dispatched) {
+        if (!dispatched) {
             Log.e(TAG, "系统拒绝派发手势，请检查当前是否有锁屏或权限受限。")
-            false
-        } else {
-            deferred.await()
+            return DispatchResult.NOT_STARTED
         }
+        return deferred.await()
     }
+
+    private enum class DispatchResult { COMPLETED, CANCELLED, NOT_STARTED }
 }

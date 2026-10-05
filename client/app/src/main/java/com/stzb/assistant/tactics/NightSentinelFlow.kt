@@ -3,6 +3,7 @@ package com.stzb.assistant.tactics
 import android.content.Context
 import android.graphics.PointF
 import android.util.Log
+import com.stzb.assistant.antiban.TimingFingerprintEngine
 import com.stzb.assistant.ocr.OcrManager
 import com.stzb.assistant.ocr.RaidRadarDetector
 import com.stzb.assistant.ocr.StzbUiMatcher
@@ -130,7 +131,21 @@ open class NightSentinelFlow(
                 }
 
                 // 4. 拟人随机周期休眠
-                delay(config.patrolIntervalMs)
+                //
+                //    巡检周期不能是硬 `delay(N)`：固定间隔的抓屏+识别循环在时刻
+                //    序列上就是一根尖峰。但这里也不能像普通轮询那样放到 3×均值
+                //    ——那是安全攸关路径，长尾会把敌袭发现时间拖到三倍。
+                //    因此取一个**刻意的窄带 ±30%**：足够打散等间距采样网格，
+                //    代价上限只是“比标称周期晚三成发现”，两权相取其轻。
+                run {
+                    val mean = config.patrolIntervalMs.coerceAtLeast(1000L)
+                    val jittered = TimingFingerprintEngine.poissonIntervalMs(
+                        mean,
+                        floorMs = (mean * 0.7f).toLong(),
+                        ceilMs = (mean * 1.3f).toLong()
+                    )
+                    delay(jittered)
+                }
             }
         } catch (e: Exception) {
             log(TacticalState.TacticalLog(
