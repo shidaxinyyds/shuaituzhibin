@@ -27,6 +27,7 @@
  16. `validate_antiban_math.py`         P3 拟人数学镜像：从 Kotlin 源码正则取常数，逐式验证速度剖面/有界延迟/泊松间隔的分布性质
  17. `p3/check_antiban_wiring.py`       P3 接线契约：拟人能力是否真的接在调用链上（拦「代码写对但没人调」这类静默失效）
  18. `p3/check_antiban_wiring.py --selftest` 上述闸门的反例自测（注入 9 条已知回退形态）
+ 19. `ci_status.py --selftest`      CI 速查工具的判定自测（**cancelled / 根本没跑起 / 真失败** 必须分开；把 Run #28 的误读固化成规则）
 
 > 11 / 12 是补上 `verify_refs.py` 的射程盲区：它只对账**枚举常量**与**整对象成员**
 > （`ButtonType.X` / `EngineBridge.x`），查不到 `局部变量.属性`、`this 成员`
@@ -353,6 +354,17 @@ def build_checks(args):
             "title": "验收取证脚本的 APK 判定逻辑自测（合成 APK）",
             "script": "selftest_acceptance_check.py",
             "argv": [],
+            "required": True,
+        },
+        {
+            # 本机跑不了 Gradle ⇒ CI 是唯一真正的编译器。但“CI 红了”有
+            # 两种完全相反的含义：检查没过（要改代码） vs 排队被撤（只需重触发）。
+            # Run #28 就是后者被误读成前者的真实案例，所以这条归因逻辑进回归。
+            # （只跑 --selftest：它不联网，用注入的 job 样本验归因规则。）
+            "id": "ci-status-selftest",
+            "title": "CI 状态归因自测（cancelled / 未执行 / 真失败 不混淆）",
+            "script": "ci_status.py",
+            "argv": ["--selftest"],
             "required": True,
         },
     ]
