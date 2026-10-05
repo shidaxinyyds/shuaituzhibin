@@ -343,8 +343,8 @@ class AccurateFarmingFlow(
         return try {
             val boxes = detector.detect(frame, confThreshold = 0.35f)
             val tiles = boxes.filter {
-                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.TILE_RESOURCE ||
-                    it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.CITY_GATE
+                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.RESOURCE_TILE ||
+                    it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.FORTRESS
             }
             if (tiles.isEmpty()) {
                 "👁️ 视觉复核：未在画面中检出资源地块 —— 若随后屯田失败，" +

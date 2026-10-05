@@ -16,7 +16,7 @@
 #       下载：https://github.com/Tencent/ncnn/releases  →  ncnn-*-windows-vs2022.zip，解压后把其 bin 目录传给 -NcnnBin
 #
 #  数据（只有这两项要你亲手准备，其余脚本自动下基座/自动合成）：
-#   - YOLO：tools\train_yolo\dataset\images\{train,val} + labels\{train,val}（11 类 YOLO 标注）
+#   - YOLO：tools\train_yolo\dataset\images\{train,val} + labels\{train,val}（6 类大地图多目标标注）
 #   - bge 索引：一份率土语料 JSONL（每行 {"text": "..."}），-Corpus 指定
 # ============================================================================
 param(
@@ -91,7 +91,7 @@ if($All){
         if($NcnnBin){ $yoloArgs += @("--ncnn-bin", $NcnnBin) }
         & $Pypi @yoloArgs
     } else {
-        Write-Host "  数据集缺失：$dsDir`n  请先采集率土截图并按 11 类标注放入 images/{train,val}+labels/{train,val}，再跑 -All。" -ForegroundColor Yellow
+        Write-Host "  数据集缺失：$dsDir`n  请先采集率土截图并按 6 类（红地/资源地/行军线/要塞/营地/部队群）标注放入 images/{train,val}+labels/{train,val}，再跑 -All。" -ForegroundColor Yellow
     }
 } else {
     Write-Host "`n（YOLO 需 GPU+已标注数据集，加 -All 且备好 dataset 后再跑）" -ForegroundColor DarkGray

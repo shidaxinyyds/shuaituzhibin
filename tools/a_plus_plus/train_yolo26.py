@@ -14,7 +14,7 @@
 本脚本做的三件事（只做这三件，且失败就说失败，绝不伪造权重）：
   1. **自动取基座**：`YOLO("yolo26s.pt")` 首次加载会由 ultralytics 自动下载官方权重；
      离线/镜像环境可用 `--weights` 指向本地 .pt。取不到就退出码 2，不用随机初始化顶替。
-  2. **训练**：在你提供的率土标注集（ultralytics data.yaml 格式）上微调 11 类。
+  2. **训练**：在你提供的率土标注集（ultralytics data.yaml 格式）上微调 7 类。
      类别顺序必须与 YoloDetector.DetectionClass 一致（见 tools/train_yolo/data.yaml）。
   3. **导出 ncnn + INT8**：`model.export(format="ncnn", imgsz=640)`；若找到 ncnn 工具链
      （ncnn2table + ncnn2int8），用校准图做训练后量化产出 INT8；找不到则如实保留 fp32
@@ -54,10 +54,9 @@ ASSETS_MODELS = os.path.join(REPO, "client", "app", "src", "main", "assets", "mo
 
 # 与 YoloNcnn.cpp / YoloDetector 对齐的硬约束
 IMGSZ = 640
-NC = 11
-NAMES = ["attack", "defend", "retreat", "confirm", "cancel",
-         "mail_alert", "radar_alert", "enemy_tile", "resource_tile",
-         "march_redline", "city_gate"]
+NC = 7
+NAMES = ["enemy_tile", "resource_tile", "march_line",
+         "fortress", "camp", "troop_cavalry", "troop_infantry"]
 
 
 def log(msg):

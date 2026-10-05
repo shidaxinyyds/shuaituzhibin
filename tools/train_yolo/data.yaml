@@ -1,28 +1,20 @@
 # 率土之滨 YOLO 数据集配置（ultralytics 格式）
-# 类别顺序必须与 YoloDetector.DetectionClass.id 一致，错位=点到错误按钮。
+# 类别顺序必须与 YoloDetector.DetectionClass.id 一致，错位=检错目标。
 path: ./dataset        # 数据集根目录（含 images/ 与 labels/）
 train: images/train
 val: images/val
 
-nc: 18
+nc: 7
+# ---- 契约重锚：YOLO 只负责大地图上"密集/遮挡/跨缩放"的多目标。----
+# 固定 UI 按钮(出征/驻守/撤退/确定/取消)、军令红点、敌袭告警一律走确定性通道
+# （语义 OCR / HSV 角标 / RaidRadarDetector），不进本表。
+# 兵种：行军只有微缩模型、无独立兵种图标；骑/步可分→建两类，弓/枪/盾步兵合并。
+# id 必须与 YoloDetector.DetectionClass 严格对齐，错位=检错目标。
 names:
-  0: attack          # 出征按钮
-  1: defend          # 驻守按钮
-  2: retreat         # 撤退按钮
-  3: confirm         # 确定按钮
-  4: cancel         # 取消按钮
-  5: mail_alert      # 军令红点
-  6: radar_alert     # 敌袭告警
-  7: enemy_tile      # 敌对红地
-  8: resource_tile   # 资源地块
-  9: march_redline   # 敌军行军红线
-  10: city_gate      # 关卡要塞
-  # ---- Phase D：部队兵种 & 建筑（多目标）。id 与 YoloDetector.DetectionClass 严格对齐。----
-  # 仅当样本量达标后才应启用训练；无足够标注时该类在模型上会欠拟合，宁缺毋滥。
-  11: troop_cavalry  # 骑兵
-  12: troop_shield   # 盾兵
-  13: troop_archer   # 弓兵
-  14: troop_spearman # 枪兵
-  15: building_camp  # 营寨/营帐
-  16: building_tower # 箭塔
-  17: building_farm  # 屯田
+  0: enemy_tile      # 敌对红地
+  1: resource_tile   # 资源地块
+  2: march_line      # 行军线（敌我由端侧颜色通道判，故不区分红/蓝线）
+  3: fortress        # 要塞/关卡/分城/城池等大建筑
+  4: camp            # 营寨/营帐（玩家）/ NPC 营地
+  5: troop_cavalry   # 骑兵部队（微缩行军模型，马上）
+  6: troop_infantry  # 步兵部队（弓/枪/盾合并，缩放下不可稳定区分）

@@ -20,39 +20,45 @@ import kotlin.random.Random
  *   2. **容灾通道（几何+色度）**：权重缺失、或本包是 OCR 空桩构建（无 ncnn）时，
  *      自动回退到不依赖模型的空间色度/几何显著性检测，保证不崩、且**如实标注这是几何通道**。
  *
- * ⚠️ 诚实声明：通用 COCO 预训练权重检不出"出征/驻守/行军红线"等游戏专属类别，
+ * ⚠️ 诚实声明：通用 COCO 预训练权重检不出"红地/行军线/要塞"等率土大地图专属类别，
  *    因此主通道所需的权重**必须自行采集率土截图训练**（见 `tools/train_yolo/`）。
  *    仓库当前不含这些权重，故出厂默认走容灾通道——这不是降级，是现状。
+ *
+ * 🔌 定位（模型升级阶梯）：本类是可插拔的 **DETECTOR 层**引擎，是否加载由当前游戏的
+ *    [VisionPolicy] 决定（见 [com.stzb.assistant.runtime.VisionRuntime]）。SLG/MMO 盘默认
+ *    **不含 DETECTOR**，故 `VisionRuntime.yolo()` 会直接返回 null、本类根本不会被构造；
+ *    只有实时动作类（如未来的 DNF）才在知识包里显式开启它。下面的 7 类是率土大地图契约，
+ *    保留是为了"真要上检测器时按图训练"，不代表率土当前依赖它。
  *
  * 防封拟人点：无论哪条通道，命中框都经高斯抖动映射触控点（[DetectionBox.humanTouchPoint]）。
  */
 class YoloDetector(private val context: Context) {
 
+    /**
+     * YOLO 检测契约：**只保留大地图上"密集/遮挡/跨缩放"的多目标**（确定性优先原则）。
+     *
+     * 固定 UI（出征/驻守/撤退/确定/取消按钮）、军令红点、敌袭告警、兵种四分裂
+     * 一律**不在此列**——它们由确定性通道处理：
+     *   - 按钮 → [com.stzb.assistant.ocr.StzbUiMatcher] 语义 OCR；
+     *   - 军令红点 → HSV 角标；敌袭告警 → RaidRadarDetector（HSV+霍夫）；
+     *   - 兵种：行军时**只有微缩行军模型、无独立兵种图标**；骑（马上）与步兵可分→建两类，
+     *     弓/枪/盾步兵在地图缩放下不可稳定区分→合并为“步兵”，不硬拆四类。
+     *
+     * id 必须与 tools/train_yolo/data.yaml 严格对齐，错位=检错目标。
+     * 诚实边界：这些类**仅由 ncnn 权重检出**；无权重时几何色度容灾通道只勉强给出行军线，
+     * 其余如实为空（不臆造）。
+     */
     enum class DetectionClass(val id: Int, val label: String, val minAspectRatio: Float, val maxAspectRatio: Float) {
-        BUTTON_ATTACK(0, "出征", 1.8f, 4.5f),
-        BUTTON_DEFEND(1, "驻守", 1.8f, 4.5f),
-        BUTTON_RETREAT(2, "撤退", 1.5f, 4.0f),
-        BUTTON_CONFIRM(3, "确定", 1.8f, 5.0f),
-        BUTTON_CANCEL(4, "取消", 1.8f, 5.0f),
-        ICON_MAIL_ALERT(5, "军令红点", 0.7f, 1.3f),
-        ICON_RADAR_ALERT(6, "敌袭告警", 0.7f, 1.4f),
-        TILE_ENEMY_RED(7, "敌对红地", 0.8f, 2.5f),
-        TILE_RESOURCE(8, "资源地块", 0.8f, 2.5f),
-        TROOP_RED_LINE(9, "敌军行军红线", 0.1f, 10.0f),
-        CITY_GATE(10, "关卡要塞", 0.8f, 3.0f),
-
-        // ---- Phase D：部队兵种 & 建筑（多目标）。id 必须与 tools/train_yolo/data.yaml 严格对齐，错位=检错目标。----
-        // 诚实边界：下列类**仅由 ncnn 权重检出**；几何色度容灾通道不含它们（无权重时检不到=如实为空，不臆造）。
-        TROOP_CAVALRY(11, "骑兵", 0.6f, 1.6f),
-        TROOP_SHIELD(12, "盾兵", 0.6f, 1.6f),
-        TROOP_ARCHER(13, "弓兵", 0.6f, 1.6f),
-        TROOP_SPEARMAN(14, "枪兵", 0.6f, 1.6f),
-        BUILDING_CAMP(15, "营寨", 0.8f, 2.5f),
-        BUILDING_TOWER(16, "箭塔", 0.5f, 1.6f),
-        BUILDING_FARM(17, "屯田", 0.8f, 2.5f);
+        ENEMY_TILE(0, "敌对红地", 0.8f, 2.5f),
+        RESOURCE_TILE(1, "资源地块", 0.8f, 2.5f),
+        MARCH_LINE(2, "行军线", 0.1f, 10.0f),        // 敌我由端侧颜色通道判，故不区分红/蓝线
+        FORTRESS(3, "要塞关卡", 0.8f, 3.0f),          // 要塞/关隘/分城/城池等大建筑
+        CAMP(4, "营寨营地", 0.8f, 2.5f),              // 玩家营帐 / NPC 营地
+        TROOP_CAVALRY(5, "骑兵部队", 0.5f, 3.0f),      // 微缩行军模型：骑马，可与步兵区分
+        TROOP_INFANTRY(6, "步兵部队", 0.5f, 3.0f);     // 微缩行军模型：弓/枪/盾合并（缩放下不可稳定区分）
 
         companion object {
-            fun fromId(id: Int): DetectionClass = entries.firstOrNull { it.id == id } ?: BUTTON_ATTACK
+            fun fromId(id: Int): DetectionClass = entries.firstOrNull { it.id == id } ?: ENEMY_TILE
         }
     }
 
@@ -167,97 +173,29 @@ class YoloDetector(private val context: Context) {
     }
 
     /**
-     * 智能空间几何与色度显著性提取器 (工业级容灾通道)
-     * 无需等待模型文件下载，即可精准抓取率土核心红线、红点与确认出征按键区域
+     * 几何色度容灾通道（**无权重时**的唯一兜底）。
+     *
+     * 契约重锚后，本通道只保留大地图上唯一能靠纯色度可靠提取的目标——行军线
+     * （红色敌军线的色度簇）。按钮/红点/兵种等已从 YOLO 契约移除、改走确定性通道，
+     * 故此处不再臆造它们的"检测框"。调用方须自行用 [isNativeReady] 判断结论能否作证据
+     * （几何结果≠证据，与 NightSentinelFlow / AccurateFarmingFlow 的采信闸门一致）。
      */
     private fun runSaliencyVisualFallback(bitmap: Bitmap, confThreshold: Float): List<DetectionBox> {
         val detected = mutableListOf<DetectionBox>()
         val width = bitmap.width
         val height = bitmap.height
-
         if (width <= 0 || height <= 0) return detected
 
-        // 1. 区域 A：右上角探测信件红点与雷达警报 (常位于 X: 80%~98%, Y: 2%~25%)
-        val mailRoi = Rect((width * 0.80f).toInt(), (height * 0.02f).toInt(), (width * 0.98f).toInt(), (height * 0.25f).toInt())
-        if (hasRedAlertCluster(bitmap, mailRoi, densityThreshold = 0.03f)) {
-            detected.add(DetectionBox(
-                detectionClass = DetectionClass.ICON_MAIL_ALERT,
-                rect = mailRoi,
-                confidence = 0.88f
-            ))
-        }
-
-        // 2. 区域 B：右下角探测出征/确定主功能按键 (常位于 X: 65%~95%, Y: 75%~96%)
-        val confirmRoi = Rect((width * 0.65f).toInt(), (height * 0.75f).toInt(), (width * 0.95f).toInt(), (height * 0.95f).toInt())
-        if (hasGoldenButtonCluster(bitmap, confirmRoi)) {
-            detected.add(DetectionBox(
-                detectionClass = DetectionClass.BUTTON_CONFIRM,
-                rect = confirmRoi,
-                confidence = 0.91f
-            ))
-        }
-
-        // 3. 区域 C：中央大地图探测敌军行军红线与红闪警告
+        // 中央大地图：探测行军线（红色敌军线色度簇）
         val centerRoi = Rect((width * 0.15f).toInt(), (height * 0.15f).toInt(), (width * 0.85f).toInt(), (height * 0.85f).toInt())
         if (hasMarchingRedLine(bitmap, centerRoi)) {
             detected.add(DetectionBox(
-                detectionClass = DetectionClass.TROOP_RED_LINE,
+                detectionClass = DetectionClass.MARCH_LINE,
                 rect = centerRoi,
                 confidence = 0.85f
             ))
         }
-
         return detected
-    }
-
-    /**
-     * 检测是否有红色通知气泡聚集
-     */
-    private fun hasRedAlertCluster(bitmap: Bitmap, roi: Rect, densityThreshold: Float): Boolean {
-        var redPixels = 0
-        var totalSamples = 0
-        val step = max(2, min(roi.width(), roi.height()) / 25)
-
-        for (y in roi.top until roi.bottom step step) {
-            for (x in roi.left until roi.right step step) {
-                totalSamples++
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-
-                // 鲜红饱和度判定
-                if (r > 170 && g < 75 && b < 75) {
-                    redPixels++
-                }
-            }
-        }
-        return totalSamples > 0 && (redPixels.toFloat() / totalSamples) >= densityThreshold
-    }
-
-    /**
-     * 检测率土核心金黄色/橙色动作按键色相簇 (出征/确定按键)
-     */
-    private fun hasGoldenButtonCluster(bitmap: Bitmap, roi: Rect): Boolean {
-        var goldPixels = 0
-        var totalSamples = 0
-        val step = max(2, min(roi.width(), roi.height()) / 30)
-
-        for (y in roi.top until roi.bottom step step) {
-            for (x in roi.left until roi.right step step) {
-                totalSamples++
-                val pixel = bitmap.getPixel(x, y)
-                val r = Color.red(pixel)
-                val g = Color.green(pixel)
-                val b = Color.blue(pixel)
-
-                // 率土金棕色按键 (R: 160~240, G: 120~190, B: 40~90)
-                if (r in 150..250 && g in 100..200 && b in 30..110 && r > g && g > b) {
-                    goldPixels++
-                }
-            }
-        }
-        return totalSamples > 0 && (goldPixels.toFloat() / totalSamples) >= 0.08f
     }
 
     /**

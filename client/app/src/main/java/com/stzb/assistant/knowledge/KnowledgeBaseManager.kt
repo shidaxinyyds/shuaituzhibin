@@ -107,7 +107,7 @@ object KnowledgeBaseManager {
                 if (!usable) {
                     Log.w(TAG, "本地缓存的知识库不可用（$reason），已忽略并降级到内置版本。")
                 } else if (cachedProfile.compareVersion(baseProfile.profileVersion) >= 0) {
-                    activeProfile = cachedProfile
+                    setActiveProfile(cachedProfile)
                     Log.i(TAG, "已从本地沙盒加载热更新知识库: ${cachedProfile.gameId} (版本: ${cachedProfile.profileVersion})")
                     return true
                 }
@@ -116,8 +116,17 @@ object KnowledgeBaseManager {
             }
         }
 
-        activeProfile = baseProfile
+        setActiveProfile(baseProfile)
         return true
+    }
+
+    /**
+     * 统一的激活档案入口：换档案的同时，把它的感知层级策略同步给 [com.stzb.assistant.runtime.VisionRuntime]。
+     * 这样"哪个游戏开到哪一级感知"永远跟当前激活知识库一致，不会漏同步。
+     */
+    private fun setActiveProfile(profile: GameProfile) {
+        activeProfile = profile
+        com.stzb.assistant.runtime.VisionRuntime.policy = profile.visionPolicy
     }
 
     /**
@@ -250,7 +259,7 @@ object KnowledgeBaseManager {
 
             // 热刷新内存：只有"正在使用这个游戏"时才切换激活档
             if (activeProfile.gameId == gameId) {
-                activeProfile = newProfile
+                setActiveProfile(newProfile)
                 listeners.forEach { it.onProfileChanged(activeProfile) }
             }
 

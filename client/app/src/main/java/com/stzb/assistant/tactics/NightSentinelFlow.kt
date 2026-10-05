@@ -259,9 +259,10 @@ open class NightSentinelFlow(
         val frame = EngineBridge.captureFrame() ?: return "视觉双通道：抓屏失败，跳过。"
         return try {
             val boxes = detector.detect(frame, confThreshold = 0.40f)
+            // 契约重锚后 YOLO 只做大地图多目标；敌袭告警由 OpenCV 雷达（确定性主判）负责，
+            // 视觉侧仅用「行军线」检出作旁证（敌军移动迹象）。
             val alert = boxes.filter {
-                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.ICON_RADAR_ALERT ||
-                    it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.TROOP_RED_LINE
+                it.detectionClass == com.stzb.assistant.ai.vision.YoloDetector.DetectionClass.MARCH_LINE
             }
             if (alert.isNotEmpty()) {
                 val top = alert.maxByOrNull { it.confidence }

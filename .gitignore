@@ -67,5 +67,6 @@ tmp*
 # YOLO local screenshots and datasets
 tools/train_yolo/raw/
 tools/train_yolo/dataset/
+tools/train_yolo/dataset_tiled/
 tools/train_yolo/dataset_vis/
 tools/train_yolo/templates/

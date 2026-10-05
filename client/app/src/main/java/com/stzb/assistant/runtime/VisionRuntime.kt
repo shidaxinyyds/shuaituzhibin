@@ -2,6 +2,8 @@ package com.stzb.assistant.runtime
 
 import android.content.Context
 import android.util.Log
+import com.stzb.assistant.ai.vision.PerceptionTier
+import com.stzb.assistant.ai.vision.VisionPolicy
 
 /**
  * 视觉能力统一运行时 (VisionRuntime)
@@ -40,6 +42,16 @@ object VisionRuntime {
     @Volatile
     private var unavailableReason: String = "尚未尝试初始化视觉能力。"
 
+    /**
+     * 当前激活游戏的感知层级策略（由 [com.stzb.assistant.knowledge.KnowledgeBaseManager]
+     * 在切换/热更知识库时同步）。**默认 [VisionPolicy.SLG_DEFAULT]——不含 DETECTOR。**
+     *
+     * 这是"确定性优先"的执行闸门：SLG/MMO 盘下，即便 assets 里塞了 YOLO 权重也不会被加载。
+     * 只有动作类（知识包显式开 DETECTOR）才会走到下面的真推理路径。
+     */
+    @Volatile
+    var policy: VisionPolicy = VisionPolicy.SLG_DEFAULT
+
     private var releaseHookRegistered = false
 
     /**
@@ -50,6 +62,16 @@ object VisionRuntime {
      */
     @Synchronized
     fun yolo(context: Context): com.stzb.assistant.ai.vision.YoloDetector? {
+        // 闸门 0：本游戏是否启用「检测器」层级（确定性优先；SLG/MMO 默认不启用）。
+        // 放在最前面，且顺带释放可能因切换游戏而残留的旧检测器，避免误用其结论。
+        if (!policy.allows(PerceptionTier.DETECTOR)) {
+            yoloRef = null
+            unavailableReason = "本游戏视觉策略未启用检测器（确定性优先阶梯），" +
+                "目标检测关闭，视觉以确定性通道（模板/颜色/OCR）为准。"
+            Log.i(TAG, unavailableReason)
+            return null
+        }
+
         yoloRef?.let { return it }
 
         if (!releaseHookRegistered) {

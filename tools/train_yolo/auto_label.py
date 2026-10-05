@@ -14,7 +14,7 @@
 工作流（在你的终端跑，因为有 GUI 交互）
 --------------------------------------
     # 1) 截 20~30 张游戏截图，丢进 tools/train_yolo/raw/
-    # 2) 交互式裁 11 类模板（在一张图上按提示逐个拖框，回车确认 / 空格跳过）
+    # 2) 交互式裁模板（在一张图上按提示逐个拖框，回车确认 / 空格跳过）
     python tools/train_yolo/auto_label.py --make-templates tools/train_yolo/raw/shot001.png
     # 3) 自动标注全部截图 + 画框验收
     python tools/train_yolo/auto_label.py --images tools/train_yolo/raw --vis
@@ -41,7 +41,7 @@ DEFAULT_VIS = os.path.join(HERE, "dataset_vis")
 
 
 def load_class_names(path):
-    """从 data.yaml 读 names: {0: attack, ...}，避免依赖 PyYAML 的具体版本。"""
+    """从 data.yaml 读 names: {0: enemy_tile, ...}，避免依赖 PyYAML 的具体版本。"""
     if not os.path.isfile(path):
         die("找不到 data.yaml：%s（类别定义来源）" % path)
     names = {}
@@ -114,7 +114,7 @@ def make_templates(image_path, names):
         cv2.destroyWindow(tip)
     cv2.destroyAllWindows()
     print("\n完成：新增/更新 %d 类模板，目录 %s" % (made, TEMPLATES_DIR))
-    print("提示：稀有类（mail_alert/radar_alert/enemy_tile/march_redline）需换对应场景的截图再跑一次本命令补齐。")
+    print("提示：难采类（fortress 各外观 / camp 玩家营与 NPC 营地 / troop_cavalry与troop_infantry 微缩行军模型）需换对应场景的截图再跑一次本命令补齐。")
 
 
 # ------------------------------------------------------------------ 加载模板

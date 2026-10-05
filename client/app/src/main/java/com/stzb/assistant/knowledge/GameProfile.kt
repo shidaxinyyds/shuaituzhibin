@@ -1,5 +1,6 @@
 package com.stzb.assistant.knowledge
 
+import com.stzb.assistant.ai.vision.VisionPolicy
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,7 +22,13 @@ data class GameProfile(
     val semanticButtons: Map<String, ButtonDef>,
     val defenderDb: DefenderDatabase,
     val tacticalDefaults: TacticalDefaults,
-    val watchdogKeywords: List<String>
+    val watchdogKeywords: List<String>,
+    /**
+     * 本游戏默认启用的感知层级（确定性优先阶梯）。
+     * 默认 [VisionPolicy.SLG_DEFAULT]：不含 DETECTOR，即 SLG 沙盘盘**不加载 YOLO**。
+     * 只有动作类游戏才在知识包里显式开 DETECTOR/POLICY。
+     */
+    val visionPolicy: VisionPolicy = VisionPolicy.SLG_DEFAULT
 ) {
     /**
      * 把 "1.10.2" 这类版本号解析成可比较的数字序列。
@@ -158,6 +165,9 @@ data class GameProfile(
 
             // 5. 看门狗异常弹窗关闭词表
             put("watchdog_keywords", JSONArray(watchdogKeywords))
+
+            // 6. 感知层级策略（确定性优先阶梯；缺省即 SLG_DEFAULT，不开检测器）
+            put("vision_policy", VisionPolicy.toJson(visionPolicy))
         }
         return root.toString(2)
     }
@@ -273,6 +283,9 @@ data class GameProfile(
             val wArr = root.optJSONArray("watchdog_keywords") ?: JSONArray()
             val watchdog = (0 until wArr.length()).map { wArr.getString(it) }
 
+            // 6. Vision policy（缺失/为空回退 SLG_DEFAULT，不误开检测器）
+            val visionPolicy = VisionPolicy.fromJson(root.optJSONArray("vision_policy"))
+
             return GameProfile(
                 gameId = gameId,
                 gameName = gameName,
@@ -283,7 +296,8 @@ data class GameProfile(
                 semanticButtons = buttons,
                 defenderDb = defenderDb,
                 tacticalDefaults = tacticalDefaults,
-                watchdogKeywords = watchdog
+                watchdogKeywords = watchdog,
+                visionPolicy = visionPolicy
             )
         }
     }
