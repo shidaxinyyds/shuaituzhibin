@@ -408,26 +408,43 @@ def preflight_python_syntax():
     为什么值得单独做：这一路我在中文提示串里嵌双引号犯过**四次**
     （`print("…"从源码提炼规则"…")`），每次都是某个检查跑到一半才崩。
     预检把这类错误一次性、清楚地暴露出来，而不是让它伪装成"某个检查失败了"。
+
+    为什么要用 utf-8-sig 读并单独报 BOM：PowerShell 的 `-Encoding UTF8` 会写
+    BOM，而 `ast.parse` 碰到行首 BOM 会报 `line 1: invalid character`——当时
+    整条回归在预检就断掉，看起来像“所有检查都挂了”，实际只是一位 validator
+    开头多了三个字节。现在：BOM 不再顶掉预检，而是单独列成一条可读的失败。
     """
     import ast
     bad = []
+    bom = []
+    BOM_BYTES = b"\xef\xbb\xbf"
     for name in sorted(os.listdir(HERE)):
         if not name.endswith(".py"):
             continue
         path = os.path.join(HERE, name)
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        if raw.startswith(BOM_BYTES):
+            bom.append(name)
+            raw = raw[len(BOM_BYTES):]
         try:
-            with open(path, "r", encoding="utf-8") as fh:
-                ast.parse(fh.read())
+            ast.parse(raw.decode("utf-8"))
         except SyntaxError as e:
             bad.append((name, e.lineno, e.msg))
+    if bom:
+        print("❌ 预检失败：下列文件带 UTF-8 BOM（PowerShell -Encoding UTF8 写出来的）")
+        for name in bom:
+            print(f"   {name}  ← 用 utf-8-sig 读、无 BOM 写回即可")
     if bad:
         print("❌ 预检失败：tools/ 下有 Python 文件存在语法错误")
         for name, lineno, msg in bad:
             print(f"   {name}:{lineno}  {msg}")
         print("   提示：中文提示串里不要直接嵌双引号，用「」代替。")
         return False
+    if bom:
+        return False
     print(f"预检通过：tools/ 下 {sum(1 for n in os.listdir(HERE) if n.endswith('.py'))} "
-          f"个 Python 文件语法正确")
+          f"个 Python 文件语法正确且无 BOM")
     return True
 
 
