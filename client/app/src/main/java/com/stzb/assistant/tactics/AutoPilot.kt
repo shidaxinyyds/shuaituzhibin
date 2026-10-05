@@ -52,7 +52,14 @@ object AutoPilot {
         val farmingWorldTarget: Pair<Int, Int>? = null,
         val farmingBookmark: String? = null,
         val farmingTroopSlot: Int = 2,
-        val autoFarmingEnabled: Boolean = false
+        val autoFarmingEnabled: Boolean = false,
+        val autoLevelingEnabled: Boolean = false,
+        val levelingTarget: PointF? = null,
+        val levelingWorldTarget: Pair<Int, Int>? = null,
+        val levelingBookmark: String? = null,
+        val levelingSlotA: Int = 2,
+        val levelingSlotB: Int = 3,
+        val levelingTileLevel: Int = 7
     )
 
     /** 启动失败的原因，供 UI 原样展示。 */
@@ -99,6 +106,9 @@ object AutoPilot {
     /** 已下发的屯田目标签名。 */
     private var farmingSignature = ""
 
+    /** 已下发的练级流水线目标签名。 */
+    private var levelingSignature = ""
+
     /** 后勤任务最近一次执行时间戳。 */
     private var logisticsLastRunAtMs = 0L
 
@@ -118,6 +128,7 @@ object AutoPilot {
         pavingSignature = ""
         siegeSignature = ""
         farmingSignature = ""
+        levelingSignature = ""
         logisticsLastRunAtMs = 0L
     }
 
@@ -199,6 +210,7 @@ object AutoPilot {
                                 ActionKind.SIEGE -> "下发集火攻城"
                                 ActionKind.FARMING -> "下发高等级地块屯田与打铁巡检"
                                 ActionKind.LOGISTICS -> "下发单账号日常后勤全托管"
+                                ActionKind.LEVELING -> "下发二三队低损速升40级流水线"
                                 ActionKind.NONE -> action.desc
                             }
                             tick("大地图空闲", msg)
@@ -240,7 +252,7 @@ object AutoPilot {
         emit(pipeline, "WARN", "无人托管循环已退出。")
     }
 
-    private enum class ActionKind { RAID, PAVING, SIEGE, FARMING, LOGISTICS, NONE }
+    private enum class ActionKind { RAID, PAVING, SIEGE, FARMING, LOGISTICS, LEVELING, NONE }
 
     private data class Action(val kind: ActionKind, val signature: String = "", val desc: String = "")
 
@@ -372,6 +384,30 @@ object AutoPilot {
             return Action(ActionKind.LOGISTICS)
         }
 
+        // 6) 二三队低损速升 40 级流水线：配置了练级地块且启用了自动练级
+        if (intents.autoLevelingEnabled && (intents.levelingTarget != null || intents.levelingWorldTarget != null || !intents.levelingBookmark.isNullOrBlank())) {
+            val sig = levelingSignatureOf(intents)
+            if (sig != levelingSignature) {
+                pipeline.startSquadLeveling(
+                    SquadLevelingFlow.LevelingConfig(
+                        targetTileCoord = intents.levelingTarget,
+                        targetWorldCoord = intents.levelingWorldTarget,
+                        bookmarkName = intents.levelingBookmark,
+                        tileLevel = intents.levelingTileLevel,
+                        squadSlotA = intents.levelingSlotA,
+                        squadSlotB = intents.levelingSlotB,
+                        staminaMinThreshold = 20,
+                        maxCasualtyRate = 0.15f,
+                        minHealthPercent = 0.70f,
+                        haltOnSevereInjury = true,
+                        autoReplenishReserves = true
+                    )
+                )
+                levelingSignature = sig
+                return Action(ActionKind.LEVELING, signature = sig)
+            }
+        }
+
         return Action(ActionKind.NONE, desc = describeIdle(intents, now))
     }
 
@@ -397,15 +433,25 @@ object AutoPilot {
         append("@slot${intents.farmingTroopSlot}")
     }
 
+    private fun levelingSignatureOf(intents: Intents): String = buildString {
+        append(intents.levelingBookmark ?: "")
+        append('#')
+        intents.levelingTarget?.let { append("${it.x.toInt()},${it.y.toInt()}") }
+        append('#')
+        intents.levelingWorldTarget?.let { append("${it.first},${it.second}") }
+        append("@s${intents.levelingSlotA}+${intents.levelingSlotB}")
+    }
+
     /** 无事可做时给出**可操作**的说明，而不是默默什么都不做。 */
     private fun describeIdle(intents: Intents, nowMs: Long): String {
         val noTargets = intents.pavingTargets.isEmpty() && intents.siegeTarget == null &&
-            !intents.autoFarmingEnabled && !intents.dailyLogistics
+            !intents.autoFarmingEnabled && !intents.dailyLogistics && !intents.autoLevelingEnabled
         return when {
-            noTargets && intents.raidDefense -> "巡检守护运行中，尚未配置铺路/攻城/屯田/后勤目标"
+            noTargets && intents.raidDefense -> "巡检守护运行中，尚未配置铺路/攻城/屯田/后勤/练级目标"
             noTargets -> "尚未配置任何托管目标：请在各页签配置目标，或开启巡检守护"
             intents.siegeTarget != null && intents.siegeHitEpochMs > nowMs ->
                 "攻城目标已武装，等到命中时刻前 ${SIEGE_LEAD_MS / 1000} 秒才会下发"
+            intents.autoLevelingEnabled -> "二三队低损练级已武装，正在监控体力与出征窗口"
             intents.autoFarmingEnabled -> "屯田打铁已武装，正在监控策令与空闲窗口"
             intents.dailyLogistics -> "日常后勤全托管运行中，定期巡查税收与伤兵"
             else -> "已配置的目标均已下发，等待其完成（改选目标可重新下发）"

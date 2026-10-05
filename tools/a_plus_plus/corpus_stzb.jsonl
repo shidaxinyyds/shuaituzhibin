@@ -1,0 +1,42 @@
+{"id":"DEF-D-01","category":"DEFENDER_AVOID","title":"郭嘉 · 强控-混乱（守将危险度 5）","keywords":"郭嘉,强控,混乱,十胜十败","content":"十胜十败附带高概率混乱控制，极易导致主力自相残杀灭队","advice":"坚决避开！不可盲撞"}
+{"id":"DEF-D-02","category":"DEFENDER_AVOID","title":"李儒 · 怯战-禁疗（守将危险度 5）","keywords":"李儒,怯战,禁疗,菜刀队克星","content":"封普攻并附带高额谋略伤害且禁疗，是开荒菜刀队的克星","advice":"法系队需谨慎，菜刀队禁打"}
+{"id":"DEF-D-03","category":"DEFENDER_AVOID","title":"法正 · 神谋-跳过准备（守将危险度 5）","keywords":"法正,神谋,跳过准备,猝死","content":"概率跳过主动战法准备回合，形成超高爆发的猝死点","advice":"避开，容易战损暴增"}
+{"id":"DEF-D-04","category":"DEFENDER_AVOID","title":"陈宫 · 高伤-点名反弹（守将危险度 5）","keywords":"陈宫,点名,反弹,谋略伤害","content":"根据敌我战法发动频率追加谋略伤害，非常克制高发动率队伍","advice":"避开"}
+{"id":"DEF-D-05","category":"DEFENDER_AVOID","title":"黄忠 · 高物理爆发（守将危险度 5）","keywords":"黄忠,重击,嘲讽,物理爆发","content":"重击加嘲讽，普攻输出极高","advice":"避让或用绝对兵力压制"}
+{"id":"DEF-D-06","category":"DEFENDER_AVOID","title":"陆逊 · 火烧连营（守将危险度 5）","keywords":"陆逊,火烧连营,灼烧,引爆","content":"群体灼烧多段引爆，伤害极其爆炸","advice":"极高危，建议换地"}
+{"id":"DEF-D-07","category":"DEFENDER_AVOID","title":"庞统 · 锁链-反噬（守将危险度 5）","keywords":"庞统,锁链,反噬,伤害传导","content":"密谋附带伤害传导，主力容易同时暴毙","advice":"坚决避让"}
+{"id":"DEF-D-08","category":"DEFENDER_AVOID","title":"吕蒙 · 白衣渡江-怯战（守将危险度 5）","keywords":"吕蒙,白衣渡江,怯战,封普攻","content":"开局前两回合全体无法普攻并附带稳定法伤","advice":"前锋极易直接被秒，避开"}
+{"id":"DEF-D-09","category":"DEFENDER_AVOID","title":"贾诩 · 算无遗策（守将危险度 5）","keywords":"贾诩,算无遗策,主动战法,谋略","content":"对面主动战法越多伤害越恐怖，专杀高频主动队","advice":"避开"}
+{"id":"DEF-D-10","category":"DEFENDER_AVOID","title":"周瑜 · 极度高危（守将危险度 5）","keywords":"周瑜,玄武洰流,群体怯战,法术","content":"玄武洰流造成群体怯战并强力法术轰杀","advice":"坚决避开"}
+{"id":"DEF-D-11","category":"DEFENDER_AVOID","title":"魏延 · 奇兵奇谋（守将危险度 5）","keywords":"魏延,奇兵,直切大营,暴毙","content":"突脸直切大营主力，造成大营意外暴毙","advice":"换地打软柿子"}
+{"id":"DEF-H-01","category":"DEFENDER_HARD","title":"张任 · 落凤-技穷（守将危险度 4）","keywords":"张任,落凤,技穷,单点","content":"落凤造成高额单点伤害并计穷，容易打乱战法释放节奏","advice":"兵力充足且带控制可打"}
+{"id":"DEF-H-02","category":"DEFENDER_HARD","title":"严颜 · 老当益壮（守将危险度 4）","keywords":"严颜,免伤,减伤,肉盾","content":"自身极高免伤与减伤，极难快速破防","advice":"需要高爆发队伍"}
+{"id":"DEF-H-03","category":"DEFENDER_HARD","title":"廖化 · 诈降-回血（守将危险度 3）","keywords":"廖化,诈降,回血,续航","content":"自愈续航能力强，容易拖入平局","advice":"注意平局补刀"}
+{"id":"DEF-H-04","category":"DEFENDER_HARD","title":"管亥 · 狂暴吸血（守将危险度 3）","keywords":"管亥,倒戈,吸血,物理连击","content":"倒戈吸血加物理连击，身板偏硬","advice":"可打但战损略高"}
+{"id":"DEF-H-05","category":"DEFENDER_HARD","title":"潘璋 · 断道-定身（守将危险度 3）","keywords":"潘璋,断道,定身,先手控制","content":"具有先手定身控制机制","advice":"带解控或霸体可打"}
+{"id":"DEF-H-06","category":"DEFENDER_HARD","title":"张勋 · 枪阵贯穿（守将危险度 3）","keywords":"张勋,枪阵,贯穿,中军","content":"群体物理贯穿，容易压低中军血线","advice":"中军需保证防御"}
+{"id":"DEF-H-07","category":"DEFENDER_HARD","title":"纪灵 · 三尖两刃（守将危险度 3）","keywords":"纪灵,挑衅,吸引火力,拖回合","content":"挑衅战法强制吸引火力","advice":"输出分散，易拖回合"}
+{"id":"DEF-H-08","category":"DEFENDER_HARD","title":"曹仁 · 八门金锁（守将危险度 4）","keywords":"曹仁,八门金锁,群体怯战,菜刀队克星","content":"群体怯战，是物理平A队的克星","advice":"法系队可打"}
+{"id":"DEF-M-01","category":"DEFENDER_MODERATE","title":"于禁 · 整军经武（守将危险度 2）","keywords":"于禁,被动,防御,无爆发","content":"纯被动防御型武将，无爆发战法","advice":"主力正常出征即可"}
+{"id":"DEF-M-02","category":"DEFENDER_MODERATE","title":"徐晃 · 长驱直入（守将危险度 2）","keywords":"徐晃,慢热,增伤,前几回合","content":"慢热型增伤，前3回合无威胁","advice":"前几回合速推拿下"}
+{"id":"DEF-M-03","category":"DEFENDER_MODERATE","title":"鲍信 · 援军秘策（守将危险度 2）","keywords":"鲍信,奶量,无控,无爆","content":"少量奶量，无控无爆","advice":"难度偏低，推荐打"}
+{"id":"DEF-M-04","category":"DEFENDER_MODERATE","title":"严白虎 · 山贼蛮力（守将危险度 2）","keywords":"严白虎,属性低,战法不稳定","content":"属性偏低，战法不稳定","advice":"兵力达标即可拿下"}
+{"id":"DEF-M-05","category":"DEFENDER_MODERATE","title":"华雄 · 恃勇无谋（守将危险度 2）","keywords":"华雄,高伤害,自损,负面","content":"高伤害但附带自身受损负面状态","advice":"推荐收割"}
+{"id":"DEF-M-06","category":"DEFENDER_MODERATE","title":"公孙瓒 · 白马义从（守将危险度 2）","keywords":"公孙瓒,行军速度,规避","content":"增加行军速度与少量规避","advice":"战损低"}
+{"id":"DEF-M-07","category":"DEFENDER_MODERATE","title":"朱儁 · 节镇关东（守将危险度 2）","keywords":"朱儁,先手,疲软,后程","content":"少量先手伤害，后程疲软","advice":"可稳拿"}
+{"id":"DEF-S-01","category":"DEFENDER_SAFE","title":"邓茂 · 白给软柿子（守将危险度 1）","keywords":"邓茂,白给,无威胁,开荒","content":"全率土公认开荒大礼包，毫无战法威胁","advice":"🟢 极力推荐！战损接近 0"}
+{"id":"DEF-S-02","category":"DEFENDER_SAFE","title":"田续 · 白给软柿子（守将危险度 1）","keywords":"田续,白给,释放率低,无爆发","content":"战法释放率极低，毫无爆发伤害","advice":"🟢 极力推荐！开荒必挑"}
+{"id":"DEF-S-03","category":"DEFENDER_SAFE","title":"裴元绍 · 义勇草寇（守将危险度 1）","keywords":"裴元绍,身板脆,被秒","content":"身板脆弱，开局直接被秒杀","advice":"🟢 极佳目标"}
+{"id":"DEF-S-04","category":"DEFENDER_SAFE","title":"审配 · 守城弱将（守将危险度 1）","keywords":"审配,防御,无反伤","content":"轻微防御，无任何反伤手段","advice":"🟢 极力推荐"}
+{"id":"DEF-S-05","category":"DEFENDER_SAFE","title":"李典 · 谦逊奉公（守将危险度 1）","keywords":"李典,辅助,无致命","content":"微量辅助战法，无法造成致命减员","advice":"🟢 放心出征"}
+{"id":"DEF-S-06","category":"DEFENDER_SAFE","title":"陶谦 · 安民守土（守将危险度 1）","keywords":"陶谦,攻极低,白给","content":"老态龙钟，攻击力极低","advice":"🟢 白给队伍"}
+{"id":"DEF-S-07","category":"DEFENDER_SAFE","title":"韩馥 · 懦弱守将（守将危险度 1）","keywords":"韩馥,四维低,平A弱","content":"四维属性低下，平A极弱","advice":"🟢 软柿子收割"}
+{"id":"DEF-S-08","category":"DEFENDER_SAFE","title":"孔融 · 知书达礼（守将危险度 1）","keywords":"孔融,无杀伤,低战损","content":"无任何杀伤性战法","advice":"🟢 极低战损"}
+{"id":"DEF-S-09","category":"DEFENDER_SAFE","title":"刘焉 · 据守益州（守将危险度 1）","keywords":"刘焉,无控,无输出,经验包","content":"无控无输出，开荒首选经验包","advice":"🟢 推荐收割"}
+{"id":"DEF-S-10","category":"DEFENDER_SAFE","title":"张宝 · 黄巾符水（守将危险度 1）","keywords":"张宝,触发低,白给阵容","content":"战法触发概率极低，白给阵容","advice":"🟢 推荐主力直接拿下"}
+{"id":"LAND-03","category":"LAND_SIEGE","title":"3级地开荒守军建议（起手指点兵约 1200）","keywords":"3级地,开荒,邓茂,田续,刘焉","content":"推荐软柿子守军：邓茂、田续、刘焉；谨慎：管亥","advice":"开荒第 1 阶段快速铺平跳板地，战损控制在 50 兵以内"}
+{"id":"LAND-04","category":"LAND_SIEGE","title":"4级地开荒守军建议（起手指点兵约 3000）","keywords":"4级地,开荒,斥候,查看守军,邓茂,裴元绍","content":"推荐软柿子守军：邓茂、田续、审配、裴元绍；坚决避开：李儒、郭嘉","advice":"开荒首冲 4 级地，务必先用斥候【查看守军】，非软柿子不打！"}
+{"id":"LAND-05","category":"LAND_SIEGE","title":"5级地开荒守军建议（起手指点兵约 5500）","keywords":"5级地,分水岭,李典,徐晃,鲍信","content":"推荐软柿子守军：李典、徐晃、魏续、鲍信；坚决避开：法正、陈宫、陆逊、郭嘉","advice":"开荒关键分水岭！撞到法正/陈宫必翻车，必须严格匹配软柿子守军"}
+{"id":"LAND-06","category":"LAND_SIEGE","title":"6级地开荒守军建议（主力约 16000）","keywords":"6级地,双队,华雄,张勋,周仓","content":"推荐守军：华雄、张勋、周仓；避开：吕蒙、贾诩、周瑜；开始出现第二队守军（双队战平连打）","advice":"主力需 16000+ 且备战第二补刀队"}
+{"id":"LAND-07","category":"LAND_SIEGE","title":"7级地开荒守军建议（主力约 22000）","keywords":"7级地,双队,于禁,纪灵,要塞","content":"推荐守军：于禁、纪灵；避开：陆逊、庞统、魏延；双队合计约 42000 兵力","advice":"先打下周围地块起要塞，部队满士气出击"}
+{"id":"LAND-08","category":"LAND_SIEGE","title":"8级地要塞与高级矿产建议（主力约 28000）","keywords":"8级地,要塞,矿产,曹仁,徐晃,集火","content":"推荐守军：曹仁、徐晃；避开：关妹、赵云、法正","advice":"必须双主力协同或同盟卡秒集火"}

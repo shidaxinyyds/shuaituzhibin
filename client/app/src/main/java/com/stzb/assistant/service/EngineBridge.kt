@@ -613,42 +613,108 @@ object EngineBridge {
     // ==========================================
 
     /**
-     * 评估守军难度：双通道融合。
+     * 对单帧采集守将名单：头像通道（主）+ OCR 命中守军库的名字通道（辅），合并去重。
+     * 不评估、不回收 frame（生命周期由调用方管理）。
      *
-     *  - **头像通道（主）**：对全屏帧按固定归一化槽位裁三行立绘，与 defender_refs
-     *    模板库比对，识别守将身份（不依赖 OCR 是否读清名字）。
+     *  - **头像通道（主）**：按固定归一化槽位裁三行立绘，与 defender_refs 模板库比对，
+     *    识别守将身份（不依赖 OCR 是否读清名字）。
      *  - **OCR 名字通道（辅）**：只采信「命中守军库」的名字，避免把
      *    “土地Lv/出征/推荐/数字”等无关文本当守将而凭空虚增危险度。
-     *
-     * 两通道结果合并去重后交给 [DefenderEvaluator.evaluate]；一个都没识别到时，
-     * evaluate 会返回 UNKNOWN（不会误报 SAFE）。nameRoi 为“武将名区”小矩形（供 OCR）。
      */
-    fun evaluateDefenderPanel(nameRoi: Rect): DefenderEvaluator.EvaluationResult? {
+    private fun collectDefenderHeroes(frame: Bitmap, nameRoi: Rect): List<String> {
+        val portraitHeroes = com.stzb.assistant.ocr.DefenderTemplateClassifier.classify(frame)
+        val ocrNames = cropBitmap(frame, nameRoi)?.let { crop ->
+            try {
+                OcrManager.detect(crop)?.textBlocks?.map { it.text.trim().replace(" ", "") }
+                    ?: emptyList()
+            } finally {
+                if (crop !== frame) crop.recycle()
+            }
+        } ?: emptyList()
+        val knownOcrNames = DefenderEvaluator.filterKnownHeroes(ocrNames)
+        Log.d(
+            "EngineBridge",
+            "守军采集: 头像=${portraitHeroes.size} OCR命中=${knownOcrNames.size} 名单=${portraitHeroes + knownOcrNames}"
+        )
+        return (portraitHeroes + knownOcrNames).distinct()
+    }
+
+    /**
+     * 评估守军难度（Lv6/Lv7 双队完整版）。
+     *
+     * 背景：此前只评估面板**当前显示**的那一队，而高等级地块用「守军1/守军2」分页、
+     * 单帧只含一队，于是“取最危险”会低估实际风险。这里补上交互闭环：
+     *  1) 读当前显示队（守军1）；
+     *  2) 用 OCR **确定性定位**「守军2」页签——找不到即判定为单队地块，**绝不盲点坐标**；
+     *  3) 命中则点击切页、重读守军2，把两队守将**并集**交给 [DefenderEvaluator.evaluate]
+     *     （evaluate 对多守将取最危险，故并集=两队里最该警惕的那一个）；
+     *  4) 尽量点回守军1 复原面板，避免停留在第二队误导后续操作。
+     *
+     * 依赖 [tap]/[humanDelay] 故为 suspend；由手动「军师」按钮在协程 + IO 线程内调用。
+     * 页签定位有 OCR 误差：以 [minTabConfidence] 过滤低置信块，且整条链路为手动触发、
+     * 只采信命中守军库的名字，误点风险被限制在“多切一次页”，不会污染危险度。
+     * 一个都没识别到时 [DefenderEvaluator.evaluate] 返回 UNKNOWN（不会误报 SAFE）。
+     */
+    suspend fun evaluateDefenderPanelDual(
+        nameRoi: Rect,
+        teamTabLabel1: String = "守军1",
+        teamTabLabel2: String = "守军2",
+        minTabConfidence: Float = 0.60f,
+    ): DefenderEvaluator.EvaluationResult? {
         val frame = captureFrame() ?: return null
-        return try {
-            // A：确定性头像库识别
-            val portraitHeroes = com.stzb.assistant.ocr.DefenderTemplateClassifier.classify(frame)
-
-            // B：OCR 名字，仅保留命中守军库者
-            val ocrNames = cropBitmap(frame, nameRoi)?.let { crop ->
-                try {
-                    OcrManager.detect(crop)?.textBlocks?.map { it.text.trim().replace(" ", "") }
-                        ?: emptyList()
-                } finally {
-                    if (crop !== frame) crop.recycle()
-                }
-            } ?: emptyList()
-            val knownOcrNames = DefenderEvaluator.filterKnownHeroes(ocrNames)
-
-            val merged = (portraitHeroes + knownOcrNames).distinct()
-            Log.d(
-                "EngineBridge",
-                "守军评估: 头像=${portraitHeroes.size} OCR命中=${knownOcrNames.size} 合计=${merged.size}"
-            )
-            DefenderEvaluator.evaluate(merged)
+        val team1: List<String>
+        val tab2: OcrManager.KeywordMatch?
+        val tab1: OcrManager.KeywordMatch?
+        try {
+            team1 = collectDefenderHeroes(frame, nameRoi)
+            // 切页前两侧页签都在原位（分页只换主区三行，左侧页签不移动）；
+            // 单次全帧 OCR 同时定位两侧页签，避免两次全帧识别的开销。
+            val tabMatches = OcrManager.findKeywords(
+                frame, tabKeywordsOf(teamTabLabel1) + tabKeywordsOf(teamTabLabel2)
+            ).filter { it.confidence >= minTabConfidence }
+            tab2 = tabMatches.firstOrNull { it.matchedFullText.replace(" ", "").contains(teamTabLabel2) }
+            tab1 = tabMatches.firstOrNull { it.matchedFullText.replace(" ", "").contains(teamTabLabel1) }
         } finally {
             frame.recycle()
         }
+
+        var team2: List<String> = emptyList()
+        if (tab2 != null) {
+            if (tap(tab2.centerX, tab2.centerY)) {
+                humanDelay(500, 900)
+                val frame2 = captureFrame()
+                if (frame2 != null) {
+                    team2 = try {
+                        collectDefenderHeroes(frame2, nameRoi)
+                    } finally {
+                        frame2.recycle()
+                    }
+                }
+                if (tab1 != null) {
+                    tap(tab1.centerX, tab1.centerY) // 复原到守军1
+                } else {
+                    Log.d("EngineBridge", "未定位到「$teamTabLabel1」页签，跳过复原。")
+                }
+            } else {
+                Log.w("EngineBridge", "点击「$teamTabLabel2」页签失败，本次仅评估当前显示队。")
+            }
+        } else {
+            Log.d("EngineBridge", "未检出「$teamTabLabel2」页签，判定为单队地块，仅评估当前显示队。")
+        }
+
+        val merged = (team1 + team2).distinct()
+        Log.i(
+            "EngineBridge",
+            "守军评估(双队): 队1=${team1.size} 队2=${team2.size} 合计=${merged.size} " +
+                "头像门槛=${com.stzb.assistant.ocr.DefenderTemplateClassifier.currentMatchThreshold}"
+        )
+        return DefenderEvaluator.evaluate(merged)
+    }
+
+    /** 生成页签检索词：兼容 OCR 在中文字与数字间插入的空格（"守军2"↔"守军 2"）。 */
+    private fun tabKeywordsOf(label: String): List<String> {
+        val spaced = label.replace(Regex("(\\D)(\\d)"), "$1 $2")
+        return listOf(label, spaced).distinct()
     }
 
     /** 从已有全屏位图按矩形裁剪子区域（钳制越界）；矩形覆盖全图时可能直接返回原图。 */

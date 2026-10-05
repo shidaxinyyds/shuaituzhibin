@@ -1,0 +1,11 @@
+scenario,file,expected,got,latency_ms
+stamina,s1.png,88/120,88/120,14
+stamina,s2.png,120/120,120/120,13
+stamina,s3.png,68/120,68/120,15
+coordinate,c1.png,"228,132","228,132",16
+countdown,d1.png,01:24,01:24,15
+countdown,d2.png,1:20:05,01:20:05,17
+ui_text,u1.png,扫荡,扫荡,12
+ui_text,u2.png,出征,出征服,13
+vertical_name,v1.png,陈到,陈到,18
+vertical_name,v2.png,张辽,,20

@@ -1,0 +1,4 @@
+# 设备截屏裁出的 fixture ROI，体积大且不入库。
+fixtures/
+# 本地临时结果，正式留痕请重命名为 results_<date>.csv 再提交。
+results_local.csv

@@ -95,6 +95,10 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private val pickedSiegePoints = mutableListOf<PointF>()
     private var pickedFarmingPoint: PointF? = null
     private var pickedFarmingWorld: Pair<Int, Int>? = null
+    private var pickedGarrisonPoint: PointF? = null
+    private var pickedGarrisonWorld: Pair<Int, Int>? = null
+    private var pickedLevelingPoint: PointF? = null
+    private var pickedLevelingWorld: Pair<Int, Int>? = null
 
     /**
      * 与 [pickedPavingPoints] 一一对应的**世界坐标**（大地图格坐标）。
@@ -170,7 +174,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         UiAnchors.RectKey.DEFENDER_PANEL
     )
     enum class PickTarget {
-        PAVING, IMMUNITY, SIEGE, FARMING,
+        PAVING, IMMUNITY, SIEGE, FARMING, GARRISON, LEVELING,
         /** 标定用：点选一块地，然后把镜头对准点的世界坐标写下来（单点或两点标定）。 */
         CALIBRATION,
         /** 标定用：点选一个"收起浮层时最安全的地图空白点"。 */
@@ -416,6 +420,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val tabFarming = dashboardView?.findViewById<Button>(R.id.tabFarming)
         val tabLogs = dashboardView?.findViewById<Button>(R.id.tabLogs)
         val tabCalibrate = dashboardView?.findViewById<Button>(R.id.tabCalibrate)
+        val tabGarrison = dashboardView?.findViewById<Button>(R.id.tabGarrison)
+        val tabLeveling = dashboardView?.findViewById<Button>(R.id.tabLeveling)
 
         val panelPaving = dashboardView?.findViewById<LinearLayout>(R.id.panelPaving)
         val panelImmunity = dashboardView?.findViewById<LinearLayout>(R.id.panelImmunity)
@@ -427,9 +433,19 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val panelFarming = dashboardView?.findViewById<LinearLayout>(R.id.panelFarming)
         val panelLogs = dashboardView?.findViewById<LinearLayout>(R.id.panelLogs)
         val panelCalibrate = dashboardView?.findViewById<LinearLayout>(R.id.panelCalibrate)
+        val panelGarrison = dashboardView?.findViewById<LinearLayout>(R.id.panelGarrison)
+        val panelLeveling = dashboardView?.findViewById<LinearLayout>(R.id.panelLeveling)
 
-        val tabs = listOf(tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor, tabSchedule, tabLogistics, tabFarming, tabLogs, tabCalibrate)
-        val panels = listOf(panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor, panelSchedule, panelLogistics, panelFarming, panelLogs, panelCalibrate)
+        val tabs = listOf(
+            tabPaving, tabImmunity, tabSiege, tabPatrol, tabAdvisor,
+            tabSchedule, tabLogistics, tabFarming, tabLogs, tabCalibrate,
+            tabGarrison, tabLeveling
+        )
+        val panels = listOf(
+            panelPaving, panelImmunity, panelSiege, panelPatrol, panelAdvisor,
+            panelSchedule, panelLogistics, panelFarming, panelLogs, panelCalibrate,
+            panelGarrison, panelLeveling
+        )
 
         fun switchTab(index: Int) {
             panels.forEachIndexed { i, p -> p?.visibility = if (i == index) View.VISIBLE else View.GONE }
@@ -453,6 +469,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         tabFarming?.setOnClickListener { switchTab(7) }
         tabLogs?.setOnClickListener { switchTab(8) }
         tabCalibrate?.setOnClickListener { switchTab(9) }
+        tabGarrison?.setOnClickListener { switchTab(10) }
+        tabLeveling?.setOnClickListener { switchTab(11) }
 
         switchTab(0)
 
@@ -729,46 +747,55 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         // 🛡️ 评估当前守军 —— 让"打这块地会不会白送兵"这个能力真正可用。
         //
-        // 这条链路此前**没有任何调用方**：`DefenderEvaluator` 与
-        // `EngineBridge.evaluateDefenderPanel` 都写好了，却没人用（需求 5 里的"摆设"）。
-        // 现在给军师页一个手动入口——刻意做成**手动**而不是自动：
-        // 它依赖先打开「查看守军」面板，自动去做会在错误的界面读出无关文字。
+        // 刻意做成**手动**而不是自动：它依赖先打开「查看守军」面板，自动去做会在
+        // 错误的界面读出无关文字。现走**双队版**：自动读 Lv6/7 的守军1+守军2 取最危险。
         root.findViewById<Button>(R.id.btnAdvisorEvaluateDefenders)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
             val roi = com.stzb.assistant.service.UiAnchors.rect(
                 com.stzb.assistant.service.UiAnchors.RectKey.DEFENDER_PANEL
             )
-            val result = EngineBridge.evaluateDefenderPanel(roi)
-            if (result == null) {
-                tvAdvisorStream?.text = buildString {
-                    append("⚠️ 未能评估守军（没有拿到守军名单）。\n")
-                    append("文字识别状态：")
-                    append(
-                        com.stzb.assistant.ocr.OcrManager.unavailableReason
-                            ?: "引擎已就绪，但该区域未识别到文字"
-                    )
-                    append("\n请先打开「查看守军」面板再点此按钮；")
-                    append("若识别区域不准，可到「标定」页签标定「查看守军·武将名单区」。")
+            // 双队评估含抓帧/OCR/切页点击，重且会挂起，故放协程 + IO 线程，避免卡住浮层主线程。
+            tvAdvisorStream?.text = "正在评估守军（自动读取 Lv6/7 双队）…"
+            tvAdvisorMetrics?.text = "状态: 守军评估中…"
+            scope.launch {
+                val result = try {
+                    withContext(Dispatchers.IO) { EngineBridge.evaluateDefenderPanelDual(roi) }
+                } catch (e: Throwable) {
+                    android.util.Log.e("Overlay", "守军双队评估异常", e)
+                    null
                 }
-                tvAdvisorMetrics?.text = "状态: 守军评估失败（未拿到守军名单）"
-            } else {
-                tvAdvisorStream?.text = buildString {
-                    append(result.tier.desc).append('\n')
-                    append(result.recommendation).append('\n')
-                    append("综合风险分: ").append(result.totalRiskScore).append('\n')
-                    if (result.matchedDefenders.isEmpty()) {
-                        append("\n（未匹配到知识库中的守将，按常规守军处理）")
-                    } else {
-                        append("\n命中守将:\n")
-                        result.matchedDefenders.forEach { m ->
-                            append("  • ").append(m.name).append(" → ").append(m.tier.desc)
-                                .append("｜").append(m.tag).append('\n')
-                            append("    克制建议: ").append(m.counterTip).append('\n')
-                        }
+                if (result == null) {
+                    tvAdvisorStream?.text = buildString {
+                        append("⚠️ 未能评估守军（没有拿到守军名单）。\n")
+                        append("文字识别状态：")
+                        append(
+                            com.stzb.assistant.ocr.OcrManager.unavailableReason
+                                ?: "引擎已就绪，但该区域未识别到文字"
+                        )
+                        append("\n请先打开「查看守军」面板再点此按钮；")
+                        append("若识别区域不准，可到「标定」页签标定「查看守军·武将名单区」。")
                     }
+                    tvAdvisorMetrics?.text = "状态: 守军评估失败（未拿到守军名单）"
+                } else {
+                    tvAdvisorStream?.text = buildString {
+                        append(result.tier.desc).append('\n')
+                        append(result.recommendation).append('\n')
+                        append("综合风险分: ").append(result.totalRiskScore).append('\n')
+                        if (result.matchedDefenders.isEmpty()) {
+                            append("\n（未匹配到知识库中的守将，按常规守军处理）")
+                        } else {
+                            append("\n命中守将:\n")
+                            result.matchedDefenders.forEach { m ->
+                                append("  • ").append(m.name).append(" → ").append(m.tier.desc)
+                                    .append("｜").append(m.tag).append('\n')
+                                append("    克制建议: ").append(m.counterTip).append('\n')
+                            }
+                        }
+                        append("\n（Lv6/7 双队已自动合并取最危险；单队地块不受影响）")
+                    }
+                    tvAdvisorMetrics?.text =
+                        "状态: 守军评估完成（识别到 ${result.matchedDefenders.size} 名守将）"
                 }
-                tvAdvisorMetrics?.text =
-                    "状态: 守军评估完成（识别到 ${result.matchedDefenders.size} 名守将）"
             }
         }
 
@@ -1142,6 +1169,17 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             dlg.show()
         }
 
+        // 守军头像阈值现场校准：真机 MediaProjection 抓帧与截图非同一路径、分数会整体下移。
+        // 首次真机按 classify 日志（含各槽最高分与当前门槛）把门槛挪到“能覆盖真机、又不误认”的位置。
+        // 越界（0.50~0.95 之外）由 setMatchThreshold 拒绝并保留原值，这里只按 ±0.02 步进。
+        val defThreshStep = 0.02f
+        root.findViewById<Button>(R.id.btnCalibDefThreshDown)?.setOnClickListener {
+            adjustDefenderThreshold(-defThreshStep)
+        }
+        root.findViewById<Button>(R.id.btnCalibDefThreshUp)?.setOnClickListener {
+            adjustDefenderThreshold(defThreshStep)
+        }
+
         root.findViewById<Button>(R.id.btnCalibReset)?.setOnClickListener {
             com.stzb.assistant.service.MapProjection.clearCalibration()
             com.stzb.assistant.service.UiAnchors.clearAllCalibration()
@@ -1221,6 +1259,119 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 )
             )
             hideDashboard()
+        }
+
+        // ------------------------------------------------------
+        // panelGarrison: PVP 驻守剥皮透视与 PVE 软柿子雷达
+        // ------------------------------------------------------
+        root.findViewById<Button>(R.id.btnPickGarrisonTarget)?.setOnClickListener {
+            startCrosshairPicker(PickTarget.GARRISON)
+        }
+
+        root.findViewById<Button>(R.id.btnStartGarrisonStrip)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val bookmark = root.findViewById<EditText>(R.id.etGarrisonBookmark)?.text?.toString()?.trim()
+            val targetP = pickedGarrisonPoint
+            if (targetP == null && pickedGarrisonWorld == null && bookmark.isNullOrBlank()) {
+                Toast.makeText(context, "请先点选目标地块或填写官方书签", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            pipeline.startGarrisonStripping(
+                com.stzb.assistant.tactics.GarrisonStripperFlow.GarrisonConfig(
+                    targetTileCoord = targetP,
+                    targetWorldCoord = pickedGarrisonWorld,
+                    bookmarkName = bookmark?.takeIf { it.isNotBlank() },
+                    spartanTroopSlot = 5,
+                    autoDispatchCounter = false
+                )
+            )
+            hideDashboard()
+        }
+
+        root.findViewById<Button>(R.id.btnStartSoftTileRadar)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val bookmark = root.findViewById<EditText>(R.id.etGarrisonBookmark)?.text?.toString()?.trim()
+            val targetP = pickedGarrisonPoint
+            pipeline.startSoftTileRadar(
+                com.stzb.assistant.tactics.SoftTileRadarFlow.RadarConfig(
+                    centerCoord = targetP,
+                    centerWorldCoord = pickedGarrisonWorld,
+                    bookmarkName = bookmark?.takeIf { it.isNotBlank() },
+                    scanRadiusTiles = 2,
+                    targetMinLevel = 6,
+                    targetMaxLevel = 9,
+                    maxScanCount = 12
+                )
+            )
+            hideDashboard()
+        }
+
+        root.findViewById<Button>(R.id.btnBindToLeveling)?.setOnClickListener {
+            val best = pipeline.softTileRadarFlow.getBestSoftTile()
+            if (best != null) {
+                pickedLevelingPoint = best.canvasCoord
+                pickedLevelingWorld = best.worldCoord
+                root.findViewById<TextView>(R.id.tvLevelingTargetCoord)?.text =
+                    "练级地: (${best.canvasCoord.x.toInt()}, ${best.canvasCoord.y.toInt()})${worldSuffix(best.worldCoord)}"
+                root.findViewById<EditText>(R.id.etLevelingTileLevel)?.setText(best.level.toString())
+                Toast.makeText(context, "已将最优地 Lv.${best.level}(${best.rating}) 绑定至练级流水线", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "尚未探测到可用软柿子地块，请先运行雷达扫描", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // ------------------------------------------------------
+        // panelLeveling: 全赛季二三队低损速升 40 级流水线
+        // ------------------------------------------------------
+        root.findViewById<Button>(R.id.btnPickLevelingTarget)?.setOnClickListener {
+            startCrosshairPicker(PickTarget.LEVELING)
+        }
+
+        root.findViewById<Button>(R.id.btnStartLeveling)?.setOnClickListener {
+            if (!ensureLicense()) return@setOnClickListener
+            if (!ensureEngineReady()) return@setOnClickListener
+
+            val slotAText = root.findViewById<EditText>(R.id.etLevelingSlotA)?.text?.toString()
+            val slotBText = root.findViewById<EditText>(R.id.etLevelingSlotB)?.text?.toString()
+            val lvlText = root.findViewById<EditText>(R.id.etLevelingTileLevel)?.text?.toString()
+
+            val slotA = slotAText?.toIntOrNull() ?: 2
+            val slotB = slotBText?.toIntOrNull() ?: 3
+            val lvl = lvlText?.toIntOrNull() ?: 7
+
+            val targetP = pickedLevelingPoint
+            if (targetP == null && pickedLevelingWorld == null) {
+                Toast.makeText(context, "请先点选练级地块或从雷达一键绑定", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            pipeline.startSquadLeveling(
+                com.stzb.assistant.tactics.SquadLevelingFlow.LevelingConfig(
+                    targetTileCoord = targetP,
+                    targetWorldCoord = pickedLevelingWorld,
+                    tileLevel = lvl,
+                    squadSlotA = slotA,
+                    squadSlotB = slotB,
+                    staminaMinThreshold = 20,
+                    maxCasualtyRate = 0.15f,
+                    minHealthPercent = 0.70f,
+                    haltOnSevereInjury = true,
+                    autoReplenishReserves = true,
+                    maxRounds = 15
+                )
+            )
+            hideDashboard()
+        }
+
+        root.findViewById<Button>(R.id.btnStopLeveling)?.setOnClickListener {
+            pipeline.squadLevelingFlow.stop()
+            root.findViewById<TextView>(R.id.tvLevelingLiveStatus)?.text = "练级已停止"
+            Toast.makeText(context, "二三队低损练级流水线已终止", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -1338,7 +1489,31 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             // 单次失败说明不了问题（一次过渡动画也会失败），要看的是成功率与
             // "整帧无文字"的比例——这才是"识别在退化"的可观测信号。
             append('\n').append(com.stzb.assistant.ocr.RecognitionHealth.summary())
+            // 守军头像阈值：真机识别不灵时，这是第一个该看的旋钮（配合 classify 日志微调）。
+            append('\n')
+            append("守军头像阈值：")
+                .append("%.3f".format(com.stzb.assistant.ocr.DefenderTemplateClassifier.currentMatchThreshold))
+                .append("（可用上方「守军阈值 ±」按真机日志微调，区间 0.50~0.95）")
         }
+    }
+
+    /**
+     * 步进调整守军头像采信门槛并反馈。越界时分类器拒绝并保留原值（返回 false），
+     * 这里如实提示“已到边界”，不谎报成功。
+     */
+    private fun adjustDefenderThreshold(delta: Float) {
+        val classifier = com.stzb.assistant.ocr.DefenderTemplateClassifier
+        val applied = classifier.setMatchThreshold(classifier.currentMatchThreshold + delta)
+        Toast.makeText(
+            context,
+            if (applied) {
+                "守军头像阈值 → ${"%.3f".format(classifier.currentMatchThreshold)}（下次评估即生效）"
+            } else {
+                "已到边界 [0.50, 0.95]，阈值保持不变（再低会误认守将，再高会几乎全拒）"
+            },
+            Toast.LENGTH_SHORT
+        ).show()
+        refreshCalibrateDisplay()
     }
 
     /**
@@ -2310,6 +2485,22 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     if (p == null) "屯田地块：尚未点选（优先 Lv.5+ 最高收益地）"
                     else "屯田地块: (${p.x.toInt()}, ${p.y.toInt()})${worldSuffix(pickedFarmingWorld)}"
             }
+            PickTarget.GARRISON -> {
+                val p = pts.firstOrNull()
+                pickedGarrisonPoint = p
+                pickedGarrisonWorld = p?.let { com.stzb.assistant.service.MapProjection.screenToWorld(it.x, it.y) }
+                dashboardView?.findViewById<TextView>(R.id.tvGarrisonTargetCoord)?.text =
+                    if (p == null) "目标: 未设定"
+                    else "目标: (${p.x.toInt()}, ${p.y.toInt()})${worldSuffix(pickedGarrisonWorld)}"
+            }
+            PickTarget.LEVELING -> {
+                val p = pts.firstOrNull()
+                pickedLevelingPoint = p
+                pickedLevelingWorld = p?.let { com.stzb.assistant.service.MapProjection.screenToWorld(it.x, it.y) }
+                dashboardView?.findViewById<TextView>(R.id.tvLevelingTargetCoord)?.text =
+                    if (p == null) "练级地: 未设定"
+                    else "练级地: (${p.x.toInt()}, ${p.y.toInt()})${worldSuffix(pickedLevelingWorld)}"
+            }
             PickTarget.CALIBRATION_BLANK -> {
                 val p = pts.firstOrNull()
                 if (p != null) {
@@ -2524,7 +2715,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             farmingWorldTarget = pickedFarmingWorld,
             farmingBookmark = null,
             farmingTroopSlot = 2,
-            autoFarmingEnabled = (pickedFarmingPoint != null || pickedFarmingWorld != null)
+            autoFarmingEnabled = (pickedFarmingPoint != null || pickedFarmingWorld != null),
+            autoLevelingEnabled = (pickedLevelingPoint != null || pickedLevelingWorld != null),
+            levelingTarget = pickedLevelingPoint,
+            levelingWorldTarget = pickedLevelingWorld,
+            levelingBookmark = null,
+            levelingSlotA = 2,
+            levelingSlotB = 3,
+            levelingTileLevel = 7
         )
 
     private fun toggleAutoPilot() {
@@ -2570,15 +2768,15 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             // 保持军师面板文本的持久性，仅在状态变化时更新 metrics 状态，不抹除军令与战报诊断流
             val stream = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
             if (stream?.text.isNullOrBlank()) {
-                // 把"敌袭巡检守护是否真的在跑"如实传进去：
-                // 引擎自己无从得知，不传的话它只能编一句"雷达哨兵保持巡查"。
-                // 必须用 isRaidPatrolActive：哨兵登记的类型是 NIGHT_SENTINEL，
-                // 直接判 RAID_DEFENSE 会恒为 false，导致军师面板谎报"未巡查"。
                 val patrolRunning = pipeline.isRaidPatrolActive
                 val advisorThought = edgeSlmEngine.generateAdvisorLiveStream(
                     detail, lastExtractedOrder, patrolRunning
                 )
                 stream?.text = "【军师推演】$advisorThought"
+            }
+
+            if (taskType == TacticalState.TaskType.SQUAD_LEVELING) {
+                dashboardView?.findViewById<TextView>(R.id.tvLevelingLiveStatus)?.text = "流水线状态: $detail"
             }
         }
     }
@@ -2588,6 +2786,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             val tvLogs = dashboardView?.findViewById<TextView>(R.id.tvInGameLogs) ?: return@post
             val current = tvLogs.text.toString()
             tvLogs.text = "[${log.level}] ${log.message}\n$current"
+
+            if (log.taskType == TacticalState.TaskType.GARRISON_RADAR && log.message.contains("透视")) {
+                dashboardView?.findViewById<TextView>(R.id.tvGarrisonHudCard)?.text = log.message
+            }
+            if (log.taskType == TacticalState.TaskType.SOFT_TILE_RADAR && (log.message.contains("雷达") || log.message.contains("发现守军"))) {
+                dashboardView?.findViewById<TextView>(R.id.tvSoftTileLeaderboard)?.text = log.message
+            }
         }
     }
 

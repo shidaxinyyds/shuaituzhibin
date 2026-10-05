@@ -42,6 +42,9 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     val nightSentinelFlow: NightSentinelFlow get() = raidDefenseFlow
     val dailyLogisticsFlow = DailyLogisticsFlow(context, this)
     val accurateFarmingFlow = AccurateFarmingFlow(context, this)
+    val garrisonStripperFlow = GarrisonStripperFlow(context, this)
+    val softTileRadarFlow = SoftTileRadarFlow(context, this)
+    val squadLevelingFlow = SquadLevelingFlow(context, this)
 
     private val listeners = CopyOnWriteArrayList<TacticalState.TacticalEventListener>()
     private val logHistory = CopyOnWriteArrayList<TacticalState.TacticalLog>()
@@ -427,6 +430,33 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
     }
 
     /**
+     * 启动 PVP 驻守剥皮透视与反打任务
+     */
+    fun startGarrisonStripping(config: GarrisonStripperFlow.GarrisonConfig) {
+        launchTask(TacticalState.TaskType.GARRISON_RADAR) {
+            garrisonStripperFlow.execute(config)
+        }
+    }
+
+    /**
+     * 启动 PVE 软柿子雷达扫描任务
+     */
+    fun startSoftTileRadar(config: SoftTileRadarFlow.RadarConfig) {
+        launchTask(TacticalState.TaskType.SOFT_TILE_RADAR) {
+            softTileRadarFlow.execute(config)
+        }
+    }
+
+    /**
+     * 启动二三队低损速升 40 级练级流水线
+     */
+    fun startSquadLeveling(config: SquadLevelingFlow.LevelingConfig) {
+        launchTask(TacticalState.TaskType.SQUAD_LEVELING) {
+            squadLevelingFlow.execute(config)
+        }
+    }
+
+    /**
      * 仅停止当前正在执行的任务（不影响其它已登记的后台守护）
      */
     fun stopCurrentTask() {
@@ -435,17 +465,15 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
             TacticalState.TaskType.ROAD_PAVING -> roadPavingFlow.stop()
             // 破免流有自己的运行标志，必须显式复位。
             TacticalState.TaskType.IMMUNITY_BREAK -> immunityBreakFlow.stop()
-            // ⚠️ 修正错位：TACTICAL_SCHEDULE 的任务体就是本类内部的 executeTimedDispatch，
-            // 取消 currentJob 即可收尾；此前它被错并到 IMMUNITY_BREAK 那一支，
-            // 等于"停定时任务却去停了破免流"。
-            // （它内部若下发了破免，activeTaskType 早已被 launchTask 改成 IMMUNITY_BREAK，
-            //   会走上面那条分支，所以这里什么都不用做。）
             TacticalState.TaskType.TACTICAL_SCHEDULE -> {}
             TacticalState.TaskType.SIEGE_SYNC -> siegeSyncFlow.stop()
             TacticalState.TaskType.RAID_DEFENSE,
             TacticalState.TaskType.NIGHT_SENTINEL -> raidDefenseFlow.stop()
             TacticalState.TaskType.LOGISTICS_STEWARD -> dailyLogisticsFlow.stop()
             TacticalState.TaskType.FARMING_STEWARD -> accurateFarmingFlow.stop()
+            TacticalState.TaskType.GARRISON_RADAR -> garrisonStripperFlow.stop()
+            TacticalState.TaskType.SOFT_TILE_RADAR -> softTileRadarFlow.stop()
+            TacticalState.TaskType.SQUAD_LEVELING -> squadLevelingFlow.stop()
             else -> {}
         }
         currentJob?.cancel()
@@ -465,6 +493,9 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
         siegeSyncFlow.stop()
         dailyLogisticsFlow.stop()
         accurateFarmingFlow.stop()
+        garrisonStripperFlow.stop()
+        softTileRadarFlow.stop()
+        squadLevelingFlow.stop()
         AlarmRinger.stopAlarm(context)
 
         // 夜战守护是独立后台 Job，总控急停必须显式收掉它。

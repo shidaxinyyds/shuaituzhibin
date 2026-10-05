@@ -55,6 +55,20 @@ def die(code, m):
     sys.exit(code)
 
 
+def _is_valid_onnx(path):
+    """真 ONNX 是 protobuf（首字节 0x08=ir_version），不是 ASCII 'ONNX'。
+    用 onnx 解析做权威校验；缺 onnx 时退回 protobuf 头启发式。"""
+    try:
+        import onnx
+        m = onnx.load(path)
+        return bool(m.graph) and len(m.graph.node) > 0
+    except ImportError:
+        with open(path, "rb") as fh:
+            return fh.read(1) == b"\x08"
+    except Exception:
+        return False
+
+
 def ensure_mirror():
     if not os.environ.get("HF_ENDPOINT"):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
@@ -89,24 +103,43 @@ def export_onnx(base_dir, out_fp32):
 
     try:
         import torch
+        import torch.nn as nn
         from transformers import AutoModel
     except ImportError:
         die(2, "需要 optimum 或 (torch + transformers) 来导出 ONNX。")
     model = AutoModel.from_pretrained(base_dir)
     model.eval()
+    # transformers>=4.5x/5.x 给 BertModel.forward 套了输出捕获装饰器，
+    # 直接把它当顶层模块 torch.onnx.export 会报 "multiple values for argument 'use_cache'"。
+    # 用一层干净 wrapper（内部一律用 kwargs 调 bert）即可绕开，跨版本稳定。
+    class _BertEncoderWrapper(nn.Module):
+        def __init__(self, bert):
+            super().__init__()
+            self.bert = bert
+
+        def forward(self, input_ids, attention_mask, token_type_ids):
+            out = self.bert(input_ids=input_ids, attention_mask=attention_mask,
+                            token_type_ids=token_type_ids)
+            return out.last_hidden_state
+
+    wrapper = _BertEncoderWrapper(model)
+    wrapper.eval()
     if os.path.isdir(out_fp32):
         shutil.rmtree(out_fp32)
     os.makedirs(out_fp32, exist_ok=True)
-    dummy = {
-        "input_ids": torch.ones(1, 8, dtype=torch.long),
-        "attention_mask": torch.ones(1, 8, dtype=torch.long),
-        "token_type_ids": torch.zeros(1, 8, dtype=torch.long),
-    }
+    dummy_ids = torch.ones(1, 8, dtype=torch.long)
+    dummy_am = torch.ones(1, 8, dtype=torch.long)
+    dummy_tt = torch.zeros(1, 8, dtype=torch.long)
     # 动态轴，配合端侧变长输入
     torch.onnx.export(
-        model, ({k: v for k, v in dummy.items()},), os.path.join(out_fp32, "model.onnx"),
-        opset=14, input_names=list(dummy.keys()), output_names=["last_hidden_state"],
-        dynamic_axes={k: {0: "batch", 1: "seq"} for k in dummy} | {"last_hidden_state": {0: "batch", 1: "seq"}},
+        wrapper, (dummy_ids, dummy_am, dummy_tt), os.path.join(out_fp32, "model.onnx"),
+        opset_version=14,
+        input_names=["input_ids", "attention_mask", "token_type_ids"],
+        output_names=["last_hidden_state"],
+        dynamic_axes={"input_ids": {0: "batch", 1: "seq"},
+                      "attention_mask": {0: "batch", 1: "seq"},
+                      "token_type_ids": {0: "batch", 1: "seq"},
+                      "last_hidden_state": {0: "batch", 1: "seq"}},
         do_constant_folding=True,
     )
     return os.path.join(out_fp32, "model.onnx")
@@ -117,15 +150,14 @@ def quantize_int8(fp32, out_int8):
         from onnxruntime.quantization import quantize_dynamic, QuantType
     except ImportError:
         die(2, "需要 onnxruntime 做 INT8 量化：pip install onnxruntime")
-    quantize_dynamic(fp32, out_int8, weight_type=QuantType.INT8)
+    quantize_dynamic(fp32, out_int8, weight_type=QuantType.QInt8)
     return out_int8
 
 
 def place(onnx_int8, base_dir):
     os.makedirs(ASSETS_MODELS, exist_ok=True)
-    with open(onnx_int8, "rb") as fh:
-        if fh.read(4) != ONNX_MAGIC:
-            die(1, "量化后的 %s 头魔数不是 ONNX，导出异常。" % onnx_int8)
+    if not _is_valid_onnx(onnx_int8):
+        die(1, "量化后的 %s 不是可解析的 ONNX 模型，导出异常。" % onnx_int8)
     size = os.path.getsize(onnx_int8)
     if size > MAX_MB * 1048576:
         die(1, "INT8 ONNX %.1fMB 超预算 %dMB，请换更小档位。" % (size / 1048576, MAX_MB))

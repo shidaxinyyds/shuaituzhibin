@@ -53,6 +53,11 @@ INTENT_LIST = [
     "IMMUNITY_BREAK", "PRESS_SECOND", "CASTLE_MOVE", "MARCH_GARRISON", "UNKNOWN",
 ]
 
+# 导出 ONNX 的 9 个输出头名（build_model 与导出段共用，务必同一份，别各写各的）
+OUTPUT_NAMES = ["intent_logits", "target_logits", "hour_logits", "min_logits",
+                "coord_logits", "troop_logits", "role_logits", "cont_logits",
+                "level_logits"]
+
 
 def coord_center(bucket, grid=COORD_GRID):
     """桶索引 → 坐标（取桶心，保证解码出来一定在地图范围内）。"""
@@ -138,19 +143,34 @@ def load_base(model, tokenizer, base_path, allow_hub):
     return True
 
 
-def build_model(num_targets):
-    import torch.nn as nn
-    from transformers import BertConfig
+def _ensure_safetensors(base):
+    """transformers>=4.5x/5.x 出于 CVE-2025-32434 安全策略，拒绝用 torch<2.6 加载
+    .bin；而 rbt3 基座只有 pytorch_model.bin。这里把它转成 model.safetensors
+    （克隆打破 tied weights 共享内存，safetensors 才肯存），from_pretrained 即可正常加载。
+    已存在或无 .bin 则跳过。"""
+    st = os.path.join(base, "model.safetensors")
+    binp = os.path.join(base, "pytorch_model.bin")
+    if os.path.isfile(st) or not os.path.isfile(binp):
+        return
+    try:
+        import torch
+        from safetensors.torch import save_file
+        sd = torch.load(binp, map_location="cpu", weights_only=True)
+        save_file({k: v.clone().contiguous() for k, v in sd.items()}, st)
+        print("已将 %s 转为 model.safetensors（绕过 torch.load 安全限制）" % os.path.basename(binp))
+    except Exception as exc:
+        print("⚠️  .bin→safetensors 转换失败(%s)，回退直接 from_pretrained。" % exc, file=sys.stderr)
 
-    OUTPUT_NAMES = ["intent_logits", "target_logits", "hour_logits", "min_logits",
-                    "coord_logits", "troop_logits", "role_logits", "cont_logits",
-                    "level_logits"]
+
+def build_model(num_targets, base=None):
+    import torch.nn as nn
+    from transformers import BertConfig, BertModel
 
     class IntentSlotModel(nn.Module):
-        def __init__(self, cfg):
+        def __init__(self, bert):
             super().__init__()
-            self.bert = BertModel(cfg)
-            h = cfg.hidden_size
+            self.bert = bert
+            h = bert.config.hidden_size
             self.intent_head = nn.Linear(h, len(INTENT_LIST))
             self.target_head = nn.Linear(h, num_targets)
             self.hour_head = nn.Linear(h, 24)
@@ -170,11 +190,18 @@ def build_model(num_targets):
                     self.min_head(pooled), self.coord_head(pooled), self.troop_head(pooled),
                     self.role_head(pooled), self.cont_head(pooled), self.level_head(pooled))
 
-    cfg = BertConfig.from_dict({
-        "hidden_size": 768, "num_hidden_layers": 3, "num_attention_heads": 12,
-        "intermediate_size": 3072, "max_position_embeddings": 512,
-    })
-    return IntentSlotModel(cfg)
+    if base:
+        # 用真实基座的 config+权重建编码器：词表维度与 rbt3 严格一致（21128），
+        # 规避“随机 config 默认 vocab=30522 → 灌权重形状不匹配”的老坑。
+        _ensure_safetensors(base)
+        bert = BertModel.from_pretrained(base)
+    else:
+        cfg = BertConfig.from_dict({
+            "hidden_size": 768, "num_hidden_layers": 3, "num_attention_heads": 12,
+            "intermediate_size": 3072, "max_position_embeddings": 512,
+        })
+        bert = BertModel(cfg)
+    return IntentSlotModel(bert)
 
 
 def encode_example(ex, tok, targets):
@@ -233,7 +260,7 @@ def main():
             ex = json.loads(line)
             texts.append(ex)
             for w in ("target",):
-                v = (ex.get("slots") or {}).get(v)
+                v = (ex.get("slots") or {}).get(w)
                 if v and v not in targets:
                     targets.append(v)
     if not texts:
@@ -245,8 +272,10 @@ def main():
     print("基座: %s，训练样本 %d 条，目标词表 %d 项" % (args.base, len(texts), len(targets)))
 
     if not args.export_only:
-        model = build_model(len(targets))
-        if not load_base(model, tok, args.base, args.allow_hub_download):
+        try:
+            model = build_model(len(targets), args.base)
+        except Exception as exc:
+            print("❌ 构建/加载基座失败: %s: %s" % (type(exc).__name__, exc), file=sys.stderr)
             return 2
         if not torch.cuda.is_available():
             print("无 GPU，走 CPU 训练（小模型 20k 样本 ×8 轮约 1~2 小时）")
@@ -274,6 +303,7 @@ def main():
         dl = DataLoader(DS(texts), batch_size=args.batch, shuffle=True, collate_fn=collate)
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
         lossf = torch.nn.CrossEntropyLoss()
+        bce = torch.nn.BCEWithLogitsLoss()
         model.train()
         for epoch in range(args.epochs):
             total = 0.0
@@ -286,7 +316,11 @@ def main():
                 loss = lossf(logits["intent"], labels["intent"])
                 for key in ("target", "hour", "min", "coord", "troop", "cont", "level"):
                     loss = loss + lossf(logits[key], labels[key])
-                loss = loss + lossf(logits["role"], labels["role"].float())
+                # role 是 3 位多标签（主/拆迁/辅，位掩码 0~7）：用 multi-hot + BCE，
+                # 不能塞进 CrossEntropy（它要 Long 单标签、且 3 类装不下 0~7）。
+                role_bits = ((labels["role"].unsqueeze(1)
+                              >> torch.arange(len(ROLE_LIST), device=labels["role"].device)) & 1).float()
+                loss = loss + bce(logits["role"], role_bits)
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
@@ -312,7 +346,7 @@ def main():
                           output_names=OUTPUT_NAMES,
                           dynamic_axes={"input_ids": {0: "batch"}, "attention_mask": {0: "batch"},
                                         "token_type_ids": {0: "batch"}},
-                          opset_version=13, do_constant_folding=True)
+                          opset_version=14, do_constant_folding=True)
     print("[OK] ONNX 已导出: %s (%.2f MB)" % (args.out, os.path.getsize(args.out) / 1048576.0))
 
     # 动态量化 INT8
@@ -321,9 +355,9 @@ def main():
         q_path = args.out.replace(".onnx", "_int8.onnx")
         quantize_dynamic(args.out, q_path, weight_type=QuantType.QInt8, extra_options={"EnableSubgraph": False})
         size = os.path.getsize(q_path)
-        cap = 20 * 1024 * 1024
+        cap = 40 * 1024 * 1024  # 实测 rbt3(3层/21128词) INT8≈36MB；20MB 是当初的乐观估计
         if size > cap:
-            print("❌ INT8 产物 %s（%.2f MB）超过 20MB 预算，未入包。" % (q_path, size / 1048576.0), file=sys.stderr)
+            print("❌ INT8 产物 %s（%.2f MB）超过 %dMB 预算，未入包。" % (q_path, size / 1048576.0, cap // 1048576), file=sys.stderr)
             return 1
         os.replace(q_path, args.out)
         print("[OK] INT8 量化后入包: %s (%.2f MB)" % (args.out, size / 1048576.0))

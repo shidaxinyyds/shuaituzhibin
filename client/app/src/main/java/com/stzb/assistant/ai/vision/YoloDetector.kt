@@ -39,7 +39,17 @@ class YoloDetector(private val context: Context) {
         TILE_ENEMY_RED(7, "敌对红地", 0.8f, 2.5f),
         TILE_RESOURCE(8, "资源地块", 0.8f, 2.5f),
         TROOP_RED_LINE(9, "敌军行军红线", 0.1f, 10.0f),
-        CITY_GATE(10, "关卡要塞", 0.8f, 3.0f);
+        CITY_GATE(10, "关卡要塞", 0.8f, 3.0f),
+
+        // ---- Phase D：部队兵种 & 建筑（多目标）。id 必须与 tools/train_yolo/data.yaml 严格对齐，错位=检错目标。----
+        // 诚实边界：下列类**仅由 ncnn 权重检出**；几何色度容灾通道不含它们（无权重时检不到=如实为空，不臆造）。
+        TROOP_CAVALRY(11, "骑兵", 0.6f, 1.6f),
+        TROOP_SHIELD(12, "盾兵", 0.6f, 1.6f),
+        TROOP_ARCHER(13, "弓兵", 0.6f, 1.6f),
+        TROOP_SPEARMAN(14, "枪兵", 0.6f, 1.6f),
+        BUILDING_CAMP(15, "营寨", 0.8f, 2.5f),
+        BUILDING_TOWER(16, "箭塔", 0.5f, 1.6f),
+        BUILDING_FARM(17, "屯田", 0.8f, 2.5f);
 
         companion object {
             fun fromId(id: Int): DetectionClass = entries.firstOrNull { it.id == id } ?: BUTTON_ATTACK

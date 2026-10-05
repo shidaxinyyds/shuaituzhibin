@@ -183,6 +183,30 @@
                 android:text="标定"
                 android:textColor="#B0BEC5"
                 android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabGarrison"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_tab_inactive"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="透视"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/tabLeveling"
+                android:layout_width="wrap_content"
+                android:layout_height="26dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/bg_tab_inactive"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="练级"
+                android:textColor="#B0BEC5"
+                android:textSize="11sp" />
         </LinearLayout>
     </HorizontalScrollView>
 
@@ -977,6 +1001,36 @@
                         android:textColor="#FFFFFF"
                         android:textSize="11sp" />
 
+                    <!-- 守军头像阈值：真机抓帧分数整体低于截图，需现场步进微调；
+                         区间 0.50~0.95 由分类器兜底，越界自动拒绝，这里只按 ±0.02 挪。 -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnCalibDefThreshDown"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_pill"
+                            android:text="🛡️ 守军阈值 −0.02"
+                            android:textColor="#FFFFFF"
+                            android:textSize="11sp" />
+
+                        <Button
+                            android:id="@+id/btnCalibDefThreshUp"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_pill"
+                            android:text="🛡️ 守军阈值 +0.02"
+                            android:textColor="#FFFFFF"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+
                     <Button
                         android:id="@+id/btnCalibReset"
                         android:layout_width="match_parent"
@@ -986,6 +1040,319 @@
                         android:text="清除全部标定"
                         android:textColor="#EF9A9A"
                         android:textSize="11sp" />
+                </LinearLayout>
+            </ScrollView>
+        </LinearLayout>
+
+        <!-- 11. 驻守剥皮透视与雷达面板 -->
+        <LinearLayout
+            android:id="@+id/panelGarrison"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scrollbars="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="PVP 驻守剥皮透视与 PVE 软柿子雷达"
+                        android:textColor="#90CAF9"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="28dp"
+                        android:layout_marginTop="3dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnPickGarrisonTarget"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:background="@drawable/bg_pill"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:text="点选目标"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <TextView
+                            android:id="@+id/tvGarrisonTargetCoord"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="目标: 未设定"
+                            android:textColor="#E0E0E0"
+                            android:textSize="10sp" />
+
+                        <EditText
+                            android:id="@+id/etGarrisonBookmark"
+                            android:layout_width="90dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:background="@drawable/bg_pill"
+                            android:hint="书签标记"
+                            android:paddingStart="6dp"
+                            android:paddingEnd="6dp"
+                            android:textColor="#FFFFFF"
+                            android:textColorHint="#78909C"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="28dp"
+                        android:layout_marginTop="4dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnStartGarrisonStrip"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_primary"
+                            android:text="⚔️ 100兵剥皮透视"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <Button
+                            android:id="@+id/btnStartSoftTileRadar"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_pill"
+                            android:text="📡 扫周边软柿子"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvGarrisonHudCard"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:background="#26000000"
+                        android:padding="4dp"
+                        android:text="透视结果：等待 100 兵碰撞战报..."
+                        android:textColor="#B0BEC5"
+                        android:textSize="10sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="26dp"
+                        android:layout_marginTop="3dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/tvSoftTileLeaderboard"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="雷达：就绪"
+                            android:textColor="#81C784"
+                            android:textSize="10sp" />
+
+                        <Button
+                            android:id="@+id/btnBindToLeveling"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:background="@drawable/bg_pill"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:text="绑定到练级"
+                            android:textColor="#FFD54F"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </ScrollView>
+        </LinearLayout>
+
+        <!-- 12. 二三队低损速升 40 级练级面板 -->
+        <LinearLayout
+            android:id="@+id/panelLeveling"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:scrollbars="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="全赛季二三队低损速升 40 级流水线"
+                        android:textColor="#FFD54F"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="28dp"
+                        android:layout_marginTop="3dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnPickLevelingTarget"
+                            android:layout_width="wrap_content"
+                            android:layout_height="match_parent"
+                            android:background="@drawable/bg_pill"
+                            android:paddingStart="8dp"
+                            android:paddingEnd="8dp"
+                            android:text="点选练级地"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <TextView
+                            android:id="@+id/tvLevelingTargetCoord"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="6dp"
+                            android:layout_weight="1"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:text="练级地: 未设定"
+                            android:textColor="#E0E0E0"
+                            android:textSize="10sp" />
+
+                        <EditText
+                            android:id="@+id/etLevelingTileLevel"
+                            android:layout_width="38dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:background="@drawable/bg_pill"
+                            android:gravity="center"
+                            android:hint="Lv"
+                            android:text="7"
+                            android:textColor="#FFFFFF"
+                            android:textColorHint="#78909C"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="26dp"
+                        android:layout_marginTop="3dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="双队轮换:"
+                            android:textColor="#CFD8DC"
+                            android:textSize="10sp" />
+
+                        <EditText
+                            android:id="@+id/etLevelingSlotA"
+                            android:layout_width="36dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:background="@drawable/bg_pill"
+                            android:gravity="center"
+                            android:text="2"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="4dp"
+                            android:text="队 + 轮换"
+                            android:textColor="#CFD8DC"
+                            android:textSize="10sp" />
+
+                        <EditText
+                            android:id="@+id/etLevelingSlotB"
+                            android:layout_width="36dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:background="@drawable/bg_pill"
+                            android:gravity="center"
+                            android:text="3"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="4dp"
+                            android:text="队 (体力&lt;20切换)"
+                            android:textColor="#81C784"
+                            android:textSize="9sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="🛡️ 硬熔断: 单场战损&gt;15% | 兵力&lt;70% | 武将重伤 立即急停"
+                        android:textColor="#EF9A9A"
+                        android:textSize="9sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="28dp"
+                        android:layout_marginTop="4dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnStartLeveling"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_primary"
+                            android:text="🚀 启动双队练级"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+
+                        <Button
+                            android:id="@+id/btnStopLeveling"
+                            android:layout_width="0dp"
+                            android:layout_height="match_parent"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_pill"
+                            android:text="⏹️ 停止"
+                            android:textColor="#FFFFFF"
+                            android:textSize="10sp" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvLevelingLiveStatus"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="流水线状态: 就绪空闲"
+                        android:textColor="#B0BEC5"
+                        android:textSize="10sp" />
                 </LinearLayout>
             </ScrollView>
         </LinearLayout>

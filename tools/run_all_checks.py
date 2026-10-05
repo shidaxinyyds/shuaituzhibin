@@ -265,6 +265,13 @@ def build_checks(args):
             "required": True,
         },
         {
+            "id": "garrison-leveling",
+            "title": "驻守透视与练级验证（PVP 100兵剥皮透视/流派克制/PVE软柿子雷达/15%战损硬熔断/双队轮换）",
+            "script": "validate_garrison_leveling.py",
+            "argv": [],
+            "required": True,
+        },
+        {
             "id": "asset-budget",
             "title": "入包资产体检（体积预算 / RAG 索引契约 / 假权重）",
             "script": "p1/check_assets.py",

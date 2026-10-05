@@ -282,7 +282,7 @@ object TileStatusDetector {
      * 土地信息面板解析 (点击土地后弹出的详情条/顶部地块标签)
      */
     fun parseTileDetail(roiBitmap: Bitmap): LandTileDetail {
-        val ocr = OcrManager.detect(roiBitmap)
+        val ocr = OcrManager.detectRoi(roiBitmap)
         val text = ocr?.strRes ?: ""
 
         // 解析等级

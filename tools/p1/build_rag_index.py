@@ -77,8 +77,8 @@ def embed_with_ort(model_path, texts, vocab, max_len=64, batch=8):
     import onnxruntime as ort
 
     sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-    name_in = {k: i for i, k in enumerate(sess.get_inputs())}
-    inputs = [n for n in ("input_ids", "attention_mask", "token_type_ids") if n in name_in]
+    in_names = [i.name for i in sess.get_inputs()]
+    inputs = [n for n in ("input_ids", "attention_mask", "token_type_ids") if n in in_names]
     out_name = sess.get_outputs()[0].name
 
     vecs = []
@@ -314,9 +314,8 @@ def main():
 
     # 图区可整除解析
     if ver == 2:
+        # graph_len 前缀已在上面 (off += 4 + graph_len) 消费掉，off-graph_len 即第一个节点块。
         p = off - graph_len
-        (declared,) = struct.unpack("<I", raw[p:p + 4])
-        p += 4
         nodes = 0
         while p < off:
             deg = int.from_bytes(raw[p:p + 4], "little")

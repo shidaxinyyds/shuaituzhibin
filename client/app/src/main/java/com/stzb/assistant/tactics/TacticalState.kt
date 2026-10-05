@@ -13,6 +13,9 @@ object TacticalState {
         TACTICAL_HUD("端侧RAG战术智脑HUD"),
         LOGISTICS_STEWARD("单账号日常后勤全托管"),
         FARMING_STEWARD("全自动屯田打铁管家"),
+        GARRISON_RADAR("PVP驻守剥皮透视"),
+        SOFT_TILE_RADAR("PVE软柿子雷达"),
+        SQUAD_LEVELING("二三队低损速升40级"),
 
         // --- 历史兼顾兼容项（平滑过渡）---
         ROAD_PAVING("自动铺路翻地(已平替)"),

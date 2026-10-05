@@ -58,7 +58,7 @@ object TroopStatusDetector {
      * @param slotIndex 当前分析的部队槽位 (1 ~ 5)
      */
     fun parseTroopCard(cardRoiBitmap: Bitmap, slotIndex: Int): TroopSlotDetail {
-        val ocrResult = OcrManager.detect(cardRoiBitmap)
+        val ocrResult = OcrManager.detectRoi(cardRoiBitmap)
         val text = ocrResult?.strRes ?: ""
 
         // 1. 体力抽取
@@ -123,7 +123,7 @@ object TroopStatusDetector {
         targetHitEpochMs: Long,
         networkJitterCompensationMs: Long = 100L
     ): MarchTimingPlan? {
-        val ocrResult = OcrManager.detect(marchTimeRoiBitmap) ?: return null
+        val ocrResult = OcrManager.detectRoi(marchTimeRoiBitmap) ?: return null
         val text = ocrResult.strRes
 
         var durationSec: Long = 0L

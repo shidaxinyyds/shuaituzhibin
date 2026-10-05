@@ -60,3 +60,12 @@ acceptance_report.txt
 # 入包的是 tools/p1 转换后的产物，那些才入 git；基座可由
 # `python tools/p1/check_bases.py --download` 重新获取，不入库。
 .models/
+.a_plus_plus/
+.venv-app/
+tmp*
+
+# YOLO local screenshots and datasets
+tools/train_yolo/raw/
+tools/train_yolo/dataset/
+tools/train_yolo/dataset_vis/
+tools/train_yolo/templates/

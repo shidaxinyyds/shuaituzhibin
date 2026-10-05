@@ -28,16 +28,76 @@ object DefenderTemplateClassifier {
     private const val TAG = "DefenderTemplateClassifier"
     private const val ASSET_DIR = "defender_refs"
 
+    /** 折算默认值所用的采信门槛。 */
+    private const val DEFAULT_MATCH_THRESHOLD = 0.80f
+
+    private const val PREFS = "stzb_defender_classifier"
+    private const val KEY_THRESHOLD = "match_threshold"
+
+    /** 可用调节区间：低于 0.50 近乎乱放（误认守将会把危险度往高/低带偏），高于 0.95 近乎全拒。 */
+    private const val MIN_MATCH_THRESHOLD = 0.50f
+    private const val MAX_MATCH_THRESHOLD = 0.95f
+
     /**
-     * 同尺寸归一化相关系数（TM_CCOEFF_NORMED）的采信门槛。
+     * 同尺寸归一化相关系数（TM_CCOEFF_NORMED）的采信门槛**默认值**说明：
      *
      * 离线自测（tools/defender_gallery/_selftest.py，与运行时同构的彩色 matchTemplate）：
      * 正确匹配 ≥ 0.85，错误/竞争者上限 0.766，二者分离清晰。取 0.80 卡在中间：
      * 自测 100% 精度、零误认、98.8% 覆盖。同名不同卡面的守将会因分数不足而**退回
      * UNKNOWN（宁可漏、绝不错认）**，交由 OCR 名字通道与后续扩库兜底。
-     * 真机抓帧与截图非同一路径，分数会整体偏低——首次真机按 classify 日志回溯微调。
      */
-    private const val MATCH_THRESHOLD = 0.80f
+    @Volatile
+    private var matchThreshold = DEFAULT_MATCH_THRESHOLD
+
+    @Volatile
+    private var thresholdLoaded = false
+
+    /** 当前生效门槛（供日志与标定入口读取；首次读取会载入持久化值）。 */
+    val currentMatchThreshold: Float
+        get() {
+            ensureThresholdLoaded()
+            return matchThreshold
+        }
+
+    /**
+     * 设定采信门槛并持久化。仅接受 [$MIN_MATCH_THRESHOLD, $MAX_MATCH_THRESHOLD]，
+     * 越界则拒绝并保留原值——一次误设会把头像通道整体打死或整体放开，属于安全红线。
+     *
+     * 用途：真机 MediaProjection 抓帧与截图非同一路径、分数会整体下移，首次真机按
+     * classify 日志（含各槽最高分与当前门槛）回溯微调本值，**无需重新编译**即可收敛。
+     * @return 是否设置成功
+     */
+    fun setMatchThreshold(value: Float): Boolean {
+        if (value.isNaN() || value < MIN_MATCH_THRESHOLD || value > MAX_MATCH_THRESHOLD) {
+            Log.w(
+                TAG,
+                "拒绝设置门槛 $value：超出可用区间 [$MIN_MATCH_THRESHOLD, $MAX_MATCH_THRESHOLD]，" +
+                    "保留 ${"%.3f".format(matchThreshold)}。"
+            )
+            return false
+        }
+        matchThreshold = value
+        ensureThresholdLoaded()
+        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            ?.edit()?.putFloat(KEY_THRESHOLD, value)?.apply()
+        Log.i(TAG, "守军头像采信门槛已设为 ${"%.3f".format(value)}（已持久化）。")
+        return true
+    }
+
+    /** 从持久化恢复门槛（若曾标定）。appContext 未就绪时留待 init 之后重试。 */
+    private fun ensureThresholdLoaded() {
+        val ctx = appContext ?: return
+        if (thresholdLoaded) return
+        synchronized(this) {
+            if (thresholdLoaded) return
+            val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            if (sp.contains(KEY_THRESHOLD)) {
+                matchThreshold = sp.getFloat(KEY_THRESHOLD, DEFAULT_MATCH_THRESHOLD)
+                    .coerceIn(MIN_MATCH_THRESHOLD, MAX_MATCH_THRESHOLD)
+            }
+            thresholdLoaded = true
+        }
+    }
 
     @Volatile
     private var appContext: Context? = null
@@ -56,6 +116,7 @@ object DefenderTemplateClassifier {
     /** 仅登记上下文，真正的模板载入延后到首次 classify（避免开机即占内存）。 */
     fun init(context: Context) {
         appContext = context.applicationContext
+        ensureThresholdLoaded()
     }
 
     val isReady: Boolean get() = loaded && heroTemplateKeys.isNotEmpty()
@@ -112,7 +173,9 @@ object DefenderTemplateClassifier {
         if (!ensureLoaded()) return emptyList()
         if (slotRects.isEmpty() || heroTemplateKeys.isEmpty()) return emptyList()
 
+        val thr = currentMatchThreshold
         val hits = ArrayList<String>()
+        Log.d(TAG, "本次比对门槛=${"%.3f".format(thr)}（真机可按各槽最高分用 setMatchThreshold 微调）")
         try {
             for ((idx, rect) in slotRects.withIndex()) {
                 val slot = cropNormalized(frame, rect) ?: continue
@@ -120,7 +183,7 @@ object DefenderTemplateClassifier {
                 var bestScore = 0f
                 try {
                     for ((name, key) in heroTemplateKeys) {
-                        val r = OpenCvMatcher.match(slot, key, MATCH_THRESHOLD)
+                        val r = OpenCvMatcher.match(slot, key, thr)
                         if (r.isFound && r.score > bestScore) {
                             bestScore = r.score
                             bestName = name

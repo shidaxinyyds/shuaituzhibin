@@ -15,6 +15,16 @@ import java.util.regex.Pattern
 object OcrManager {
 
     private const val TAG = "OcrManager"
+
+    /**
+     * 短边小于此像素值的 ROI 视为「小字区」，识别前先等比放大。
+     *
+     * native 层 `maxSideLen<=0 或 >原尺寸` 会被封顶为原分辨率（见 main.cpp detect），
+     * 即**只缩不放**，所以率土 720p 画布上仅 10~16px 高的体力/坐标/倒计时数字，
+     * 必须在 Kotlin 侧先放大——这是零 native 风险的小字召回提升点。
+     */
+    private const val SMALL_TEXT_SHORT_SIDE = 40
+
     private var ocrEngine: OcrEngine? = null
     private var isInitialized = false
 
@@ -68,7 +78,10 @@ object OcrManager {
                 boxScoreThresh = 0.5f
                 boxThresh = 0.3f
                 unClipRatio = 1.6f
-                doAngle = false // 游戏文字均为标准横排，关闭角度检测提高 40% 速度
+                // 关闭 0/180° 角度分类以提速：率土的**横排** HUD/按钮确实全部正立。
+                // 注意：竖排（守将名）由 native getRotateCropImage 的转置分支处理，与本开关无关；
+                // 旧注释「游戏文字均为标准横排」并不成立，勿据此以为竖排能靠这里兜底。
+                doAngle = false
                 mostAngle = false
             }
             ocrEngine = engine
@@ -127,11 +140,51 @@ object OcrManager {
     }
 
     /**
+     * 小字号 ROI 等比上采样：按短边判定小字区并放大（只放不小，封顶 [maxFactor]×），
+     * 提升小字检测分辨率与 CRNN 置信度。仅用于**数值型小 ROI**，绝不放大全屏帧（会 OOM）。
+     * 返回新位图，所有权归调用方；本函数**不会回收传入的 [src]**。无需放大或失败返回 null（沿用原图）。
+     */
+    private fun upscaleForSmallText(src: Bitmap, maxFactor: Int = 3): Bitmap? {
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return null
+        val short = minOf(w, h)
+        if (short >= SMALL_TEXT_SHORT_SIDE) return null // 已够大，不放大
+        val factor = (SMALL_TEXT_SHORT_SIDE.toFloat() / short).toInt().coerceIn(2, maxFactor)
+        return try {
+            Bitmap.createScaledBitmap(src, w * factor, h * factor, true)
+        } catch (e: Throwable) {
+            Log.w(TAG, "小字 ROI 放大失败，退回原图: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * [detect] 的小字增强封装：小字区先等比放大再识别；放大图用后即回收（杜绝泄漏）。
+     */
+    private fun detectSmall(roiBitmap: Bitmap): OcrResult? {
+        val scaled = upscaleForSmallText(roiBitmap)
+        if (scaled == null) return detect(roiBitmap)
+        Log.d(TAG, "小字 ROI 放大: ${roiBitmap.width}x${roiBitmap.height} -> ${scaled.width}x${scaled.height}")
+        return try {
+            detect(scaled)
+        } finally {
+            if (!scaled.isRecycled) scaled.recycle()
+        }
+    }
+
+    /**
+     * 面向「小字 ROI」的公开识别入口（兵力/士气/倒计时/地块详情等数值面板）：
+     * 短边足够小则先等比放大再识别，否则等价于 [detect]。供各 Detector 调用以提小字鲁棒性。
+     */
+    fun detectRoi(bitmap: Bitmap): OcrResult? = detectSmall(bitmap)
+
+    /**
      * 提取武将体力（格式：xx/120）
      * 返回：当前体力值（如 98），未识别到返回 null
      */
     fun parseStamina(roiBitmap: Bitmap): Int? {
-        val res = detect(roiBitmap) ?: return null
+        val res = detectSmall(roiBitmap) ?: return null
         val matcher = PATTERN_STAMINA.matcher(res.strRes)
         if (matcher.find()) {
             return matcher.group(1)?.toIntOrNull()
@@ -144,7 +197,7 @@ object OcrManager {
      * 返回：Pair(x, y)，未识别到返回 null
      */
     fun parseCoordinates(roiBitmap: Bitmap): Pair<Int, Int>? {
-        val res = detect(roiBitmap) ?: return null
+        val res = detectSmall(roiBitmap) ?: return null
         val matcher = PATTERN_COORDINATE.matcher(res.strRes)
         if (matcher.find()) {
             val x = matcher.group(1)?.toIntOrNull()
@@ -159,7 +212,7 @@ object OcrManager {
      * 返回：剩余总秒数，未识别到返回 null
      */
     fun parseCountdownSeconds(roiBitmap: Bitmap): Long? {
-        val res = detect(roiBitmap) ?: return null
+        val res = detectSmall(roiBitmap) ?: return null
         val fullMatcher = PATTERN_COUNTDOWN.matcher(res.strRes)
         if (fullMatcher.find()) {
             val h = fullMatcher.group(1)?.toLongOrNull() ?: 0L

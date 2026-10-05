@@ -90,8 +90,11 @@ def check_structure(rel, size, root):
         return ["0 字节（空壳）"]
     if rel.endswith(".onnx"):
         with open(full, "rb") as fh:
-            if fh.read(4) != ONNX_MAGIC:
-                errs.append("ONNX 头部不是 ONNX 魔数")
+            hdr = fh.read(16)
+            # ONNX 为 Protobuf ModelProto，首字段通常为 ir_version (tag 1: 0x08)
+            # 同时兼容自定义 ONNX 魔数，防御 HTML 404 / 文本占位 / 损坏文件
+            if not (hdr.startswith(ONNX_MAGIC) or (len(hdr) >= 2 and hdr[0] == 0x08)):
+                errs.append("ONNX 头部不是有效的 ONNX Protobuf/ONNX 格式")
     elif rel.endswith(".param"):
         with open(full, "r", encoding="utf-8", errors="replace") as fh:
             if fh.readline().strip() != NCNN_MAGIC:
