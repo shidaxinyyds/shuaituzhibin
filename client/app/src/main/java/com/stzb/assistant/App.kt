@@ -60,6 +60,8 @@ class App : Application() {
         // 按键模板库：OCR 不可用时按键定位的唯一依靠（模板匹配不依赖文字识别）
         com.stzb.assistant.service.ButtonTemplateStore.attach(this)
         com.stzb.assistant.service.MapProjection.logSelfTest()
+        // 地图缩放锁定自检（确定性仿真，不依赖真机）：验证捏合缩放数学与收敛编排。
+        com.stzb.assistant.service.MapZoomController.logSelfTest()
         Log.i(
             "StzbApp",
             com.stzb.assistant.service.UiAnchors.describeAll() +

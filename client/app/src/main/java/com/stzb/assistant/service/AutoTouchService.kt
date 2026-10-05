@@ -102,6 +102,47 @@ class AutoTouchService : AccessibilityService() {
     }
 
     /**
+     * 拟人化双指捏合缩放 (拖动大地图缩放级别)
+     * 传入焦点中心自适应虚坐标与缩放倍率 (scale>1 放大/两指外开, scale<1 缩小/两指内收)。
+     *
+     * 实现：一个 GestureDescription 内放**两条 StrokeDescription**，共享同一 startTime/duration，
+     * 系统会当作两指同时动作→形成捏合。单靠一条 swipe 无法缩放。
+     */
+    suspend fun pinchVirtual(
+        vCenterX: Float,
+        vCenterY: Float,
+        scale: Float,
+        durationMs: Long = 500L
+    ): Boolean = withContext(Dispatchers.Default) {
+        if (!scale.isFinite() || scale <= 0f) return@withContext false
+        val center = CoordinateTransformer.toReal(vCenterX, vCenterY)
+        val maxW = CoordinateTransformer.physicalWidth
+        val maxH = CoordinateTransformer.physicalHeight
+
+        // 基础半距：取屏短边的一成八，保证两指都在地图区内且不会贴边被系统当边缘手热。
+        val baseHalf = (minOf(maxW, maxH) * 0.18f).coerceAtLeast(60f)
+        val toHalf = (baseHalf * scale).coerceAtLeast(20f)
+
+        val cy = center.y.coerceIn(maxH * 0.2f, maxH * 0.8f)
+        // 限在屏内，避免越界坐标被系统丢弃
+        val lx0 = (center.x - baseHalf).coerceIn(1f, maxW - 1f)
+        val lx1 = (center.x - toHalf).coerceIn(1f, maxW - 1f)
+        val rx0 = (center.x + baseHalf).coerceIn(1f, maxW - 1f)
+        val rx1 = (center.x + toHalf).coerceIn(1f, maxW - 1f)
+
+        val leftPath = Path().apply { moveTo(lx0, cy); lineTo(lx1, cy) }
+        val rightPath = Path().apply { moveTo(rx0, cy); lineTo(rx1, cy) }
+        val leftStroke = GestureDescription.StrokeDescription(leftPath, 0, durationMs)
+        val rightStroke = GestureDescription.StrokeDescription(rightPath, 0, durationMs)
+        val gesture = GestureDescription.Builder()
+            .addStroke(leftStroke)
+            .addStroke(rightStroke)
+            .build()
+
+        dispatchGestureAsync(gesture)
+    }
+
+    /**
      * 异步派发手势并等待系统回调确认
      */
     private suspend fun dispatchGestureAsync(gesture: GestureDescription): Boolean {

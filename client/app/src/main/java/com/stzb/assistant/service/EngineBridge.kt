@@ -157,6 +157,33 @@ object EngineBridge {
         return false
     }
 
+    /**
+     * 双指捏合缩放（把地图缩放往 target/current 倍率方向推一步）。
+     *
+     * ⚠️ **与 tap/swipe 不同，缩放没有 Shizuku 兜底通道**：Shizuku 走的是 `input` shell
+     * 命令，`input swipe` 只能单指，**无法表达多指捏合**。因此本方法只走无障碍手势；
+     * 无障碍不可用时诚实返回 false（由调用方 fail-closed），而不是假装能缩放。
+     *
+     * @param scale >1 放大（每格像素变大）、<1 缩小。倍率已在 [MapZoomController] 夹过上限。
+     */
+    suspend fun pinch(
+        virtualCenterX: Float,
+        virtualCenterY: Float,
+        scale: Float,
+        durationMs: Long = 500L
+    ): Boolean {
+        val touch = AutoTouchService.instance
+        if (touch == null) {
+            Log.w(
+                TAG,
+                "无法捏合缩放：无障碍触控未连接。Shizuku 的 `input` 命令不支持多指手势，"
+                    + "故缩放只能经无障碍通道派发。请确认无障碍服务在运行。"
+            )
+            return false
+        }
+        return touch.pinchVirtual(virtualCenterX, virtualCenterY, scale, durationMs)
+    }
+
     // ==========================================
     // 阶段二：率土全场景状态机与语义按键中枢
     // ==========================================
