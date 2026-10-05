@@ -109,4 +109,50 @@ object AlarmRinger {
             Log.e(TAG, "停止警报异常: ${e.message}", e)
         }
     }
+
+    /**
+     * 触发一次性紧急提示（用于练级熔断等需即时唤醒玩家的场景）。
+     *
+     * 与 [startAlarm] 的区别：本方法**不进入持续鸣叫状态机**（不改动 isRinging、
+     * 不占用/申请 WakeLock），只给一段有界（约 3 秒后自动停止）的提示音 + 单次震动，
+     * 避免误触发 10 分钟不解除的敌袭警报。
+     */
+    fun triggerEmergencyAlarm(context: Context, message: String) {
+        Log.w(TAG, "🚨 触发一次性紧急提示: $message")
+        try {
+            // 1. 一次性强震动（createWaveform repeat=-1，播一遍即止）
+            val pattern = longArrayOf(0, 500, 250, 500, 250, 900)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vm.defaultVibrator.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                val v = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    v.vibrate(VibrationEffect.createWaveform(pattern, -1))
+                } else {
+                    @Suppress("DEPRECATION")
+                    v.vibrate(pattern, -1)
+                }
+            }
+
+            // 2. 有界提示音：USAGE_ALARM 穿透勿扰，播约 3 秒后主动停止，不循环、不影响敌袭鸣叫状态机
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val tone = uri?.let { RingtoneManager.getRingtone(context, it) }?.apply {
+                audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                play()
+            }
+            if (tone != null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    runCatching { tone.stop() }
+                }, 3000L)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "紧急提示异常: ${e.message}", e)
+        }
+    }
 }
