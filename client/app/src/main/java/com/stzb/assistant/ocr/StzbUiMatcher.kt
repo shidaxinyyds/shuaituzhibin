@@ -165,7 +165,7 @@ object StzbUiMatcher {
         }
 
         // 6. 判断是否处于“大地图主界面”
-        if (containsAny(fullText, sceneWords(SCENE_MAIN_MAP_HUD, listOf("令", "战报", "势力", "同盟")))) {
+        if (containsAny(fullText, sceneWords(SCENE_MAIN_MAP_HUD, listOf("令", "战报", "势力", "同盟", "政务", "招募", "武将", "战法", "天下", "演武")))) {
             return GameState.MAIN_MAP
         }
 

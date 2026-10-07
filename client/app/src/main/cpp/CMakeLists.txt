@@ -14,8 +14,20 @@ if (DEFINED ncnn_DIR AND NOT ncnn_DIR STREQUAL "")
     list(APPEND CMAKE_PREFIX_PATH "${ncnn_DIR}")
 endif()
 
+if (DEFINED OpenCV_DIR AND NOT OpenCV_DIR STREQUAL "")
+    message(STATUS ">> [RapidOCR] 使用外部指定的 OpenCV 目录: ${OpenCV_DIR}")
+    list(APPEND CMAKE_PREFIX_PATH "${OpenCV_DIR}")
+endif()
+
 find_package(ncnn QUIET)
 find_package(OpenCV QUIET)
+
+if (DEFINED ncnn_DIR AND NOT ncnn_FOUND)
+    message(FATAL_ERROR ">> [RapidOCR] 外部指定了 ncnn_DIR=${ncnn_DIR}，但 find_package(ncnn) 未能找到！请检查路径！")
+endif()
+if (DEFINED OpenCV_DIR AND NOT OpenCV_FOUND)
+    message(FATAL_ERROR ">> [RapidOCR] 外部指定了 OpenCV_DIR=${OpenCV_DIR}，但 find_package(OpenCV) 未能找到！请检查路径！")
+endif()
 
 find_library(log-lib log)
 find_library(jnigraphics-lib jnigraphics)

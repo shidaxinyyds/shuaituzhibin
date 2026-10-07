@@ -100,3 +100,5 @@ pipeline/publish_ledger.json
 # 需要复跑时用 --map/--other 或 STZB_FP_MAP/STZB_FP_OTHER 指路径。
 # 只屏蔽子目录，p3 下的校验脚本（*.py）照常入库。
 tools/p3/*/
+tools/p3/_*
+tools/p3/*_index.txt

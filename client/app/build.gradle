@@ -12,8 +12,8 @@ android {
         applicationId "com.stzb.assistant"
         minSdk 26
         targetSdk 34
-        versionCode 109
-        versionName "1.0.9-commercial-stable"
+        versionCode 110
+        versionName "1.1.0-commercial-release"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 
@@ -24,19 +24,14 @@ android {
         externalNativeBuild {
             cmake {
                 cppFlags "-std=c++17 -fexceptions -frtti -O3 -fvisibility=hidden"
-                arguments "-DANDROID_STL=c++_shared"
-                // 可选：把 ncnn / OpenCV 预编译包接进来，让 native 层编译真正的 OCR 引擎，
-                // 而不是 OcrStub 空桩。用法：
-                //     ./gradlew assembleRelease \
-                //         -PncnnDir=/path/to/ncnn-android/arm64-v8a/lib/cmake/ncnn \
-                //         -PopencvDir=/path/to/opencv-android-sdk/sdk/native/jni
-                // 未提供时工程仍可编译，但 APK 内文字识别不可用（运行时会明确报错）。
-                if (project.hasProperty("ncnnDir")) {
-                    arguments "-Dncnn_DIR=${project.property("ncnnDir")}"
+                def cmakeArgs = ["-DANDROID_STL=c++_shared"]
+                if (project.hasProperty("ncnnDir") && project.property("ncnnDir")) {
+                    cmakeArgs.add("-Dncnn_DIR=${project.property('ncnnDir')}".toString())
                 }
-                if (project.hasProperty("opencvDir")) {
-                    arguments "-DOpenCV_DIR=${project.property("opencvDir")}"
+                if (project.hasProperty("opencvDir") && project.property("opencvDir")) {
+                    cmakeArgs.add("-DOpenCV_DIR=${project.property('opencvDir')}".toString())
                 }
+                arguments cmakeArgs.toArray(new String[0])
             }
         }
     }

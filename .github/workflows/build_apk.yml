@@ -77,7 +77,7 @@ jobs:
         id: opencv
         run: |
           set -e
-          VER="4.9.0"
+          VER="4.5.3"
           API="https://api.github.com/repos/opencv/opencv/releases/tags/${VER}"
           echo "查询 OpenCV 发布资产: $API"
           if ! curl -fsSL -o opencv_release.json "$API"; then
@@ -194,6 +194,12 @@ jobs:
           # 真引擎分支下 YoloNcnn 符号也在同一个 .so 里。
           if unzip -l "$APK" | grep -q "libRapidOcr.so"; then
             echo "✅ APK 内含 libRapidOcr.so（OCR + YOLO native 同一库）。"
+            # 严格核验：libRapidOcr.so 必须包含真引擎符号（非 OcrStub 空桩）
+            if unzip -p "$APK" lib/arm64-v8a/libRapidOcr.so | strings | grep -q "OcrEngine_detect"; then
+              echo "✅ 经符号校验：libRapidOcr.so 确为完整原生 OCR + YOLO 推理引擎（非 OcrStub 空桩）！"
+            else
+              echo "::error::libRapidOcr.so 缺少 OcrEngine_detect 符号，说明 CMake 走了 OcrStub 空桩分支！"; exit 1
+            fi
           else
             echo "::error::APK 内缺 libRapidOcr.so，native 未打进包。"; exit 1
           fi
@@ -245,8 +251,8 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.0.9"
-          name: "率土之滨全能管家 v1.0.9 商业化落地稳定版 (痛点1与痛点2深度重构)"
+          tag_name: "v1.1.0"
+          name: "率土之滨全能管家 v1.1.0 商业化稳定运行版 (彻底修复OCR真编译/前台触控闸门/官服渠道服兼容)"
           files: single-release-apk/RateOfLand-Commercial-Release.apk
           generate_release_notes: true
         env:

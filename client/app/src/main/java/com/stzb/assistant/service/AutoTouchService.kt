@@ -74,8 +74,10 @@ class AutoTouchService : AccessibilityService() {
             return
         }
         val pkg = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
-        foregroundPackage = pkg
-        foregroundEpochMs = System.currentTimeMillis()
+        if (pkg != packageName) {
+            foregroundPackage = pkg
+            foregroundEpochMs = System.currentTimeMillis()
+        }
     }
 
     override fun onInterrupt() {}

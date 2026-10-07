@@ -107,11 +107,30 @@ object ForegroundGate {
         val svc = AutoTouchService.instance ?: return Verdict.SERVICE_UNAVAILABLE
 
         val actual = observedForeground(svc) ?: return Verdict.UNKNOWN_FOREGROUND_ALLOW
-        if (actual == expected) return Verdict.TARGET_FOREGROUND
+        if (isMatchingTargetGame(actual, expected)) return Verdict.TARGET_FOREGROUND
 
-        // 明确看到别的包在前台（包括助手自己的 Activity：那意味着玩家正看着设置页，
-        // 游戏画面根本不在屏幕上）——一律拦下。
+        // 如果焦点窗口是辅助自身（悬浮窗或控制台），且悬浮服务正在运行：说明浮窗正叠加在游戏上方，应当放行
+        if (actual == "com.stzb.assistant" && FloatOverlayService.isShowing) {
+            val lastGamePkg = svc.foregroundPackage
+            if (lastGamePkg == null || isMatchingTargetGame(lastGamePkg, expected)) {
+                return Verdict.TARGET_FOREGROUND
+            }
+        }
+
+        // 明确看到别的第三方包在前台（如微信、浏览器等）——一律拦下，保护安全。
         return Verdict.BLOCKED_NOT_FOREGROUND
+    }
+
+    /**
+     * 判定当前包名是否为目标游戏（兼容官服与各大安卓应用商店渠道服后缀）。
+     * 率土之滨官服为 com.netease.stzb.netease，渠道服为 com.netease.stzb.huawei/mi/bili 等。
+     */
+    private fun isMatchingTargetGame(actual: String, expected: String): Boolean {
+        if (actual == expected) return true
+        if (actual.startsWith("$expected.")) return true
+        if (expected.startsWith("com.netease.stzb") && actual.startsWith("com.netease.stzb")) return true
+        if (expected.startsWith("com.aligames.sgzzlb") && actual.startsWith("com.aligames.sgzzlb")) return true
+        return false
     }
 
     /** 焦点窗口优先，事件观测值兜底。 */

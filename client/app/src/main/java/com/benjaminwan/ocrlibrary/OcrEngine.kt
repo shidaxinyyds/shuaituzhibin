@@ -47,6 +47,11 @@ class OcrEngine(context: Context) {
     }
 
     init {
+        try {
+            System.loadLibrary("opencv_java4")
+        } catch (_: Throwable) {
+            // 已由 OpenCVLoader 预载入或平台动态链接接管，忽略异常
+        }
         System.loadLibrary("RapidOcr")
         val set = resolveModelSet(context.assets)
         val ret = init(

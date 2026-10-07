@@ -82,6 +82,11 @@ object OcrManager {
     fun init(context: Context): Boolean {
         if (isInitialized && ocrEngine != null) return true
         return try {
+            try {
+                org.opencv.android.OpenCVLoader.initDebug()
+            } catch (t: Throwable) {
+                Log.w(TAG, "预载入 OpenCV 状态: ${t.message}")
+            }
             Log.i(TAG, "正在初始化 RapidOCR 本地离线引擎...")
             val engine = OcrEngine(context.applicationContext).apply {
                 padding = 20
@@ -103,14 +108,14 @@ object OcrManager {
             // 属于把"没加载"说成"已加载"。现在只在确认真引擎后才这样陈述。
             Log.i(TAG, "RapidOCR 引擎初始化成功（native 推理已就绪）。")
             true
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             ocrEngine = null
             isInitialized = false
             isEngineAvailable = false
             unavailableReason =
                 "native OCR 不可用（构建期缺少 ncnn/OpenCV，或模型资产缺失）；" +
-                    "所有依赖文字的识别都会失败。原因: ${e.message}"
-            Log.e(TAG, unavailableReason, e)
+                    "所有依赖文字的识别都会失败。原因: ${t.message}"
+            Log.e(TAG, unavailableReason, t)
             false
         }
     }
