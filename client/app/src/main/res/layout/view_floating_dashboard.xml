@@ -1388,4 +1388,25 @@
             android:textSize="12sp" />
     </LinearLayout>
 
+    <!--
+      缩放占位与拖角手柄。
+      占位 View 高度 0dp + weight 1：窗口是 WRAP_CONTENT 时它不占地方（无多余空间可分），
+      一旦用户拖角把窗口撑成固定高度，它就吃掉剩余空间、把下面的手柄顶到**真正的右下角**。
+      手柄用 layout_gravity="end" 贴右，与竖向 LinearLayout 组合后落在右下角。
+    -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <TextView
+        android:id="@+id/dashboardResizeGrip"
+        android:layout_width="30dp"
+        android:layout_height="30dp"
+        android:layout_gravity="end"
+        android:gravity="bottom|end"
+        android:text="◢"
+        android:textColor="#66FFFFFF"
+        android:textSize="16sp" />
+
 </LinearLayout>

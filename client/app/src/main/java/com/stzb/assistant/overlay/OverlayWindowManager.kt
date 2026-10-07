@@ -86,6 +86,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private var dashboardView: View? = null
     private var pickerView: View? = null
 
+    /**
+     * 面板内容"刚好容纳"时的自然高度（首次以 WRAP_CONTENT 展开时测得）。
+     * 拖角缩放把高度下限锁在这里：内容区不可滚动，缩到比这更小会把底部按钮和
+     * 缩放角标一起裁出屏幕，用户就再也抓不到角标放大回去了。
+     */
+    private var dashboardNaturalHeightPx = 0
+
     private lateinit var capsuleParams: WindowManager.LayoutParams
     private lateinit var dashboardParams: WindowManager.LayoutParams
     private lateinit var pickerParams: WindowManager.LayoutParams
@@ -304,27 +311,31 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             y = dp(120)
         }
 
-        // 面板宽度：原先用 WRAP_CONTENT，实际宽度由「7 个 Tab 横向排布」撑开，
-        // 在真机上约等于屏宽的 79%（实测截图 2151/2712 px），既过宽又不可预测。
-        // 现在改为「屏宽 × 固定比例」的确定性宽度，并按需求整体收窄三分之一：
-        //     0.793 × 2/3 ≈ 0.53
-        // 这样面板在任何机型上都保持同一视觉占比，不再随文案长度忽宽忽窄。
+        // 面板默认宽度 = 屏宽 × DASHBOARD_WIDTH_RATIO（0.53，按需求整体收窄三分之一）。
+        // 但这只是**可被用户拖角改写的初始值**：一旦缩放/拖动过，尺寸与位置从
+        // SharedPreferences 读回来覆盖它（见 setupDashboardResize / persistDashboard*）。
+        // gravity 用 TOP|START 而非 CENTER_HORIZONTAL：右下角缩放要跟手 1:1，
+        // 居中重力下改宽度会让左右两边同时外扩、角标只走一半距离，手感是错的。
         val screenWidth = context.resources.displayMetrics.widthPixels
-        val panelWidth = (screenWidth * DASHBOARD_WIDTH_RATIO).toInt()
+        val geom = context.getSharedPreferences(PREFS_OVERLAY, Context.MODE_PRIVATE)
+        val defaultWidth = (screenWidth * DASHBOARD_WIDTH_RATIO).toInt()
+        val savedW = geom.getInt(KEY_DASH_W, 0)
+        val savedH = geom.getInt(KEY_DASH_H, 0)
+        val savedX = geom.getInt(KEY_DASH_X, -1)
+        val savedY = geom.getInt(KEY_DASH_Y, -1)
+        val panelWidth = if (savedW > 0) savedW.coerceAtMost(screenWidth) else defaultWidth
 
         dashboardParams = WindowManager.LayoutParams(
             panelWidth,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            if (savedH > 0) savedH else WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            // 用 CENTER_HORIZONTAL 精确居中，取代原先写死的 x = (屏宽 - 356) / 2。
-            // 那个 356 是「以为面板只有 356px 宽」的错误假设：面板实际远宽于它，
-            // 于是整体右偏，右边缘被推出屏幕（最右的「日志」Tab 与「停止全部」被裁掉）。
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = dp(35) // 靠近顶部放置，避免遮挡游戏底部主力队伍栏与操作菜单
+            gravity = Gravity.TOP or Gravity.START
+            // 首次（没拖动过）水平居中；之后按用户放的位置还原。
+            x = if (savedX >= 0) savedX else (screenWidth - panelWidth) / 2
+            y = if (savedY >= 0) savedY else dp(35) // 默认贴顶，避开游戏底部主力队伍栏与操作菜单
         }
 
         pickerParams = WindowManager.LayoutParams(
@@ -410,6 +421,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         dashboardView?.findViewById<TextView>(R.id.tvCloseDashboard)?.setOnClickListener { hideDashboard() }
 
         setupDashboardDrag()
+        setupDashboardResize()
 
         val tabPaving = dashboardView?.findViewById<Button>(R.id.tabPaving)
         val tabImmunity = dashboardView?.findViewById<Button>(R.id.tabImmunity)
@@ -2292,10 +2304,91 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> true
+                MotionEvent.ACTION_UP -> {
+                    persistDashboardPosition()
+                    true
+                }
                 else -> false
             }
         }
+    }
+
+    /**
+     * 面板右下角拖角缩放。
+     *
+     * 交互：按住布局里的 `dashboardResizeGrip` 往右下拖，实时改 dashboardParams 的
+     * width/height 并 updateViewLayout；松手后把尺寸连同位置写进 SharedPreferences，
+     * 下次展开直接还原（见创建 dashboardParams 处读回 savedW/savedH 的逻辑）。
+     *
+     * 为什么 gravity 必须是 TOP|START：这样左边/上边固定，右下角就跟手 1:1。
+     * 首次进入时高度是 WRAP_CONTENT（-2），拿不到确定像素，就用**已测量的 view 高度**
+     * 作为起始值，一旦开始缩放就转成固定高度。
+     */
+    private fun setupDashboardResize() {
+        val grip = dashboardView?.findViewById<View>(R.id.dashboardResizeGrip) ?: return
+        val dm = context.resources.displayMetrics
+        val minW = dp(240)
+        var startW = 0
+        var startH = 0
+        var touchX = 0f
+        var touchY = 0f
+        grip.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    // 首次以 WRAP_CONTENT 展开时，params.height 是 -2，用测量高度兜底并
+                    // 顺手记下"内容自然高度"作为后续缩小的下限（见字段注释）。
+                    val measured = dashboardView?.height ?: 0
+                    if (dashboardParams.height <= 0 && measured > dashboardNaturalHeightPx) {
+                        dashboardNaturalHeightPx = measured
+                    }
+                    startW = if (dashboardParams.width > 0) dashboardParams.width else (dashboardView?.width ?: dashboardParams.width)
+                    startH = if (dashboardParams.height > 0) dashboardParams.height else measured
+                    touchX = event.rawX
+                    touchY = event.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val minH = maxOf(dp(200), dashboardNaturalHeightPx)
+                    val maxH = (dm.heightPixels - dashboardParams.y).coerceAtLeast(minH)
+                    dashboardParams.width = (startW + (event.rawX - touchX).toInt()).coerceIn(minW, dm.widthPixels)
+                    dashboardParams.height = (startH + (event.rawY - touchY).toInt()).coerceIn(minH, maxH)
+                    try {
+                        windowManager.updateViewLayout(dashboardView, dashboardParams)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "缩放控制面板异常: ${e.message}")
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    persistDashboardGeometry()
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    /** 只存位置（拖动结束调用，不擅自把 WRAP_CONTENT 高度锁成固定值）。 */
+    private fun persistDashboardPosition() {
+        if (!::dashboardParams.isInitialized) return
+        context.getSharedPreferences(PREFS_OVERLAY, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_DASH_X, dashboardParams.x)
+            .putInt(KEY_DASH_Y, dashboardParams.y)
+            .apply()
+    }
+
+    /** 存尺寸 + 位置（缩放结束调用）。此刻 width/height 都已是确定像素。 */
+    private fun persistDashboardGeometry() {
+        if (!::dashboardParams.isInitialized) return
+        val w = if (dashboardParams.width > 0) dashboardParams.width else (dashboardView?.width ?: 0)
+        val h = if (dashboardParams.height > 0) dashboardParams.height else (dashboardView?.height ?: 0)
+        if (w <= 0 || h <= 0) return
+        context.getSharedPreferences(PREFS_OVERLAY, Context.MODE_PRIVATE).edit()
+            .putInt(KEY_DASH_W, w)
+            .putInt(KEY_DASH_H, h)
+            .putInt(KEY_DASH_X, dashboardParams.x)
+            .putInt(KEY_DASH_Y, dashboardParams.y)
+            .apply()
     }
 
     private fun showDashboard() {
@@ -2860,5 +2953,15 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
          * 既满足「减小三分之一」的需求，又让面板宽度在所有机型上可预测。
          */
         private const val DASHBOARD_WIDTH_RATIO = 0.53f
+
+        /**
+         * 面板尺寸/位置持久化：用户拖角缩放或拖动过之后，下次展开按上次的大小和位置还原，
+         * 而不是每次都退回 0.53 的默认宽度。没存过时读到 0 / -1，走默认值。
+         */
+        private const val PREFS_OVERLAY = "overlay_dashboard"
+        private const val KEY_DASH_W = "dashboard_width_px"
+        private const val KEY_DASH_H = "dashboard_height_px"
+        private const val KEY_DASH_X = "dashboard_x"
+        private const val KEY_DASH_Y = "dashboard_y"
     }
 }
