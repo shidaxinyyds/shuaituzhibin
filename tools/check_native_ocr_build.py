@@ -16,7 +16,10 @@
   * 真实分支的 JNI 入口在 `ocr_lite/src/main.cpp`，必须与该源集一起编译，
     否则 Java 侧 `external fun` 找不到实现（UnsatisfiedLinkError）；
   * 空桩 `OcrStub.cpp` 与真实入口定义**同名 JNI 符号**，两个分支绝不能同时包含；
-  * `android/bitmap.h` 需要链接 `jnigraphics`。
+  * `android/bitmap.h` 需要链接 `jnigraphics`；
+  * **CI 下载的 OpenCV SDK 必须与 APK 里 AAR 提供的那份同一 minor**：
+    编译用 SDK 头文件、运行时加载 AAR 的 `libopencv_java4.so`，两边错开 minor 会得到
+    "构建成功、CI 全绿、装上真机一闪就崩"——这是静态检查唯一能拦住它的地方。
 
 实现要点（第一版在这里栽过跟头）
 --------------------------------
@@ -62,6 +65,88 @@ COMMENT_BLOCK = re.compile(r"/\*[\s\S]*?\*/")
 COMMENT_LINE = re.compile(r"//[^\n]*")
 INCLUDE_RE = re.compile(r'^\s*#\s*include\s*([<"])([^>"]+)[>"]', re.M)
 CMAKE_COMMENT_RE = re.compile(r"#[^\n]*")
+
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OPENCV_AAR_RE = re.compile(r"com\.quickbirdstudios:opencv:(\d+(?:\.\d+)*)")
+OCR_WORKFLOW = os.path.join(".github", "workflows", "build_apk_with_ocr.yml")
+
+
+def _workflow_input_default(text, input_name):
+    """取 workflow_dispatch 里某个输入的 default 值。
+
+    只按"缩进块内第一个 default:"来抓，不用全文搜索：同一文件里还有别的
+    `default:`（如别的输入），抓错会得出一个看起来合理但完全无关的版本号。
+    """
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip().rstrip(":") != input_name or not line.rstrip().endswith(":"):
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        for nxt in lines[i + 1:]:
+            if not nxt.strip():
+                continue
+            indent = len(nxt) - len(nxt.lstrip())
+            if indent <= base_indent:
+                break          # 已经走出这个输入自己的块
+            m = re.match(r"\s*default:\s*['\"]?([^'\"]+)['\"]?", nxt)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def _minor(version):
+    parts = (version or "").split(".")
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return None
+    return ".".join(parts[:2])
+
+
+def check_opencv_version_match(repo_root, rep):
+    """CI 下载的 OpenCV SDK 必须与 APK 里 AAR 提供的那份同一 minor。
+
+    为什么这条值得静态检查：CMake 拿**下载来的 SDK 头文件**编译，运行时 dlopen 的却是
+    AAR 打进 APK 的 `libopencv_java4.so`（工作流刻意不再复制 SDK 的同名 .so，否则打包阶段
+    会报 "More than one file was found with OS independent path"）。两边 minor 不同，
+    头文件里声明的符号在那份 .so 里可能不存在 —— 而这种失败**只在真机出现**，
+    CI 里 APK 照样能产出、静态检查全绿，属于最隐蔽的一类"构建成功但装上一闪就崩"。
+    """
+    gradle = os.path.join(repo_root, "client", "app", "build.gradle")
+    wf_path = os.path.join(repo_root, OCR_WORKFLOW)
+    if not os.path.isfile(gradle):
+        rep.error(gradle, "找不到 build.gradle，无法校验 OpenCV 版本一致性")
+        return
+    if not os.path.isfile(wf_path):
+        rep.error(wf_path, "找不到 OCR 构建工作流，无法校验 OpenCV 版本一致性")
+        return
+
+    gradle_text = read(gradle)
+    m = OPENCV_AAR_RE.search(re.sub(r"//[^\n]*", "", gradle_text))
+    if not m:
+        rep.error("client/app/build.gradle",
+                  "没有 `com.quickbirdstudios:opencv:<版本>` 依赖，"
+                  "而工作流假设运行时的 libopencv_java4.so 由它提供")
+        return
+    aar_ver = m.group(1)
+
+    wf_ver = _workflow_input_default(read(wf_path), "opencv_version")
+    if not wf_ver:
+        rep.error(OCR_WORKFLOW, "解析不到 workflow_dispatch 输入 opencv_version 的 default 值")
+        return
+
+    aar_minor, wf_minor = _minor(aar_ver), _minor(wf_ver)
+    if aar_minor is None or wf_minor is None:
+        rep.error(OCR_WORKFLOW,
+                  f"版本号形态无法比较：AAR={aar_ver} 工作流={wf_ver}（应为 x.y(.z)）")
+        return
+    if aar_minor != wf_minor:
+        rep.error(OCR_WORKFLOW,
+                  f"OpenCV 版本不一致：编译用 SDK {wf_ver} 的头文件，运行时加载的却是 "
+                  f"AAR {aar_ver} 提供的 libopencv_java4.so。minor 不同则符号可能缺失，"
+                  f"且只在真机崩溃（CI 全绿拦不住）。请把两边对齐到同一 minor "
+                  f"（{aar_minor}.x），或同步升级 build.gradle 里的 AAR。")
+        return
+    rep.info(f"OpenCV 版本一致：工作流下载 {wf_ver}，AAR 提供 {aar_ver}（同一 minor {aar_minor}）")
+
 
 
 class Rep:
@@ -229,6 +314,8 @@ def main():
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=os.path.join("client", "app", "src", "main"))
+    ap.add_argument("--repo-root", default=REPO_DIR,
+                    help="仓库根目录，用于对账 build.gradle 与 OCR 构建工作流")
     args = ap.parse_args()
     root = os.path.abspath(args.root)
 
@@ -396,6 +483,9 @@ def main():
             if sym not in sb_syms:
                 repo.error("cpp/SecurityBridge.cpp", f"缺少 JNI 入口 {sym}（Java 侧 SecurityBridge.{name}）")
         repo.info(f"SecurityBridge 的 {len(sb_externals)} 个 JNI 入口已核对")
+
+    # ---------- 6. CI 下载的 OpenCV 必须与 APK 里那份 AAR 同一 minor ----------
+    check_opencv_version_match(args.repo_root, repo)
 
     # ---------- 输出 ----------
     print("检查项:")

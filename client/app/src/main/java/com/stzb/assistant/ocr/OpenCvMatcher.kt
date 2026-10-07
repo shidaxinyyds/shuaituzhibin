@@ -44,14 +44,53 @@ object OpenCvMatcher {
     private const val MIN_DISTINCTIVENESS = 0.04f
     private var isInitialized = false
 
+    /** init 时记下 application 上下文，供切游戏重扫资产用（未 init 时一切安全降级）。 */
+    @Volatile
+    private var appContext: Context? = null
+
+    /** 切游戏钩子是否已注册（保证只注册一次）。 */
+    @Volatile
+    private var switchHookRegistered = false
+
     // 红色徽标（新邮件红点/未读角标）的 HSV 双区间：红跨色调 0°，必须分两段。
     private val LOWER_RED_1 = Scalar(0.0, 100.0, 90.0)
     private val UPPER_RED_1 = Scalar(10.0, 255.0, 255.0)
     private val LOWER_RED_2 = Scalar(156.0, 100.0, 90.0)
     private val UPPER_RED_2 = Scalar(180.0, 255.0, 255.0)
 
-    // 动态缓存加载的模板 Mat
-    private val templateCache = HashMap<String, Mat>()
+    /**
+     * 动态缓存的模板：**每条都带"它是照哪款游戏截的"**。
+     *
+     * 为什么用打标记而不是"切游戏就清空并 release"：切换发生在 UI 线程，
+     * 而自动化线程可能正拿着这张 Mat 做匹配；此时 release 就是 native
+     * use-after-free，崩起来连栈都读不出来。
+     * 留着别家游戏的图最多占一点内存（每张约一百来 KB），
+     * 而用它去点当前游戏的界面是实打实的误触事故。
+     * 所以这里**只停止对外提供非本游戏的模板**，同名模板由本游戏载入时自然顶掉。
+     */
+    private val templateCache = HashMap<String, CachedTemplate>()
+
+    /** 缓存条目：载入它时激活的游戏 + 模板本体。 */
+    private data class CachedTemplate(val gameId: String, val mat: Mat)
+
+    private fun currentGameId(): String =
+        com.stzb.assistant.service.PerGameScope.gameId()
+
+    /** 取**本游戏**的模板；不属于本游戏的条目一律视为不存在（宁缺不错）。 */
+    private fun templateFor(keyName: String): Mat? =
+        templateCache[keyName]?.takeIf { it.gameId == currentGameId() }?.mat
+
+    /**
+     * 用本游戏的新模板替换 [keyName]。
+     *
+     * 先摘引用、再释放，而且只释放本游戏那一份：异常路径上绝不能留下
+     * "表里还挂着一张已经 release 的 Mat"，那会让下一次匹配直接踩空内存。
+     */
+    private fun putTemplate(keyName: String, mat: Mat) {
+        val stale = templateCache.remove(keyName)
+        if (stale != null && stale.gameId == currentGameId()) stale.mat.release()
+        templateCache[keyName] = CachedTemplate(currentGameId(), mat)
+    }
 
     data class MatchResult(
         val isFound: Boolean,
@@ -81,8 +120,7 @@ object OpenCvMatcher {
             val mat = Mat()
             Utils.bitmapToMat(bitmap, mat)
             Imgproc.cvtColor(mat, mat, Imgproc.COLOR_RGBA2BGR)
-            templateCache[keyName]?.release()
-            templateCache[keyName] = mat
+            putTemplate(keyName, mat)
             true
         } catch (e: Throwable) {
             Log.w(TAG, "从 Bitmap 载入模板 [$keyName] 失败: ${e.message}")
@@ -90,12 +128,14 @@ object OpenCvMatcher {
         }
     }
 
-    /** 某个模板是否已在缓存里。 */
-    fun hasTemplate(keyName: String): Boolean = templateCache.containsKey(keyName)
+    /** 某个模板是否已在缓存里（仅算本游戏的）。 */
+    fun hasTemplate(keyName: String): Boolean = templateFor(keyName) != null
 
     /** 释放某个模板缓存（模板被重新登记后需要先失效）。 */
     fun invalidateTemplate(keyName: String) {
-        templateCache.remove(keyName)?.release()
+        val entry = templateCache.remove(keyName) ?: return
+        // 只释放本游戏那一份；别家游戏的条目只是摘掉引用，不参与释放（理由见 CachedTemplate）。
+        if (entry.gameId == currentGameId()) entry.mat.release()
     }
 
     /**
@@ -109,8 +149,14 @@ object OpenCvMatcher {
                 false
             } else {
                 isInitialized = true
+                appContext = context.applicationContext
                 Log.i(TAG, "OpenCV 引擎就绪，正在动态扫描模板资产...")
                 preloadAvailableTemplates(context)
+                // 切游戏要整套换模板：内存里留着上一款游戏的图，匹配结果就是上一款游戏的位置。
+                if (!switchHookRegistered) {
+                    switchHookRegistered = true
+                    com.stzb.assistant.service.PerGameScope.reloadOnProfileSwitch { reloadTemplates() }
+                }
                 true
             }
         } catch (e: Throwable) {
@@ -120,18 +166,48 @@ object OpenCvMatcher {
     }
 
     /**
-     * 动态加载 assets/templates 下存在的全部图片文件，不硬编码任何具体文件名
+     * 按当前激活的游戏重扫模板资产。
+     *
+     * 这里**不**清空缓存：见 [CachedTemplate] 的说明——切游戏时自动化线程可能
+     * 正拿着上一款游戏的模板做匹配，此刻 release 就是 native use-after-free。
+     * 上一款游戏的条目从此只是"看不见"（[templateFor] 按游戏过滤），
+     * 同名条目会被本游戏的新模板顶掉。
+     */
+    fun reloadTemplates() {
+        val ctx = appContext ?: return
+        preloadAvailableTemplates(ctx)
+        val mine = templateCache.count { it.value.gameId == currentGameId() }
+        Log.i(
+            TAG,
+            "已按 [${currentGameId()}] 重扫模板资产：本游戏可用模板 $mine 张" +
+                "（缓存里另有 ${templateCache.size - mine} 张属于其它游戏，不会参与匹配）。"
+        )
+    }
+
+    /**
+     * 动态加载本游戏资产目录下的全部图片模板，不硬编码任何具体文件名。
+     *
+     * 目录按游戏分域（见 [com.stzb.assistant.service.PerGameScope.assetDirs]）：
+     * `templates/<gameId>/` 优先，率土还可以继续用旧的 `templates/`。
+     * 之所以必须挡住"别的游戏也吃这批图"：这批 png 是照着率土界面截的，
+     * 拿它去匹配三战的界面，匹配器照样会给出峰值，我们就照着那个位置点下去。
      */
     private fun preloadAvailableTemplates(context: Context) {
-        try {
-            val list = context.assets.list("templates") ?: return
-            for (filename in list) {
-                if (filename.endsWith(".png", ignoreCase = true) || filename.endsWith(".jpg", ignoreCase = true)) {
-                    loadTemplateFromAsset(context, "templates/$filename", filename)
-                }
+        for (dir in com.stzb.assistant.service.PerGameScope.assetDirs("templates")) {
+            val list = try {
+                context.assets.list(dir) ?: continue
+            } catch (e: Exception) {
+                Log.w(TAG, "扫描模板资产目录 [$dir] 异常: ${e.message}")
+                continue
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "扫描模板资产异常: ${e.message}")
+            for (filename in list) {
+                if (!filename.endsWith(".png", ignoreCase = true) &&
+                    !filename.endsWith(".jpg", ignoreCase = true)
+                ) continue
+                // 同名模板以先出现的目录为准（本游戏专属目录排在最前）。
+                if (hasTemplate(filename)) continue
+                loadTemplateFromAsset(context, "$dir/$filename", filename)
+            }
         }
     }
 
@@ -153,7 +229,7 @@ object OpenCvMatcher {
             try {
                 Utils.bitmapToMat(decoded, m)
                 Imgproc.cvtColor(m, m, Imgproc.COLOR_RGBA2BGR)
-                templateCache[keyName] = m
+                putTemplate(keyName, m)
             } catch (e: Exception) {
                 m.release()
                 throw e
@@ -177,7 +253,7 @@ object OpenCvMatcher {
         templateName: String,
         threshold: Float = 0.75f
     ): MatchResult {
-        val tplMat = templateCache[templateName] ?: return MatchResult(false, 0f, 0f, 0f, Rect())
+        val tplMat = templateFor(templateName) ?: return MatchResult(false, 0f, 0f, 0f, Rect())
 
         val srcMat = Mat()
         var resultMat: Mat? = null

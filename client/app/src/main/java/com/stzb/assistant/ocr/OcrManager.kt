@@ -50,7 +50,17 @@ object OcrManager {
     private var warnedEngineMissing = false
 
     // 预编译正则，提升极端高频识图性能
-    private val PATTERN_STAMINA = Pattern.compile("(\\d{1,3})\\s*/\\s*120")
+    /**
+     * 体力读数模板。**分母绝不写死 120**：
+     * 体力上限是游戏数据（率土/三战常见 120，但也有 100 的玩法），写死就等于
+     * "换个游戏这一项永远读不出来"——而且读不出来时返回 null，看起来像"这一帧没看到"，
+     * 不像"这个功能对这个游戏是坏的"。同一个坑已在 [TroopStatusDetector.staminaPattern] 修过，
+     * 这里补上剩下两处（本文件与 SquadLevelingFlow）。
+     */
+    private fun staminaPattern(): Pattern = Pattern.compile(
+        "(\\d{1,3})\\s*/\\s*" +
+            com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules.maxStamina + "\\b"
+    )
     private val PATTERN_COORDINATE = Pattern.compile("[Xx][：:\\s]*(\\d{1,4})[\\s,，]+[Yy][：:\\s]*(\\d{1,4})")
     private val PATTERN_COUNTDOWN = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*[:：]\\s*(\\d{2})")
     private val PATTERN_SHORT_COUNTDOWN = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})")
@@ -180,12 +190,12 @@ object OcrManager {
     fun detectRoi(bitmap: Bitmap): OcrResult? = detectSmall(bitmap)
 
     /**
-     * 提取武将体力（格式：xx/120）
+     * 提取武将体力（格式：`当前/上限`，上限取自当前知识库的 `rules.maxStamina`）
      * 返回：当前体力值（如 98），未识别到返回 null
      */
     fun parseStamina(roiBitmap: Bitmap): Int? {
         val res = detectSmall(roiBitmap) ?: return null
-        val matcher = PATTERN_STAMINA.matcher(res.strRes)
+        val matcher = staminaPattern().matcher(res.strRes)
         if (matcher.find()) {
             return matcher.group(1)?.toIntOrNull()
         }

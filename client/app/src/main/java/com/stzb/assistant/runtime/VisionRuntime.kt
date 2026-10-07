@@ -81,7 +81,12 @@ object VisionRuntime {
 
         // 闸门 1：权重资产是否存在
         if (!com.stzb.assistant.ai.assets.ModelAssetManager.isYoloReady(context)) {
-            unavailableReason = "未打包 YOLO 权重（assets/models/yolov8*_stzb.param+.bin），" +
+            // 期望文件名按**当前激活游戏**报。原来这里写死 "yolov8*_stzb"，
+            // 换一款游戏后照这句话去放文件，放的那个名字本游戏根本读不到——
+            // 提示把人引向一个永远不会生效的路径，比不提示更糟。
+            val sampleName = com.stzb.assistant.ai.assets.ModelAssetManager
+                .modelCandidates("yolov8s.param").first()
+            unavailableReason = "未打包本游戏的 YOLO 权重（assets/models/$sampleName 等成对 .param+.bin），" +
                 "目标检测能力不可用，视觉相关增强将跳过。"
             Log.i(TAG, unavailableReason)
             return null

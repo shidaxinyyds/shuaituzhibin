@@ -32,6 +32,19 @@ class AutoTouchService : AccessibilityService() {
             get() = instance != null
     }
 
+    /**
+     * 最近一次观测到的“位于前台的包名”，以及看到它的时刻。
+     *
+     * @Volatile：写发生在无障碍事件回调线程，读发生在战术流水线所在的协程线程。
+     */
+    @Volatile
+    var foregroundPackage: String? = null
+        private set
+
+    @Volatile
+    var foregroundEpochMs: Long = 0L
+        private set
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -44,7 +57,28 @@ class AutoTouchService : AccessibilityService() {
         Log.w(TAG, "无障碍触控通道已断开。")
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    /**
+     * 只拿前台归属这一件事。
+     *
+     * 这个回调过去是空的（`{}`），即服务明明声明了 `typeAllMask` 与
+     * `canRetrieveWindowContent`，却一个事件也没用过。现在把窗口切换事件用起来：
+     * 它恰好是“这一次盲点到底点在哪个应用上”唯一可靠的现场证据。
+     *
+     * 只处理 TYPE_WINDOW_STATE_CHANGED / TYPE_WINDOW_ACTIVE：其余事件（内容变化、
+     * 滚动、获得焦点……）量极大且不回答“谁是前台”，在其中取值会得到错误的包名。
+     */
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event == null) return
+        val type = event.eventType
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            type != AccessibilityEvent.TYPE_WINDOW_ACTIVE
+        ) {
+            return
+        }
+        val pkg = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return
+        foregroundPackage = pkg
+        foregroundEpochMs = System.currentTimeMillis()
+    }
 
     override fun onInterrupt() {}
 

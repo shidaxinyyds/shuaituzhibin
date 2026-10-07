@@ -26,6 +26,15 @@ name: Build APK with Real OCR (ncnn + OpenCV)
 # ncnn 则不同：它的 android 包多数是静态库（libncnn.a），不需要额外 .so；
 # 但 `-shared` 变体需要，因此对 ncnn 采取"有 .so 就打包"的方式。
 #
+# 版本一致性（这里踩过一次静默坑，现已在步骤里硬校验）
+#
+# 默认 `opencv_version` 是 **4.5.3**，与 `client/app/build.gradle` 里的
+# `com.quickbirdstudios:opencv:4.5.3.0` 同一 minor。这不是巧合：CMake 用的是下载来的
+# SDK 头文件，运行时加载的却是 AAR 里那份 `libopencv_java4.so`（见上一段）。
+# 两边 minor 不同时，编译期看到的符号在运行期那份 .so 里可能不存在 ——
+# 而这种失败**只在真机出现**（dlopen / UnsatisfiedLinkError），CI 里 APK 能正常产出、
+# 所有静态检查全绿。所以这里加了 "Assert OpenCV version matches the AAR" 步骤当场拦掉。
+#
 # 目标产物：一个 native OCR 真实可用（非空桩）的 APK。
 # 验证方式：安装后看 logcat
 #     adb logcat | grep -E "OcrManager|RapidOcr"
@@ -40,9 +49,9 @@ on:
         required: false
         default: '20240410'
       opencv_version:
-        description: 'OpenCV Android SDK 版本 (如 4.9.0)'
+        description: 'OpenCV Android SDK 版本；必须与 build.gradle 里 AAR 的 minor 一致'
         required: false
-        default: '4.9.0'
+        default: '4.5.3'
 
 permissions:
   contents: read
@@ -120,6 +129,30 @@ jobs:
           mkdir -p /tmp/ocr-sos
           find . -type f -name "*.so" -path "*arm64-v8a*" -exec cp -v {} /tmp/ocr-sos/ \; || true
           ls -la /tmp/ocr-sos || true
+
+      - name: Assert OpenCV version matches the AAR that actually ships the .so
+        run: |
+          set -e
+          WANT="${{ github.event.inputs.opencv_version }}"
+          # 运行时那份 libopencv_java4.so 来自 build.gradle 里的 AAR（下面刻意**不**复制 SDK 的
+          # 同名 .so，否则打包阶段会撞 "More than one file was found with OS independent path
+          # 'lib/arm64-v8a/libopencv_java4.so'"）。所以"编译用的头文件"与"运行时加载的 .so"
+          # 必须是同一个 minor：minor 不同 → 头文件声明的符号在那份 .so 里可能不存在，
+          # 失败只在真机出现（dlopen / UnsatisfiedLinkError），CI 全绿也拦不住。
+          AAR=$(grep -oE 'com\.quickbirdstudios:opencv:[0-9.]+' client/app/build.gradle | head -n 1 | sed 's/.*://')
+          if [ -z "$AAR" ]; then
+            echo "::error::在 client/app/build.gradle 里找不到 com.quickbirdstudios:opencv:<版本>，无法校验一致性。"
+            exit 1
+          fi
+          AAR_MM=$(echo "$AAR" | cut -d. -f1,2)
+          WANT_MM=$(echo "$WANT" | cut -d. -f1,2)
+          echo "运行时 AAR = $AAR (minor $AAR_MM)；本次要下载的 SDK = $WANT (minor $WANT_MM)"
+          if [ "$AAR_MM" != "$WANT_MM" ]; then
+            echo "::error::OpenCV 版本不一致：头文件来自 $WANT，运行时 .so 来自 AAR $AAR。"
+            echo "::error::把 opencv_version 改成与 AAR 同一 minor ($AAR_MM.x)，或同步升级 build.gradle 里的 AAR。"
+            exit 1
+          fi
+          echo "✅ OpenCV minor 一致，编译期与运行期是同一套 ABI。"
 
       - name: Provision OpenCV (discover release assets via GitHub API)
         id: opencv
