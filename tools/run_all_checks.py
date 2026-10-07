@@ -17,6 +17,7 @@
   6. `selftest_check_ci_shell.py`  上述校验器的反例自测
   7. `selftest_license_token.py`   授权凭证判别逻辑自测
   8. `validate_scene_fingerprint.py` 场景指纹算法在真机截图上的实测（需要截图）
+ 8b. `gen_button_seeds.py`  按键模板种子的三重验收：自检 / 跨帧迁移 / 不误命中（需要截图）
   9. `tools/p1/check_assets.py`    入包资产体检：体积预算 / RAG 索引契约 / 假权重（离线纯 stdlib）
  10. `tools/p1/check_bases.py`     模型权重下载清单核验（默认离线只读；`--download` 才联网）
  11. `check_undeclared_receivers.py` 接收者标识符声明对账（拦 `Unresolved reference: scope` 这类）
@@ -28,6 +29,30 @@
  17. `p3/check_antiban_wiring.py`       P3 接线契约：拟人能力是否真的接在调用链上（拦「代码写对但没人调」这类静默失效）
  18. `p3/check_antiban_wiring.py --selftest` 上述闸门的反例自测（注入 9 条已知回退形态）
  19. `ci_status.py --selftest`      CI 速查工具的判定自测（**cancelled / 根本没跑起 / 真失败** 必须分开；把 Run #28 的误读固化成规则）
+ 20. `check_knowledge_base.py`      知识库一致性与接线闸门（三套权威对账 / 幽灵武将 / 死配置 / 云端产物漂移）
+ 21. `check_knowledge_base.py --selftest` 上述闸门的反例自测（每类缺陷注入一条，正例不许误报）
+ 22. `export_profile.py --check`      云端产物新鲜度（pipeline/*.json 必须由内置库导出，拦手工漂移）
+ 23. `validate_template_matcher.py`   模板匹配在真机截图上的实测（ZNCC 得分/正负例可分性，需要截图）
+ 24. `upload_profile.py --selftest`   发布闸门的反例自测（字段齐全/产物新鲜/版本单调，拦“发了但永远不生效”）
+ 25. `rag_bench.py --contract`        RAG 检索通道契约（通道 ↔ 真实 .bin 的 category ↔ 调用点三方对账，拦“整层检索空转”）
+ 26. `rag_bench.py --selftest`        上述闸门 + 迁移阈值的反例自测（含“解析器自己瞎了不许报绿”）
+ 27. `rag_bench.py`                   P5 迁移裁决 STAY/MIGRATE（参考项：正常输出就是维持现状，不做构建门槛）
+ 28. `check_multi_game_readiness.py`  多游戏就绪闸门（游戏 id 字面量必须登记 / 权重文件名唯一权威 /
+                                      分域数据必须注册切游戏重载 / 资产目录走候选 / 纯云端激活硬闸）
+ 29. `check_multi_game_readiness.py --selftest` 上述闸门的反例自测（干净夹具不许误报、9 条回退形态
+                                      各自必须被抓到、例外登记表自己失效必须被抓到）
+ 30. `check_kotlin_braces.py`         Kotlin/Java 括号与字面量配平（字符串/注释/模板都分得清，
+                                      拦"少一个 } / 引号没闭合"这类本机唯一能抓的编译期缺陷；
+                                      **执行顺序上排在所有语义闸门之前**）
+ 31. `check_kotlin_braces.py --selftest` 上述闸门的正例/反例自测（7 个易误伤正例 + 10 条结构缺陷）
+
+> 28 / 29 是一组：P7 要回答的问题不是"多游戏功能好不好用"，而是**对外喊的
+> "加一款游戏零代码改动"到底成不成立**。它成立的前提是四条结构性不变量一直成立；
+> 这四条被改回去时 App 不报错、不降级，只表现为"换了游戏但识别还是上一款"。
+> 想看清还剩哪些**必须人工补**的例外：`python tools/check_multi_game_readiness.py --show-checklist`。
+
+> 20 / 21 / 22 是一组：内置 Kotlin 知识库是**唯一权威**，pipeline/*.json 只是它的
+> 派生产物。20 保证两边语义对齐，22 保证产物确实是导出来的（而不是有人手改了一个数）。
 
 > 11 / 12 是补上 `verify_refs.py` 的射程盲区：它只对账**枚举常量**与**整对象成员**
 > （`ButtonType.X` / `EngineBridge.x`），查不到 `局部变量.属性`、`this 成员`
@@ -46,6 +71,7 @@
 * **截图类检查优雅跳过**：真机截图不可能进仓库，因此 `validate_scene_fingerprint`
   在没有提供截图时**跳过并说明**，而不是失败。
   通过 `--fingerprint-map` 或环境变量 `STZB_FP_MAP` / `STZB_FP_VARIANT` / `STZB_FP_OTHER` 提供；
+  后两者可用 `;` 分隔给多张（变体越多，阈值宽容度这件事才越接近被证实）。
   加 `--strict` 可让"缺截图"也算失败。
 
 用法
@@ -62,6 +88,7 @@ import argparse
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import sys
 import time
@@ -126,6 +153,25 @@ def _has_any_base():
 
 def build_checks(args):
     checks = [
+        {
+            # 结构配平排在所有语义闸门之前：本机没有 JDK，编不出 APK 的那类缺陷
+            # （少一个 }、括号错配、引号没闭合）只能靠这里挡。
+            # 语义校验器在一个结构已经塌了的文件上只会给出噪声结论。
+            "id": "kotlin-braces",
+            "title": "Kotlin/Java 括号与字面量配平（字符串/注释/模板都分得清）",
+            "script": "check_kotlin_braces.py",
+            "argv": ["--root", os.path.join("client", "app", "src", "main")],
+            "required": True,
+        },
+        {
+            # 判据自测：7 个"看起来会误伤"的正例不许误报（字符串里的 }、注释里的括号、
+            # 原始字符串里的引号、模板里的 lambda……），10 条结构缺陷必须各自被抓到。
+            "id": "kotlin-braces-selftest",
+            "title": "结构配平闸门的反例自测",
+            "script": "check_kotlin_braces.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
         {
             "id": "refs",
             "title": "资源/成员/findViewById/领域不变量 一致性",
@@ -367,15 +413,143 @@ def build_checks(args):
             "argv": ["--selftest"],
             "required": True,
         },
+        {
+            # 知识库闸门：内置库 ↔ RAG 私有硬编码表 ↔ pipeline/*.json 三方对账。
+            #
+            # 以前 required=False，是因为它报出的每一条都是待修清单（缺按键词条 /
+            # 幽灵武将 / 兵力两套值 / 死配置）——一次性翻红只会让回归长期飘红，
+            # 而飘红的唯一后果是没人再看它。
+            # 现在待修清单已逐条清零（8 项死配置全部接线或删除），故改为必需项：
+            # 任何一条重新出现都必须挡住构建，而不是沦为又一条被忽略的 WARN。
+            "id": "knowledge-base",
+            "title": "知识库一致性与字段接线闸门（三源对账 + 死配置）",
+            "script": "check_knowledge_base.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            # 内置库改完忘记重导，云端产物就落后于代码——而客户端采纳云端库的
+            # 判据是「版本号严格更新」，于是真机跑的仍是旧语义，且毫无报错。
+            # 这条闸门只做一件事：产物必须能被导出器原样复现，落后即失败。
+            "id": "export-freshness",
+            "title": "云端产物新鲜度（pipeline/*.json 必须由内置库导出）",
+            "script": "export_profile.py",
+            "argv": ["--check"],
+            "required": True,
+        },
+        {
+            # P5 取证实物：RAG 的检索通道契约。
+            #
+            # 这条是补上一个**真实存在过的静默失效**：调用侧查 DEFENDER_LAND/SKILL_SYNERGY/
+            # TACTICAL_DECREE，而入包的 V2 资产用的是 DEFENDER_SAFE/MODERATE/HARD/AVOID +
+            # LAND_SIEGE，两边一个都不重合 ⇒ 每条生产检索都返回空列表。
+            # 它不报错、不降级，看起来"军师偶尔没参考条目"，实则整层 RAG 空转。
+            # 本项拿真实 .bin 的 category 集合与 Kotlin 里的通道表、调用点、种子库三方对账。
+            "id": "rag-channel-contract",
+            "title": "RAG 检索通道契约（通道 ↔ 资产 category ↔ 调用点三方对账）",
+            "script": "rag_bench.py",
+            "argv": ["--contract"],
+            "required": True,
+        },
+        {
+            # 上面那条的判据自测：阈值、文档同源、通道契约三类缺陷各自必须被抓到，
+            # 同时证明解析器不是瞎的（解析不到通道表/调用点时不许报绿）。
+            "id": "rag-bench-selftest",
+            "title": "RAG 阈值与通道契约闸门的反例自测",
+            "script": "rag_bench.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
+            # P5 的**裁决**（STAY / MIGRATE）刻意不进必需项：
+            # 它的一次正常输出就是"维持现状"，而越线时该做的是人工决策 + 真机复测，
+            # 不是把构建挡死（与 ocr-gate 同一处置理由）。
+            # 需要复跑评估：python tools/rag_bench.py
+            "id": "rag-migration-verdict",
+            "title": "RAG 检索成本实测与迁移阈值裁决（参考项，不做构建门槛）",
+            "script": "rag_bench.py",
+            "argv": [],
+            "required": False,
+            "skip_reason": None,
+        },
+        {
+            # 发布闸门只在人手动发布时才跑，所以它坏了不会有人知道——而它拦的是
+            # “配置已上云但全网永远不采纳”这类完全静默的事故。
+            # 自测不写仓库文件（只读产物、台账全在内存里构造），因此可以作为必需项。
+            "id": "publish-gate-selftest",
+            "title": "知识库发布闸门的反例自测（字段/新鲜度/版本单调）",
+            "script": "upload_profile.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
+            # 自测不读文件系统，必须常绿：规则本身坏了，闸门就成了摆设。
+            "id": "knowledge-base-selftest",
+            "title": "知识库闸门的反例自测（每类缺陷注入一条、正例不许误报）",
+            "script": "check_knowledge_base.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
+            # RAG 语料曾是知识包的手抄副本：知识包加了将、语料没跟上，
+            # 端侧只是"检索不到那个守将"，而所有闸门照样全绿（实测少 3 条）。
+            # 这条做双向对账：语料不许编造、知识包不许有漏抄的锚点、
+            # category 必须落在端侧 SEARCH_CHANNELS 的源码解析结果里、
+            # 产物 .bin 必须与这份语料同步（条数 + 标题字节都要能找回）。
+            "id": "rag-provenance",
+            "title": "RAG 语料溯源（语料↔知识包双向对账 + 资产同步）",
+            "script": "validate_rag_corpus_provenance.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            # 溯源校验本身也会坏：它一度把整条拼成一个大串做子串判断，
+            # 于是"标题带着 120、正文被改成 999"照样绿。
+            # 这个自测拿真实语料做 6 种突变，逐个断言同一个校验函数变红。
+            "id": "rag-provenance-selftest",
+            "title": "RAG 溯源闸门的反例自测（6 种突变必须全部拦下）",
+            "script": "validate_rag_corpus_provenance.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
+        {
+            # P7 的承重墙：对外喊"加一款游戏零代码改动"，靠的是四条不变量不被悄悄改回去——
+            #   ① 纯云端知识包必须能激活（不能被 builtInProfiles 缺键的硬闸挡死）
+            #   ② 权重文件名只能有一处权威（否则"体检判就绪 / 引擎加载另一套"）
+            #   ③ 按 gameId 分域落盘的标定必须注册切游戏重载钩子
+            #   ④ 游戏专属资产目录必须走 assetDirs 候选
+            # 这四条坏掉时 App 不会报错，只会表现为"换了游戏但识别还是上一款"，
+            # 属于典型的静默失效，因此列为必需项。
+            "id": "multi-game-readiness",
+            "title": "多游戏就绪闸门（游戏 id 登记 / 命名单一权威 / 分域重载 / 结构不变量）",
+            "script": "check_multi_game_readiness.py",
+            "argv": [],
+            "required": True,
+        },
+        {
+            # 上面那条的判据自测：干净夹具不许误报，9 条已知回退形态各自必须被抓到，
+            # 例外登记表自己被改动或删除时也必须被抓到（没人核对的白名单会变成空档）。
+            "id": "multi-game-readiness-selftest",
+            "title": "多游戏就绪闸门的反例自测",
+            "script": "check_multi_game_readiness.py",
+            "argv": ["--selftest"],
+            "required": True,
+        },
     ]
 
+    def env_list(name):
+        """环境变量允许用 `;` 分隔给多张截图。
+
+        为什么支持多条：这套判据的意义在于"多个真实变体都能命中、多种别的界面都不命中"，
+        单张 variant 只能证明自相似，证不了阈值宽容度。Windows 路径里不会出现 `;`，
+        所以这个分隔符是安全的。
+        """
+        raw = os.environ.get(name) or ""
+        return [p.strip() for p in raw.split(";") if p.strip()]
+
     fp_map = args.fingerprint_map or os.environ.get("STZB_FP_MAP")
-    fp_variant = list(args.fingerprint_variant) + (
-        [os.environ["STZB_FP_VARIANT"]] if os.environ.get("STZB_FP_VARIANT") else []
-    )
-    fp_other = list(args.fingerprint_other) + (
-        [os.environ["STZB_FP_OTHER"]] if os.environ.get("STZB_FP_OTHER") else []
-    )
+    fp_variant = list(args.fingerprint_variant) + env_list("STZB_FP_VARIANT")
+    fp_other = list(args.fingerprint_other) + env_list("STZB_FP_OTHER")
 
     fp_argv = []
     if fp_map:
@@ -395,6 +569,59 @@ def build_checks(args):
             "skip_reason": None if fp_map else (
                 "未提供真机截图。用 --fingerprint-map <大地图截图> "
                 "或环境变量 STZB_FP_MAP 提供；真机截图不适合进仓库，故默认跳过。"
+            ),
+        }
+    )
+
+    # 模板匹配器实测：拿真机大地图当帧、另一界面当负例，验 OpenCvMatcher 那套
+    # ZNCC + 次峰抑制在真实像素上能不能区分“同一个按钮”与“不同界面”。
+    # 它需要 --map 与 --other **两张**都有意义（只有正例就无法证伪），
+    # 故比 scene-fingerprint 多一道门槛；真机截图不进仓库，缺参时优雅跳过。
+    tpl_argv = []
+    if fp_map and fp_other:
+        tpl_argv = ["--map", fp_map, "--other", fp_other[0]]
+    checks.append(
+        {
+            "id": "template-matcher",
+            "title": "模板匹配实测（ZNCC 得分 / 正负例可分性，需要真机截图）",
+            "script": "validate_template_matcher.py",
+            "argv": tpl_argv,
+            "required": bool(tpl_argv) or args.strict,
+            "skip_reason": None if (fp_map and fp_other) else (
+                "未同时提供大地图截图与另一界面截图。用 --fingerprint-map 加 "
+                "--fingerprint-other 各一张（或环境变量 STZB_FP_MAP / STZB_FP_OTHER）"
+                "即可启用；真机截图不适合进仓库，故默认跳过。"
+            ),
+        }
+    )
+
+    # 按键模板**种子**的验收：清单里每个种子都必须"能自检、跨帧可迁移、在别的界面上不误命中"。
+    # 种子会随 APK 发给所有用户，所以这条闸门比"生成"更重要 —— 没过验收就不该有文件存在。
+    # 它读的是截图目录（不进仓库），缺图时跳过并说明，理由与上面两条一样。
+    seed_manifest = os.path.join(REPO, "tools", "button_seeds.json")
+    seed_shots = None
+    if os.path.isfile(seed_manifest):
+        try:
+            with io.open(seed_manifest, encoding="utf-8-sig") as fh:
+                dirs = json.load(fh).get("shots_dir", "")
+            # 清单可以引用多个截图目录（不同批次的真机抓屏），逐个都要在才实跑
+            dirs = [dirs] if isinstance(dirs, str) else list(dirs)
+            seed_shots = [os.path.join(REPO, d) for d in dirs]
+        except Exception as e:  # 清单写坏也是失败，不能悄悄不跑
+            seed_shots = ["__manifest_broken__:%s" % e]
+    seed_ready = bool(seed_shots) and all(os.path.isdir(d) for d in seed_shots)
+    seed_argv = ["--manifest", seed_manifest, "--check"] if seed_ready else []
+    checks.append(
+        {
+            "id": "button-seeds",
+            "title": "按键模板种子的三重验收（自检 / 跨帧迁移 / 不误命中）",
+            "script": "gen_button_seeds.py",
+            "argv": seed_argv,
+            "required": bool(seed_argv) or (args.strict and seed_shots is not None),
+            "skip_reason": None if seed_argv else (
+                "清单引用的截图目录不在（%s）。真机截图不进仓库，故默认跳过；"
+                "本地有截图时这条会实跑，一个种子过不了就不许有产物。"
+                % (", ".join(seed_shots) if seed_shots else "tools/button_seeds.json 缺失")
             ),
         }
     )
@@ -491,12 +718,12 @@ def main():
             # 第一版只打印 SKIP，完全没看 required 字段，
             # 结果 --strict 在文档里承诺的行为根本没有实现。
             if c["required"]:
-                results.append((c, False, c["skip_reason"], 0.0))
+                results.append((c, "fail", c["skip_reason"], 0.0))
                 print(f"FAIL | {c['id']:22s} | {c['title']}")
                 print(f"       {c['skip_reason']}")
                 print("       （--strict：跳过视为失败）")
             else:
-                results.append((c, None, c["skip_reason"], 0.0))
+                results.append((c, "skip", c["skip_reason"], 0.0))
                 print(f"SKIP | {c['id']:22s} | {c['title']}")
                 print(f"       {c['skip_reason']}")
             continue
@@ -505,23 +732,39 @@ def main():
         rc, out = run_checker_inprocess(c["script"], c["argv"])
         dt = time.time() - t0
         ok = (rc == 0)
-        results.append((c, ok, out, dt))
-        print(f"{'PASS' if ok else 'FAIL'} | {c['id']:22s} | {c['title']}  ({dt:.1f}s)")
+        # required=False 的闸门：未过列成 WARN、不进退出码。
+        # 以前只看了 skip_reason 里的 required，真跑起来未照样计入 FAIL——
+        # “只警告”的承诺落空，后果要么是不能上 CI，要么是开始整体忽略红灯。
+        # （--strict 下仍然算失败，与文档一致。）
+        if not ok and not c["required"] and not args.strict:
+            results.append((c, "warn", out, dt))
+            print(f"WARN | {c['id']:22s} | {c['title']}  ({dt:.1f}s)  【非必需，不计入退出码】")
+        else:
+            results.append((c, "pass" if ok else "fail", out, dt))
+            print(f"{'PASS' if ok else 'FAIL'} | {c['id']:22s} | {c['title']}  ({dt:.1f}s)")
         if not ok:
-            tail = [l for l in out.splitlines() if l.strip()][-12:]
-            for l in tail:
+            lines = [l for l in out.splitlines() if l.strip()]
+            for l in lines[-24:]:
                 print(f"       {l}")
+            if len(lines) > 24:
+                print(f"       …上方仅列后 24 行，完整清单：python tools/{c['script']}")
 
     print("-" * 78)
-    failed = [r for r, ok, _, _ in results if ok is False]
-    skipped = [r for r, ok, _, _ in results if ok is None]
+    failed = [r for r, st, _, _ in results if st == "fail"]
+    skipped = [r for r, st, _, _ in results if st == "skip"]
+    warned = [r for r, st, _, _ in results if st == "warn"]
 
-    print(f"通过 {sum(1 for _, ok, _, _ in results if ok is True)} / "
-          f"失败 {len(failed)} / 跳过 {len(skipped)}")
+    print(f"通过 {sum(1 for _, st, _, _ in results if st == 'pass')} / "
+          f"失败 {len(failed)} / 警告 {len(warned)} / 跳过 {len(skipped)}")
 
     if skipped:
         print("被跳过的检查（不算失败，但请知悉其未被验证）：")
         for r in skipped:
+            print(f"  - {r['id']}: {r['title']}")
+
+    if warned:
+        print("\n警告项（required=False：待修清单，不影响退出码，但必须逐条收敛）：")
+        for r in warned:
             print(f"  - {r['id']}: {r['title']}")
 
     if failed:

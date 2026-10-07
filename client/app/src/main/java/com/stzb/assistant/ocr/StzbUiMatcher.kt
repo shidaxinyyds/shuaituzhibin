@@ -3,15 +3,27 @@ package com.stzb.assistant.ocr
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.Log
+import kotlin.math.abs
 import kotlin.random.Random
 
 /**
- * 率土之滨现代化全场景状态机与语义按键定位器 (StzbUiMatcher)
- * 
- * 彻底摒弃老旧写死 PNG 小切片匹配（NetEase 频繁更换 UI 材质与赛季皮肤会导致小图失效）；
- * 采用【RapidOCR 语义特征提取 + 空间几何校验 + 模糊容错匹配】的现代化全场景识别架构。
- * 
+ * 率土之滨全场景状态机与语义按键定位器 (StzbUiMatcher)
+ *
+ * ## 按键定位有两条互补的通道（不是一条）
+ *   * **通道 A：OCR 语义识别**——认的是"出征/扫荡/驻守"这些中文字，
+ *     所以官方换按钮皮肤、改边框花纹时它照样找得到；代价是需要 native OCR 引擎。
+ *   * **通道 B：模板匹配**——认的是"这一小片长什么样"（见
+ *     [com.stzb.assistant.service.ButtonTemplateStore]），不需要 OCR、不需要模型；
+ *     代价是改了美术/换了皮肤就要重新学（所以命中后会自愈刷新，见
+ *     [refreshTemplateIfConfident]）。
+ *
+ * 默认构建里 native OCR 是空桩（ncnn 未参与编译），此时**通道 B 是唯一还能工作的定位手段**；
+ * 反过来 OCR 装上之后，通道 A 命中也会顺手把模板学下来，让"OCR 哪天不可用"不至于全盘失效。
+ * 早期版本这里写着"彻底摒弃 PNG 小切片匹配"，那是只在有 OCR 的前提下才成立的结论，
+ * 现已按实际行为改写——留着那句话会让人以为模板通道是历史包袱。
+ *
  * 支持：
  *   1. 场景状态智能分类 (大地图、地块轮盘菜单、出征面板、守军面板、坐标面板、筑城面板等)；
  *   2. 核心功能按键精确定位与抗风控拟人触控点计算；
@@ -114,40 +126,104 @@ object StzbUiMatcher {
         val fullText = ocrResult.strRes
 
         // 1. 判断是否处于“出征/调动部队选择面板”
-        if ((fullText.contains("出征") || fullText.contains("调动") || fullText.contains("行军"))
-            && (fullText.contains("部队") || fullText.contains("体力") || fullText.contains("耗时") || fullText.contains("预计"))
+        if (containsAny(fullText, sceneWords(SCENE_DISPATCH_ACTION, listOf("出征", "调动", "行军")))
+            && containsAny(fullText, sceneWords(SCENE_DISPATCH_TROOP, listOf("部队", "体力", "耗时", "预计")))
         ) {
             return GameState.TROOP_DISPATCH_DIALOG
         }
 
         // 2. 判断是否处于“查看守军面板”
-        if (fullText.contains("守军") && (fullText.contains("兵力") || fullText.contains("战法") || fullText.contains("难度"))) {
+        if (containsAny(fullText, sceneWords(SCENE_DEFENDER_TITLE, listOf("守军")))
+            && containsAny(fullText, sceneWords(SCENE_DEFENDER_DETAIL, listOf("兵力", "战法", "难度")))
+        ) {
             return GameState.DEFENDER_INFO_DIALOG
         }
 
         // 3. 判断是否处于“地块操作菜单展开” (必须至少出现2个动作关键字，防止大地图常驻顶部“出征”顶栏按钮误判)
-        val actionKeywords = listOf("出征", "扫荡", "驻守", "屯田", "练兵")
+        //    动作词直接取**当前知识库这五个语义键的主词**，不再抄一份率土词表：
+        //    语义键本来就是"这个游戏的这个动作叫什么"的唯一权威，抄两份迟早对不上。
+        val actionKeywords = MENU_ACTION_BUTTONS.flatMap { sceneWordsForButton(it) }
         val matchCount = actionKeywords.count { fullText.contains(it) }
-        if (matchCount >= 2 && !fullText.contains("部队一") && !fullText.contains("部队二")) {
+        if (matchCount >= 2 &&
+            !containsAny(fullText, sceneWords(SCENE_TROOP_PANEL, listOf("部队一", "部队二")))
+        ) {
             return GameState.TILE_ACTION_MENU
         }
 
         // 4. 判断是否处于“坐标跳转面板”
-        if (fullText.contains("坐标") && (fullText.contains("跳转") || fullText.contains("X") || fullText.contains("Y"))) {
+        if (containsAny(fullText, sceneWords(SCENE_COORD_TITLE, listOf("坐标")))
+            && containsAny(fullText, sceneWords(SCENE_COORD_ACTION, listOf("跳转", "X", "Y")))
+        ) {
             return GameState.COORDINATE_SEARCH_DIALOG
         }
 
         // 5. 判断是否处于“筑城/要塞面板”
-        if (fullText.contains("要塞") && (fullText.contains("建设") || fullText.contains("工匠") || fullText.contains("建造"))) {
+        if (containsAny(fullText, sceneWords(SCENE_FORTRESS_TITLE, listOf("要塞")))
+            && containsAny(fullText, sceneWords(SCENE_FORTRESS_ACTION, listOf("建设", "工匠", "建造")))
+        ) {
             return GameState.FORTRESS_BUILD_DIALOG
         }
 
         // 6. 判断是否处于“大地图主界面”
-        if (fullText.contains("令") || fullText.contains("战报") || fullText.contains("势力") || fullText.contains("同盟")) {
+        if (containsAny(fullText, sceneWords(SCENE_MAIN_MAP_HUD, listOf("令", "战报", "势力", "同盟")))) {
             return GameState.MAIN_MAP
         }
 
         return GameState.UNKNOWN
+    }
+
+    // ==========================================================
+    // 场景判定词表（率土默认值留在代码里，任何游戏都能用知识包覆盖）
+    // ==========================================================
+
+    // 场景判定的词组 ID（知识包 scene_keywords 的键）。
+    // 值是"出现其中任意一个就算命中这一组"，组与组之间是 AND，
+    // 组合关系属于引擎的场景模型（SLG 通用），词本身属于游戏（每游戏不同）。
+    const val SCENE_DISPATCH_ACTION = "DISPATCH_ACTION"
+    const val SCENE_DISPATCH_TROOP = "DISPATCH_TROOP"
+    const val SCENE_DEFENDER_TITLE = "DEFENDER_TITLE"
+    const val SCENE_DEFENDER_DETAIL = "DEFENDER_DETAIL"
+    const val SCENE_TROOP_PANEL = "TROOP_PANEL"
+    const val SCENE_COORD_TITLE = "COORD_TITLE"
+    const val SCENE_COORD_ACTION = "COORD_ACTION"
+    const val SCENE_FORTRESS_TITLE = "FORTRESS_TITLE"
+    const val SCENE_FORTRESS_ACTION = "FORTRESS_ACTION"
+    const val SCENE_MAIN_MAP_HUD = "MAIN_MAP_HUD"
+
+    /** 用于"地块操作菜单"判定的五个动作语义键（与底栏动作一一对应）。 */
+    private val MENU_ACTION_BUTTONS = listOf(
+        ButtonType.ATTACK, ButtonType.SWEEP, ButtonType.DEFEND, ButtonType.FARM, ButtonType.TRAIN
+    )
+
+    /** 每个"游戏 + 词组"只告警一次"正在用率土默认词表"，避免每帧刷日志。 */
+    private val defaultedVocabWarned = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    private fun containsAny(text: String, words: List<String>): Boolean = words.any { text.contains(it) }
+
+    /**
+     * 取某个场景词组：知识包给了就用知识包的，没给就回落内置率土词表。
+     *
+     * 回落时**必须响**（每个游戏+词组只响一次）：非率土游戏没配词表却按率土文案判场景，
+     * 判出来的状态是猜的——而挂机链路真的会按这个猜测去点。
+     */
+    private fun sceneWords(groupId: String, stzbDefault: List<String>): List<String> {
+        val prof = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile
+        prof.sceneKeywords[groupId]?.filter { it.isNotBlank() }?.let { if (it.isNotEmpty()) return it }
+        val mark = "${prof.gameId}/$groupId"
+        if (defaultedVocabWarned.putIfAbsent(mark, true) == null) {
+            Log.w(TAG, "场景词组 [$groupId] 在 [${prof.gameName}] 的知识包里没有配置，" +
+                "正在用内置率土词表 $stzbDefault 判定；该游戏界面文案若不同，场景判定会失真。" +
+                "请在知识包 scene_keywords 里补这个组。")
+        }
+        return stzbDefault
+    }
+
+    /** 语义按键在当前知识包里的全部叫法（主词 + 别名），没配则回落枚举里的率土默认词。 */
+    private fun sceneWordsForButton(type: ButtonType): List<String> {
+        val btnDef = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.semanticButtons[type.name]
+        val words = listOfNotNull(btnDef?.primaryKeyword?.takeIf { it.isNotBlank() }) +
+            (btnDef?.aliases ?: emptyList())
+        return if (words.isNotEmpty()) words else listOf(type.primaryKeyword) + type.aliases
     }
 
     /**
@@ -161,7 +237,10 @@ object StzbUiMatcher {
             if (m.find()) {
                 val x = m.group(1)?.toIntOrNull() ?: continue
                 val y = m.group(2)?.toIntOrNull() ?: continue
-                if (x in 1..1500 && y in 1..1500) {
+                // 坐标界按**当前游戏**的大地图尺寸判（知识库 map_coord_max），不写死率土的 1500
+                if (com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
+                        .isValidWorldCoord(x, y)
+                ) {
                     return Pair(x, y)
                 }
             }
@@ -413,31 +492,130 @@ object StzbUiMatcher {
                 if (cv.loadTemplateFromBitmap(key, tpl)) {
                     val r = cv.match(bitmap, key)
                     if (r.isFound) {
+                        val cx = r.centerX.toInt()
+                        val cy = r.centerY.toInt()
                         Log.i(
                             TAG,
                             "OpenCV 模板匹配定位按键 [${type.name}]：" +
-                                "(${r.centerX.toInt()}, ${r.centerY.toInt()}) 分数=${"%.3f".format(r.score)}"
+                                "($cx, $cy) 分数=${"%.3f".format(r.score)}"
                         )
-                        return buildTemplateResult(type, r.centerX.toInt(), r.centerY.toInt(), r.score.toDouble())
+                        refreshTemplateIfConfident(bitmap, type, cx, cy, r.score.toDouble())
+                        return buildTemplateResult(type, cx, cy, r.score.toDouble())
                     }
                 }
             }
 
-            // 兜底：OpenCV 不可用或未命中。限定在画面下半部搜索（功能按键都在下方操作区），
-            // 既省算力也降低在无关区域误命中的概率。
-            val region = Rect(0, bitmap.height / 3, bitmap.width, bitmap.height)
+            // 兜底：OpenCV 不可用或未命中。**必须全图搜索**：这里曾限定画面下 2/3，
+            // 前提是"功能按键都在下方操作区"——但地块动作轮盘是跟着被点的地块浮动的，
+            // 真机截图实测键位能出现在画布上半部（扫荡中心 y≈201），区域限制会让
+            // 随包种子在那条路上一律搜不到。误命中的防护交给阈值与区分度判据
+            // （种子验收的负例检验同样是在整帧上跑的，两侧口径一致），代价是全图 ZNCC 多算一些。
             val m = com.stzb.assistant.service.TemplateMatcher.search(
                 frame = bitmap,
-                template = tpl,
-                region = region
+                template = tpl
             ) ?: return null
             Log.i(TAG, "纯 Java 模板匹配定位按键 [${type.name}]：${m.describe()}")
+            refreshTemplateIfConfident(bitmap, type, m.centerX, m.centerY, m.score)
             buildTemplateResult(type, m.centerX, m.centerY, m.score)
         } catch (e: Exception) {
             Log.w(TAG, "模板匹配定位按键 [${type.name}] 异常: ${e.message}")
             null
-        } finally {
-            tpl.recycle()
+        }
+        // 注意：**这里绝不 recycle(tpl)**。
+        //
+        // 原来这段写在 finally 里，而 [com.stzb.assistant.service.ButtonTemplateStore.load]
+        // 返回的是**内存缓存里那一份**。于是第一次用模板成功定位之后，缓存里就躺着一张
+        // 已回收的位图：之后每次匹配都抛 "Canvas: trying to use a recycled bitmap"，
+        // 被上面的 catch 咽掉，表现成"这个按键登记过、也命中过一次，然后就再也点不到了"。
+        // 模板的生命周期归模板库管（一共十几张 180x80 的小图，交给 GC 即可），
+        // 借用方不许释放。
+    }
+
+    /**
+     * 模板命中的自愈刷新门槛。
+     *
+     * 两条命中线分别是 0.75（OpenCV，见 `OpenCvMatcher.match` 默认值）与
+     * 0.85（纯 Java，见 `TemplateMatcher.search` 默认值）。刷新会**覆盖**正在工作的模板，
+     * 所以必须站在远高于两条线的位置：0.92。低于它时宁可继续用旧模板，也不拿一次
+     * 将信将疑的命中去改写它。
+     */
+    private const val TEMPLATE_REFRESH_MIN_SCORE = 0.92
+
+    /** 自检线：候选模板回搜自己来源的那一帧，必须达到的分数。 */
+    private const val TEMPLATE_SELF_CHECK_MIN_SCORE = 0.95
+
+    /** 自检允许的落点偏差（像素）。超出即认为"这张图在帧里不唯一"，拒绝覆盖。 */
+    private const val TEMPLATE_SELF_CHECK_POS_TOLERANCE_PX = 8
+
+    /** 同一个按键两次刷新之间的最小间隔：写盘 + 一次全图自检都不该每帧付。 */
+    private const val TEMPLATE_REFRESH_INTERVAL_MS = 10 * 60 * 1000L
+
+    private val lastTemplateRefreshAt = HashMap<String, Long>()
+
+    /**
+     * 模板匹配成功且分数很高时，把这一帧上的那一小片**重新登记**回去。
+     *
+     * ## 为什么需要
+     * 模板是某个时刻从某台机器上裁下来的像素。官方改了按钮描边、换了赛季色调之后，
+     * 旧模板的分数会慢慢往下掉；如果模板永远不许变，用户就得每隔几个月重新指一遍。
+     * 更关键的是**随包种子**：那是别人机器上的像素，第一次在用户机上高分命中时，
+     * 正好是把它换成本机像素的时机。
+     *
+     * ## 为什么不能"命中就写"
+     * 自动写坏一次，用户没有像手动登记那样的"当场看出来、当场重来"的机会，
+     * 表现会是"用着用着某个按键开始点偏"。所以加了三道闸：
+     *   1. 分数必须 ≥ [TEMPLATE_REFRESH_MIN_SCORE]（远高于两条命中线）；
+     *   2. 每个按键 [TEMPLATE_REFRESH_INTERVAL_MS] 内最多刷一次；
+     *   3. **自检**：拿候选图回搜它来源的那一帧，必须命中回原位置（±
+     *      [TEMPLATE_SELF_CHECK_POS_TOLERANCE_PX]px）且分数 ≥ [TEMPLATE_SELF_CHECK_MIN_SCORE]。
+     *      通不过就说明这张图在画面里不唯一或不够清楚，覆盖旧模板只会更糟。
+     *      自检刻意走纯 Java 的 [com.stzb.assistant.service.TemplateMatcher]：
+     *      它比 OpenCV 那条更严（全图搜、自带区分度判据），严的当闸门比较宽的使用者更安全。
+     *
+     * 任何失败都只记日志：本次定位结果不受影响（旧模板照样能用）。
+     */
+    private fun refreshTemplateIfConfident(
+        frame: Bitmap,
+        type: ButtonType,
+        centerX: Int,
+        centerY: Int,
+        score: Double
+    ) {
+        if (score < TEMPLATE_REFRESH_MIN_SCORE) return
+        val now = SystemClock.elapsedRealtime()
+        synchronized(lastTemplateRefreshAt) {
+            val prev = lastTemplateRefreshAt[type.name] ?: 0L
+            if (now - prev < TEMPLATE_REFRESH_INTERVAL_MS) return
+            // 先占坑再自检：自检失败也不该下一帧立刻重试，否则闸门 2 形同虚设。
+            lastTemplateRefreshAt[type.name] = now
+        }
+        val store = com.stzb.assistant.service.ButtonTemplateStore
+        try {
+            val crop = store.cropCandidate(frame, centerX, centerY) ?: return
+            val check = com.stzb.assistant.service.TemplateMatcher.search(
+                frame = frame,
+                template = crop,
+                threshold = TEMPLATE_SELF_CHECK_MIN_SCORE
+            )
+            if (check == null ||
+                abs(check.centerX - centerX) > TEMPLATE_SELF_CHECK_POS_TOLERANCE_PX ||
+                abs(check.centerY - centerY) > TEMPLATE_SELF_CHECK_POS_TOLERANCE_PX
+            ) {
+                Log.i(
+                    TAG,
+                    "模板自愈被拒（自检未通过）[${type.name}]：命中 ($centerX, $centerY) " +
+                        "分数=${"%.3f".format(score)}，自检=" +
+                        (check?.let { "(${it.centerX}, ${it.centerY}) ${"%.3f".format(it.score)}" } ?: "无命中")
+                )
+                return
+            }
+            store.saveBitmap(
+                type = type,
+                crop = crop,
+                note = "自愈刷新，命中 ${"%.3f".format(score)} / 自检 ${"%.3f".format(check.score)}"
+            )
+        } catch (e: Exception) {
+            Log.d(TAG, "模板自愈跳过 [${type.name}]: ${e.message}")
         }
     }
 
@@ -461,8 +639,12 @@ object StzbUiMatcher {
     /** OCR 命中后顺带学习模板；任何失败都只记日志，不影响定位结果。 */
     private fun learnTemplateIfPossible(bitmap: Bitmap, type: ButtonType, bounds: Rect) {
         try {
-            if (com.stzb.assistant.service.ButtonTemplateStore.has(type)) return
-            com.stzb.assistant.service.ButtonTemplateStore.saveFromFrame(
+            // 判据是"本机有没有这一张"，不是"有没有任何一张"：
+            // 只写着 has(type) 的话，随包种子会把这个位置永久占住，OCR 明明看得见按钮
+            // 却再也不去学本机自己那份像素 —— 而种子恰恰是最该被本机版本替换掉的。
+            val store = com.stzb.assistant.service.ButtonTemplateStore
+            if (store.sourceOf(type) == com.stzb.assistant.service.ButtonTemplateStore.Source.USER) return
+            store.saveFromFrame(
                 type = type,
                 frame = bitmap,
                 centerX = (bounds.left + bounds.right) / 2,

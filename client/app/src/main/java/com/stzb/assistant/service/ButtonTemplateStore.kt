@@ -16,14 +16,20 @@ import java.io.File
  * 表现为"点不到按键""点击不准"。模板匹配不需要 OCR、不需要模型、不需要网络，
  * 因此在 OCR 不可用时它**是唯一还能工作的定位手段**。
  *
- * ## 模板从哪来（两条路，缺一不可）
- * 1. **手动登记**：在悬浮窗「标定」页签点选按键位置，把该处裁下来登记。
- *    ——这是 OCR 完全不可用时唯一的引导方式，必须有。
- * 2. **随用随学**：OCR 可用时，每次成功定位到某按键就把那一小片登记下来。
- *    ——模板会随使用自动长出来，不需要用户逐个标定。
+ * ## 模板从哪来（三条路，按可信度排序）
+ * 1. **手动登记**：在悬浮窗「标定」页签点选按键位置，把该处裁下来登记（⑧ 号按钮）。
+ *    ——这是 OCR 完全不可用时最直接的引导方式，必须有。
+ * 2. **随用随学**：OCR 可用时，每次成功定位到某按键就把那一小片登记下来；
+ *    模板命中时也会在高置信度下刷新自己（见 `StzbUiMatcher.refreshTemplateIfConfident`），
+ *    于是美术小改版不需要用户重新登记。
+ * 3. **随包种子**：`assets/templates/<gameId>/seeds/<ButtonType>.png`。
+ *    ——全新用户装上就"库里不是空的"，代价是种子只能覆盖**我们真有截图可裁**的那些按键，
+ *    且必须按游戏分域（见 [seedAssetPath] 为什么不走 [PerGameScope.assetDirs] 的旧兜底）。
+ *    种子是**在别人手机上截的像素**，所以永远排在"本机登记"之后：本机那份才贴近当前美术。
  *
  * ## 存储
- * 每个 [StzbUiMatcher.ButtonType] 一个 PNG，放在 `filesDir/button_templates/`。
+ * 每个 [StzbUiMatcher.ButtonType] 一个 PNG，放在 `filesDir/button_templates_<gameId>/`
+ * （**按游戏分域**，见 [PerGameScope]；旧的无后缀目录会一次性改名接管给率土）。
  * 用文件而不是 SharedPreferences：小图 base64 之后会撑爆 prefs，而 prefs 是全量重写的。
  *
  * 上下文通过 [attach] 注入（与本工程 `CoordinateTransformer` / `UiAnchors` 一致），
@@ -33,6 +39,14 @@ object ButtonTemplateStore {
 
     private const val TAG = "ButtonTemplateStore"
     private const val DIR_NAME = "button_templates"
+
+    /**
+     * 随包种子在 `assets/templates/<gameId>/` 下的子目录名。
+     *
+     * 用子目录而不是直接放 `templates/` 下：那层已经有早期脚本用的固定裁剪，
+     * 混在一起就分不清"哪个是能被当成 ButtonType 用的种子"。
+     */
+    private const val SEED_DIR = "seeds"
 
     /** 模板在按键周围的裁剪半径（设计画布坐标，像素）。 */
     const val CROP_HALF_WIDTH = 90
@@ -50,43 +64,110 @@ object ButtonTemplateStore {
     @Volatile
     private var appContext: Context? = null
 
-    /** 内存缓存；null 值表示"已确认没有该模板"，避免反复读盘。 */
-    private val cache = HashMap<String, Bitmap?>()
+    /** 切游戏重载的钩子是否已注册（保证只注册一次）。 */
+    @Volatile
+    private var switchHookRegistered = false
+
+    /** 内存缓存；`Source.NONE` 表示"已确认没有该模板"，避免反复读盘。 */
+    private val cache = HashMap<String, Loaded>()
+
+    /** 模板来源。界面要能分清"本机登记的"和"随包内置的"，因为可信度不同。 */
+    enum class Source { NONE, USER, SEED }
+
+    private data class Loaded(val bitmap: Bitmap?, val source: Source)
 
     fun attach(context: Context) {
         appContext = context.applicationContext
         synchronized(cache) { cache.clear() }
         Log.i(TAG, "按键模板库已就绪，目录: ${dir()?.absolutePath ?: "(未注入上下文)"}")
+        // 模板是**从这款游戏的界面上裁下来的像素**。留着率土的"出征"模板去匹配三战界面，
+        // 匹配器照样会给出一个峰值，我们就照着那个位置点下去 —— 必须按游戏分域。
+        if (!switchHookRegistered) {
+            switchHookRegistered = true
+            PerGameScope.reloadOnProfileSwitch { reload() }
+        }
+    }
+
+    /** 换游戏后切到新游戏的目录，并丢掉内存里上一款游戏的模板。 */
+    private fun reload() {
+        synchronized(cache) { cache.clear() }
+        Log.i(TAG, "已按 [${PerGameScope.gameId()}] 切换按键模板目录: ${dir()?.absolutePath ?: "(未注入上下文)"}")
     }
 
     private fun dir(): File? {
         val ctx = appContext ?: return null
-        return File(ctx.filesDir, DIR_NAME).apply { if (!exists()) mkdirs() }
+        // 目录带游戏后缀（button_templates_stzb / button_templates_sgz），
+        // 旧目录 button_templates 一次性改名接管给率土。
+        return PerGameScope.scopedDir(ctx, DIR_NAME)
     }
 
     private fun fileFor(type: StzbUiMatcher.ButtonType): File? =
         dir()?.let { File(it, "${type.name}.png") }
 
-    @Synchronized
-    fun has(type: StzbUiMatcher.ButtonType): Boolean = load(type) != null
+    /**
+     * 随包种子的 assets 路径。
+     *
+     * 刻意**只**认游戏专属目录，不用 [PerGameScope.assetDirs]：那条口径的最后一项是
+     * 旧的无后缀 `templates/`，里面装的是早期脚本用的固定裁剪（`attack_template.png`
+     * 等），既不是按 [StzbUiMatcher.ButtonType] 命名的、也没按游戏分域。
+     * 让它当种子 = 让另一款游戏吃到率土的按钮像素，正是分域要禁止的那类事。
+     */
+    private fun seedAssetPath(type: StzbUiMatcher.ButtonType): String =
+        "templates/${PerGameScope.gameId()}/$SEED_DIR/${type.name}.png"
 
+    /** 这台设备上有没有这个按键的模板（本机登记 **或** 随包种子）。 */
     @Synchronized
-    fun load(type: StzbUiMatcher.ButtonType): Bitmap? {
+    fun has(type: StzbUiMatcher.ButtonType): Boolean = entry(type).bitmap != null
+
+    /** 该按键的模板来自哪里（界面据此区分"已登记"与"内置种子"）。 */
+    @Synchronized
+    fun sourceOf(type: StzbUiMatcher.ButtonType): Source = entry(type).source
+
+    /**
+     * 取出模板位图。
+     *
+     * **调用方不得 recycle 返回的位图**：它就是缓存里那一份，回收等于把整个模板作废
+     * （这个坑踩过一次，症状是"命中过一次之后该按键再也点不到"）。
+     */
+    @Synchronized
+    fun load(type: StzbUiMatcher.ButtonType): Bitmap? = entry(type).bitmap
+
+    private fun entry(type: StzbUiMatcher.ButtonType): Loaded {
         val key = type.name
-        if (cache.containsKey(key)) return cache[key]
+        cache[key]?.let { return it }
+
+        // 顺序即优先级：本机截的那份最贴近当前美术（皮肤、分辨率、版本都一致），
+        // 种子只是"别人手机上的像素"，只在没有本机版本时兜底。
         val f = fileFor(type)
-        val bmp = if (f != null && f.isFile) {
+        if (f != null && f.isFile) {
             try {
-                BitmapFactory.decodeFile(f.absolutePath)
+                BitmapFactory.decodeFile(f.absolutePath)?.let {
+                    val loaded = Loaded(it, Source.USER)
+                    cache[key] = loaded
+                    return loaded
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "读取按键模板 ${type.name} 失败: ${e.message}")
-                null
             }
-        } else {
+        }
+        decodeSeed(type)?.let {
+            val loaded = Loaded(it, Source.SEED)
+            cache[key] = loaded
+            return loaded
+        }
+        val none = Loaded(null, Source.NONE)
+        cache[key] = none
+        return none
+    }
+
+    /** 从 assets 里解出种子图；没有就是常态（不打日志，否则 19 个按键会把日志刷满）。 */
+    private fun decodeSeed(type: StzbUiMatcher.ButtonType): Bitmap? {
+        val ctx = appContext ?: return null
+        return try {
+            ctx.assets.open(seedAssetPath(type)).use { BitmapFactory.decodeStream(it) }
+        } catch (e: Exception) {
             null
         }
-        cache[key] = bmp
-        return bmp
     }
 
     /**
@@ -102,13 +183,52 @@ object ButtonTemplateStore {
         centerX: Int,
         centerY: Int
     ): Boolean {
-        val f = fileFor(type)
-        if (f == null) {
+        if (appContext == null) {
             Log.w(TAG, "尚未注入上下文，无法登记按键模板。")
             return false
         }
         val rect = cropRectFor(frame, centerX, centerY) ?: run {
             Log.w(TAG, "按键 ${type.name} 的中心 ($centerX, $centerY) 太靠近画面边缘，无法裁剪模板。")
+            return false
+        }
+        val crop = try {
+            Bitmap.createBitmap(frame, rect.left, rect.top, rect.width(), rect.height())
+        } catch (e: Exception) {
+            Log.w(TAG, "登记按键模板 ${type.name} 失败（裁剪）: ${e.message}")
+            return false
+        }
+        return saveBitmap(type, crop, "裁自 ${rect.width()}x${rect.height()}")
+    }
+
+    /**
+     * 把一帧里某个位置裁成候选模板，**不写盘**。
+     *
+     * 给"先自检、合格才登记"的调用方用（见 `StzbUiMatcher.refreshTemplateIfConfident`）：
+     * 自动学习出来的东西一旦写坏，用户是没机会像手动登记那样当场重来的。
+     * 越界或尺寸过小返回 null。
+     */
+    fun cropCandidate(frame: Bitmap, centerX: Int, centerY: Int): Bitmap? {
+        val rect = cropRectFor(frame, centerX, centerY) ?: return null
+        return try {
+            Bitmap.createBitmap(frame, rect.left, rect.top, rect.width(), rect.height())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * 登记一张已经裁好的模板图。
+     *
+     * @param note 写进日志的来源说明，便于真机上判断这张模板是哪来的
+     */
+    @Synchronized
+    fun saveBitmap(
+        type: StzbUiMatcher.ButtonType,
+        crop: Bitmap,
+        note: String = "${crop.width}x${crop.height}"
+    ): Boolean {
+        val f = fileFor(type) ?: run {
+            Log.w(TAG, "尚未注入上下文，无法登记按键模板。")
             return false
         }
 
@@ -118,7 +238,7 @@ object ButtonTemplateStore {
         // 一个几乎均匀的模板会让这个除法失去意义，从而在画面里冒出**极高的伪峰值**——
         // 也就是说，登记一个纯色块会让匹配器自信地指向一个完全错误的位置。
         // 宁可拒绝登记（用户换个位置再试），也不能存进一个会乱指的模板。
-        val contrast = grayscaleStdDev(frame, rect)
+        val contrast = grayscaleStdDev(crop, Rect(0, 0, crop.width, crop.height))
         if (contrast < MIN_TEMPLATE_CONTRAST) {
             Log.w(
                 TAG,
@@ -130,13 +250,11 @@ object ButtonTemplateStore {
         }
 
         return try {
-            val crop = Bitmap.createBitmap(frame, rect.left, rect.top, rect.width(), rect.height())
             f.outputStream().use { out ->
                 crop.compress(Bitmap.CompressFormat.PNG, 100, out)
             }
-            crop.recycle()
             cache.remove(type.name) // 让下次读取拿到新图
-            Log.i(TAG, "已登记按键模板 ${type.name}（${rect.width()}x${rect.height()}）")
+            Log.i(TAG, "已登记按键模板 ${type.name}（$note）")
             true
         } catch (e: Exception) {
             Log.w(TAG, "登记按键模板 ${type.name} 失败: ${e.message}")
@@ -196,25 +314,42 @@ object ButtonTemplateStore {
 
     @Synchronized
     fun clearAll() {
+        // 只清本机登记/学习出来的那批。assets 里的种子删不掉（本来就在 APK 内），
+        // 所以"清除全部标定"之后仍然可能有按键能定位 —— describe() 必须如实说明这点。
         dir()?.listFiles()?.forEach { it.delete() }
         cache.clear()
     }
 
-    /** 已登记模板的按键类型，供界面展示"现在有哪些按键能脱离 OCR 定位"。 */
+    /** 已登记模板的按键类型（**只算本机登记的**，不含随包种子），供界面展示。 */
     @Synchronized
     fun registeredTypes(): List<StzbUiMatcher.ButtonType> =
-        StzbUiMatcher.ButtonType.values().filter { has(it) }
+        StzbUiMatcher.ButtonType.values().filter { sourceOf(it) == Source.USER }
+
+    /** 只用随包种子、本机还没登记过的按键类型：这些是"能定位但可信度低一档"的。 */
+    @Synchronized
+    fun seedOnlyTypes(): List<StzbUiMatcher.ButtonType> =
+        StzbUiMatcher.ButtonType.values().filter { sourceOf(it) == Source.SEED }
 
     /** 一句话摘要，直接给界面用。 */
     @Synchronized
     fun describe(): String {
         if (appContext == null) return "按键模板：尚未初始化"
-        val list = registeredTypes()
-        if (list.isEmpty()) {
+        val user = registeredTypes()
+        val seeds = seedOnlyTypes()
+        if (user.isEmpty() && seeds.isEmpty()) {
             return "按键模板：尚无。OCR 不可用时将无法定位按键，" +
                 "请到「标定」页签用十字准星登记按键位置。"
         }
-        return "按键模板：${list.size} 个已登记（${list.joinToString("、") { it.name }}）" +
-            "——这些按键即便 OCR 不可用也能定位"
+        val parts = buildString {
+            if (user.isNotEmpty()) {
+                append("本机登记 ${user.size} 个（${user.joinToString("、") { it.name }}）")
+            }
+            if (seeds.isNotEmpty()) {
+                if (isNotEmpty()) append("；")
+                append("随包种子 ${seeds.size} 个（${seeds.joinToString("、") { it.name }}）")
+            }
+        }
+        return "按键模板：$parts ——这些按键即便 OCR 不可用也能定位" +
+            if (seeds.isNotEmpty() && user.isEmpty()) "（种子取自别的机型/版本，命中不稳时请重新登记）" else ""
     }
 }
