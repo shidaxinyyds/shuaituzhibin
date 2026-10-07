@@ -64,15 +64,13 @@ class AutoTouchService : AccessibilityService() {
      * `canRetrieveWindowContent`，却一个事件也没用过。现在把窗口切换事件用起来：
      * 它恰好是“这一次盲点到底点在哪个应用上”唯一可靠的现场证据。
      *
-     * 只处理 TYPE_WINDOW_STATE_CHANGED / TYPE_WINDOW_ACTIVE：其余事件（内容变化、
-     * 滚动、获得焦点……）量极大且不回答“谁是前台”，在其中取值会得到错误的包名。
+     * 只处理 TYPE_WINDOW_STATE_CHANGED：`AccessibilityEvent` **没有** TYPE_WINDOW_ACTIVE
+     * 这个常量（写上去直接编不过，CI 实测），而能回答“谁是前台”的本来就只有状态变化这一个。
+     * 其余事件（内容变化、滚动、获得焦点……）量极大且不回答“谁是前台”，在其中取值会得到错误的包名。
      */
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
-        val type = event.eventType
-        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
-            type != AccessibilityEvent.TYPE_WINDOW_ACTIVE
-        ) {
+        if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             return
         }
         val pkg = event.packageName?.toString()?.takeIf { it.isNotBlank() } ?: return

@@ -123,7 +123,9 @@ object PerGameScope {
      * @return 依序尝试的目录路径，形如 ["templates/sgz", "templates"]（最后一项只对率土出现）
      */
     fun assetDirs(baseDir: String): List<String> {
-        val perGame = "$baseDir/$gameId()"
+        // 模板里必须写 ${gameId()}：`$gameId()` 只把 `$gameId` 当引用，
+        // 而 gameId 是 fun 不是 val —— 编不过（CI 实测）。
+        val perGame = "$baseDir/${gameId()}"
         return if (gameId() == LEGACY_OWNER_GAME_ID) listOf(perGame, baseDir) else listOf(perGame)
     }
 

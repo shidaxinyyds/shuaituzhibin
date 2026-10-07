@@ -30,6 +30,19 @@ API 签名**。于是下面这几类错误能一路绿灯过本地闸门，直�
   9. `stroke.endMs`                             —— StrokeDescription 没有时长 getter，
                                                  续笔延迟需自己累加时间游标
 
+CI Run #58（推送 21f54e3 后真编译才暴露的三条，本闸门据此再加三条规则）：
+
+ 10. `"$baseDir/$gameId()"`                     —— 模板只吃 `$gameId` 这个**名字**，
+                                                 名字后面紧跟的 `()` 不会被求值；而
+                                                 `gameId` 是 `fun` 不是 `val`，报
+                                                 `Function invocation 'gameId()' expected`。
+                                                 必须写 `${gameId()}`
+ 11. `ConcurrentHashMap<String, Boolean>.add(k)` —— Map 没有 `add()`（那是 Set 的 API）；
+                                                 去重登记要用 `putIfAbsent(k, true) == null`
+ 12. `AccessibilityEvent.TYPE_WINDOW_ACTIVE`     —— **这个常量不存在**（Android 只有
+                                                 TYPE_WINDOW_STATE_CHANGED / _CONTENT_CHANGED /
+                                                 _OBJECT_STATE_CHANGED 等），报 `Unresolved reference`
+
 本闸门把这些"编译期才看得见"的坑固化成规则，推送前就能拦下，不必每轮靠 CI 兜底。
 
 它刻意只做**高精度**的文本级判定（宁可漏报不误报），命中即说明"为什么 + 正确写法"。
@@ -219,9 +232,17 @@ def strip_comments(text):
             i = j + 1
             continue
         if c == "'":
-            j = i + 1
-            while j < n and text[j] != "'":
-                j += 2 if text[j] == "\\" else 1
+            # 只有**真字符字面量**（'a' / '\n'）才当字面量吃掉。Kotlin 里裸单引号太常见
+            # （中文注释里的撇号、`it's` 这样的字符串内容），旧写法从这里开始两位一跳，
+            # 会把后面大段代码当字面量吞掉 —— 那会让所有整文件规则静默漏判。
+            if i + 2 < n and text[i + 1] == "\\":
+                j = i + 4 if text[i + 3] == "'" else i + 1
+            elif i + 2 < n and text[i + 2] == "'":
+                j = i + 2
+            else:
+                out.append(c)
+                i += 1
+                continue
             out.append(text[i:j + 1])
             i = j + 1
             continue
@@ -258,6 +279,153 @@ def scan_template_braces(path, text):
     return hits
 
 
+# ------------------------------------------------- CI Run #58 新增的三条规则
+#
+# 共同点：本地所有闸门都绿，`compileReleaseKotlin` 才炸。都属于"文本级就能高精度判定"。
+
+# `$name(` —— 模板只吃名字，后面的 `()` 不会被求值（`"$x/$f()"` 里的 f() 就是死代码 + 未解析引用）
+_TPL_CALL = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)\(")
+
+_MAP_DECL = re.compile(r"\b(?:val|var)\s+(\w+)\s*:\s*(?:[\w.]+\.)?(?:ConcurrentHashMap|HashMap|LinkedHashMap|TreeMap|IdentityHashMap|ArrayMap|SparseArray)\b")
+# Map 上不存在的方法名（Set / List 才有的 API）。
+# 只放**确定**没有的：`add` 一定不在 Map 上；`addAll` 也不（`Map` 的批量添加是 `putAll`）。
+# removeAll/retainAll 我没有十足把握（Kotlin 的 Map 扩展函数生态太宽），**故意不判**——
+# 这条规则的用途是拦"把 Set 的 API 套到 Map 上"这一类，不需要靠猜来扩大覆盖面。
+_MAP_ABSENT = ("add", "addAll")
+
+# AccessibilityEvent 的真实常量表（对照 Android SDK；表外一律视为幻觉）。
+# 名单本身就是这条规则的全部效力来源，所以它自己必须是干净的。
+ACCESSIBILITY_EVENT_TYPES = {
+    "TYPE_ANNOUNCEMENT", "TYPE_ASSISTANCE_ACCESSIBILITY", "TYPE_ASSISTANCE_NAVIGATION_GUIDANCE",
+    "TYPE_ASSISTANCE_SUGGESTION", "TYPE_BROADCAST", "TYPE_VIEW_ACCESSIBILITY_FOCUSED",
+    "TYPE_VIEW_FOCUSED", "TYPE_VIEW_HOVER_ENTER", "TYPE_VIEW_HOVER_EXIT", "TYPE_VIEW_SCROLLED",
+    "TYPE_VIEW_SELECTED", "TYPE_VIEW_TEXT_CHANGED", "TYPE_WINDOW_CONTENT_CHANGED",
+    "TYPE_WINDOW_STATE_CHANGED", "TYPE_VIEW_TEXT_TRAVERSED_AT_MOVEMENT_GRANULARITY",
+    "TYPE_GESTURE_DETECTION_BEGIN", "TYPE_GESTURE_DETECTION_CONTINUE", "TYPE_GESTURE_DETECTION_END",
+    "TYPE_TOUCH_EXPLORATION_GESTURE_BEGIN", "TYPE_TOUCH_EXPLORATION_GESTURE_END",
+}
+
+_AE_TYPE = re.compile(r"AccessibilityEvent\s*\.\s*(TYPE_[A-Z_]+)")
+
+
+def _string_spans(code):
+    """返回 (起点, 终点) 列表：每个**双引号字符串字面量**在 code 中的区间。
+
+    模板只存在于字符串里，规则必须只在字符串内部找，否则 `if (x) {` 这种
+    普通代码会被 `$[A-Za-z_]\w*(` 误伤（这条规则自己的反例差点把它写成噪声源）。
+    """
+    spans, i, n = [], 0, len(code)
+    while i < n:
+        if code[i] != '"':
+            i += 1
+            continue
+        j = i + 1
+        while j < n:
+            if code[j] == "\\":
+                j += 2
+                continue
+            if code[j] == '"':
+                break
+            j += 1
+        spans.append((i, min(j + 1, n)))
+        i = j + 1
+    return spans
+
+
+def _value_names(outside):
+    """本文件里**能当值用**的名字：val/var 声明、函数参数、解构声明。
+
+    规则 10 的分界正在这里：`$morale(` 里的 morale 若是 `val morale`，那是
+    "值 + 字面括号"，完全合法；若是 `fun morale()`，模板只吃名字、括号不求值，
+    编译期报 `Function invocation 'morale()' expected`。所以必须区分两者，
+    否则这条规则会把一堆正常日志行喊成缺陷（第一版就这么误报过）。
+    """
+    names = set(re.findall(r"\b(?:val|var)\s+([A-Za-z_][A-Za-z0-9_]*)", outside))
+    for m in re.finditer(r"\b(?:fun|constructor)\s*(\w*)\s*\(([^)]*)\)", outside):
+        for part in m.group(2).split(","):
+            part = part.strip()
+            am = re.match(r"([A-Za-z_][A-Za-z0-9_]*)\s*:", part)
+            if am:
+                names.add(am.group(1))
+    for grp in _DECL_DESTRUCT.findall(outside):
+        for part in grp.split(","):
+            part = part.strip().split(":")[0].strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", part):
+                names.add(part)
+    return names
+
+
+def scan_template_call_paren(text):
+    """字符串模板里 `$fun()`：Kotlin 只解析 `$fun` 这个名字，括号留在文本里。
+
+    与 scan_template_braces 的区别：那条管"名字被后缀吞掉"（$d0ms），
+    这条管"名字本身是个**函数**"。命中条件是字符串内部出现 `$ident(`，
+    且 ident 在本文件里**只**是 fun（或根本没声明过）、不是任何 val/var/参数。
+    """
+    code = strip_comments(text)
+    outside = re.sub(r'"(?:\\.|[^"\\])*"', " ", code)
+    value_names = _value_names(outside)
+    fun_names = set(re.findall(r"\bfun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", outside))
+    hits = []
+    for s, e in _string_spans(code):
+        body = code[s:e]
+        for m in _TPL_CALL.finditer(body):
+            name = m.group(1)
+            if name in value_names:
+                continue          # 值是合法的：`"$morale(评级)"` 这类日志写法
+            if name not in fun_names:
+                continue          # 本文件既无 val 也无 fun：不确定，宁可不报（规则只求不误报）
+            if body[:m.start()].rstrip().endswith("${"):
+                continue          # ${…} 内部：那里的 $ 是嵌套模板起点，不是被截断的名字
+            lineno = code[:s + m.start()].count("\n") + 1
+            hits.append((lineno, "template-call-needs-braces",
+                         "字符串里的 $%s( 不会被求值：%s 是 fun 不是值，模板只吃名字；"
+                         "要调用函数必须写 ${%s()}" % (name, name, name)))
+    return hits
+
+
+def scan_map_add(text):
+    """声明成 Map 的变量上调 add()/addAll() 等 Set 才有的方法。"""
+    code = strip_comments(text)
+    names = set(_MAP_DECL.findall(code))
+    # 上面那条要求显式类型标注（`val x: HashMap<…>`），而工程里更常见的是推断声明
+    # （`private val warned = ConcurrentHashMap<String, Boolean>()`），所以补第二遍。
+    # 前缀写成 (?:[\w.]+\.)? 而不是 java\.util\.：全限定名是 `java.util.concurrent.X`，
+    # 只吃一层包名的写法会让这条规则对**真实写法**失效（自测反例第一次就没被拦住）。
+    for m in re.finditer(r"\b(?:val|var)\s+(\w+)\s*=\s*(?:[\w.]+\.)?(?:ConcurrentHashMap|HashMap|LinkedHashMap|TreeMap|IdentityHashMap|ArrayMap)\s*[<(]", code):
+        names.add(m.group(1))
+    if not names:
+        return []
+    # 方法名只列 Map 上**不存在**的那四个，所以不需要排除 putIfAbsent/containsKey。
+    rx = re.compile(r"\b(" + "|".join(re.escape(n) for n in sorted(names)) +
+                    r")\s*\??\.\s*(" + "|".join(_MAP_ABSENT) + r")\s*\(")
+    hits = []
+    for m in rx.finditer(code):
+        lineno = code[:m.start()].count("\n") + 1
+        hits.append((lineno, "map-has-no-add",
+                     "%s 是 Map，没有 .%s()（那是 Set/List 的 API）；"
+                     "批量写入用 putAll()，去重登记用 putIfAbsent(k, true) == null"
+                     % (m.group(1), m.group(2))))
+    return hits
+
+
+def scan_hallucinated_constants(text):
+    """AccessibilityEvent.TYPE_* 必须落在真实常量表里。
+
+    这条规则的形状是"白名单"而不是"黑名单"：幻觉常量**没有任何可识别的错误特征**
+    （看着比真常量还合理），只有对照 SDK 名单才拦得住。
+    """
+    code = strip_comments(text)
+    hits = []
+    for m in _AE_TYPE.finditer(code):
+        if m.group(1) not in ACCESSIBILITY_EVENT_TYPES:
+            lineno = code[:m.start()].count("\n") + 1
+            hits.append((lineno, "accessibility-event-type-not-a-thing",
+                         "AccessibilityEvent.%s 不存在；可回答\u201c谁是前台\u201d的只有 "
+                         "TYPE_WINDOW_STATE_CHANGED（其余见脚本内常量表）" % m.group(1)))
+    return hits
+
+
 def scan_file(path):
     findings = []
     try:
@@ -278,6 +446,10 @@ def scan_file(path):
     findings += scan_pattern_regex_misuse(path, lines)
     findings += scan_create_tensor_shape(path, lines)
     findings += scan_template_braces(path, "".join(lines))
+    text = "".join(lines)
+    findings += scan_template_call_paren(text)
+    findings += scan_map_add(text)
+    findings += scan_hallucinated_constants(text)
     return findings
 
 
@@ -317,6 +489,47 @@ GOOD_TEXT = [
     "fun f() {\n    val total = 9\n    Log.d(TAG, \"总计$total个\")\n}",
     "// 注释里写 $d0ms 不算命中：\nfun f() {\n    val d0 = 1L\n    Log.d(TAG, \"ok $d0\")\n}",
 ]
+# CI Run #58 真炸的三条：它们**绕过了上一版闸门的全部规则**（模板花括号那条只管
+# "$d0ms" 这种"名字被后缀吞掉"，管不了 "$gameId()" 这种"名字本身是函数"）。
+# 因此这三条反例是对闸门本身的取证：修完闸门必须能被拦住。
+BAD_TEXT += [
+    # 1) 模板里 $gameId() —— 报 Function invocation 'gameId()' expected
+    "object S {\n    fun gameId(): String = \"stzb\"\n"
+    "    fun dirs(base: String): String = \"$base/$gameId()\"\n}",
+    # 2) Map 上调 Set 的 add() —— 报 Unresolved reference: add
+    "object S {\n    private val warned = java.util.concurrent.ConcurrentHashMap<String, Boolean>()\n"
+    "    fun once(k: String): Boolean = warned.add(k)\n}",
+    # 3) 幻觉常量 —— AccessibilityEvent 没有 TYPE_WINDOW_ACTIVE
+    "class S : AccessibilityService() {\n"
+    "    override fun onAccessibilityEvent(e: AccessibilityEvent?) {\n"
+    "        if (e?.eventType != AccessibilityEvent.TYPE_WINDOW_ACTIVE) return\n"
+    "        Log.d(TAG, e.packageName?.toString() ?: \"\")\n    }\n}",
+]
+
+GOOD_TEXT += [
+    # 修好的三条写法，必须放行（否则闸门就成了只会喊狼来了的噪声源）
+    "object S {\n    fun gameId(): String = \"stzb\"\n"
+    "    fun dirs(base: String): String = \"$base/${gameId()}\"\n}",
+    "object S {\n    private val warned = java.util.concurrent.ConcurrentHashMap<String, Boolean>()\n"
+    "    fun once(k: String): Boolean = warned.putIfAbsent(k, true) == null\n}",
+    "class S : AccessibilityService() {\n"
+    "    override fun onAccessibilityEvent(e: AccessibilityEvent?) {\n"
+    "        if (e?.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return\n"
+    "        Log.d(TAG, e.packageName?.toString() ?: \"\")\n    }\n}",
+    # List 上 add() 是合法的，不能被 Map 规则误伤
+    "object S {\n    val out = ArrayList<String>()\n    fun add(x: String) { out.add(x) }\n}",
+    "object S {\n    val set = mutableSetOf<String>()\n    fun f(x: String) { set.add(x) }\n}",
+    # 字符串里出现 "$5(含税)"：$ 后面不是标识符起点，不该命中模板规则
+    "object S {\n    val price = \"共 $5(含税)\"\n}",
+    # 反向控制：普通代码里的 `if (x) {` 与函数声明 `fun add(` 都不该被字符串规则误伤
+    "class S : AccessibilityService() {\n"
+    "    override fun onAccessibilityEvent(e: AccessibilityEvent?) {\n"
+    "        if (e == null) { return }\n"
+    "        val list = mutableListOf<String>()\n"
+    "        fun add(x: String) { list.add(x) }\n"
+    "        add(\"ok\")\n    }\n}",
+]
+
 GOOD_SAMPLES = [
     "val e = OrtEnvironment.getEnvironment()",
     "private fun headVec(v: ai.onnxruntime.OnnxValue?): FloatArray",
@@ -327,6 +540,14 @@ GOOD_SAMPLES = [
     "val m = Pattern.compile(\"x\").matcher(text); if (m.find()) {}",
     "// 注释里出现 getEnv() 不该被算作命中",
 ]
+
+
+def _multi_scan(text):
+    """新三条规则共用同一份整文件文本，一次跑完拿到命中的规则名。"""
+    return ([n for _l, n, _f in scan_template_braces("", text)] +
+            [n for _l, n, _f in scan_template_call_paren(text)] +
+            [n for _l, n, _f in scan_map_add(text)] +
+            [n for _l, n, _f in scan_hallucinated_constants(text)])
 
 
 def selftest():
@@ -361,16 +582,17 @@ def selftest():
             print("❌ 正例被误报: %s -> %s" % (snippet[:60], got))
             ok = False
     for snippet in GOOD_TEXT:
-        got = [n for _l, n, _f in scan_template_braces("", snippet)]
+        got = _multi_scan(snippet)
         if got:
             print("❌ 正例被误报: %s -> %s" % (snippet.replace("\n", " ")[:60], got))
             ok = False
     for text in BAD_TEXT:
-        if not scan_template_braces("", text):
-            print("❌ 反例未被拦截(模板): %s" % text.replace("\n", " ")[:70])
+        if not _multi_scan(text):
+            print("❌ 反例未被拦截(整文件级): %s" % text.replace("\n", " ")[:70])
             ok = False
     if ok:
-        print("[selftest] 全部通过：%d 反例均被拦、%d 正例均不误报" % (len(BAD_SAMPLES), len(GOOD_SAMPLES)))
+        print("[selftest] 全部通过：%d+%d 反例均被拦、%d+%d 正例均不误报"
+              % (len(BAD_SAMPLES), len(BAD_TEXT), len(GOOD_SAMPLES), len(GOOD_TEXT)))
     return ok
 
 

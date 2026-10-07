@@ -1264,7 +1264,8 @@ object SlgRagEngine {
         val words = prof.sceneKeywords[groupId]?.filter { it.isNotBlank() }
         if (words != null && words.isNotEmpty()) return words
         val mark = "${prof.gameId}/$groupId"
-        if (warnedVocabGroups.add(mark)) {
+        // ConcurrentHashMap 没有 add()：只有 putIfAbsent。误用 Set 的 API 编不过（CI 实测）。
+        if (warnedVocabGroups.putIfAbsent(mark, true) == null) {
             Log.w(TAG, "语汇组 [$groupId] 在 [${prof.gameName}] 的知识包里没有配置，" +
                 "依赖它的战报判定（类型分流 / 战法命中 / 先手推算）会直接跳过，不会套用其它游戏的词表。" +
                 "要恢复这项分析，请热更该游戏的 scene_keywords.$groupId。")
