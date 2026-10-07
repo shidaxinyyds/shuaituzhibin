@@ -41,6 +41,18 @@ object WatchdogRecovery {
      * @return true 表示成功回到大地图；false 表示仍处于严重异常状态
      */
     suspend fun recoverToMainMap(maxAttempts: Int = 4): Boolean {
+        // 游戏整体不在前台时，自愈是徒劳的：屏幕上看到的是别的应用，识别出的场景
+        // 与“我们卡住了”毫无关系，而每一次点击又会被前台闸门拦下。
+        // 与其空跑 4 轮后报一个含糊的“自愈失败”，不如一上来就告知该做什么。
+        if (com.stzb.assistant.service.ForegroundGate.isDefinitelyNotTargetForeground()) {
+            Log.w(
+                TAG,
+                "自愈中止：目标游戏不在前台（屏幕上的是别的应用）。" +
+                    "请把游戏切回前台后重试，本工具不会在别人界面上点任何一下。"
+            )
+            return false
+        }
+
         var blindTaps = 0
         for (attempt in 1..maxAttempts) {
             val currentState = EngineBridge.detectGameState()

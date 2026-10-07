@@ -52,7 +52,9 @@ class SoftTileRadarFlow(
         val worldCoord: Pair<Int, Int>?,
         val level: Int,
         val defenderHeroes: List<String>,
-        val rating: String,          // "D(软柿子稳开)", "C(常规防守)", "B(较难有损)", "S(极危翻车点)"
+        val rating: String,          // SlgRagEngine 的六档：“D(软柿子稳开)”“C(中等但本等级推荐)”
+        // “C-(中等需慎)”“C(常规防守)”“B(较难有损)”“S(极危翻车点)”；
+        // 下面的排序只看首字母，新增档位必须保持首字母与难度同序。
         val isSafe: Boolean,
         val advice: String,
         val timestamp: Long = System.currentTimeMillis()

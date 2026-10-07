@@ -308,8 +308,16 @@ class SquadLevelingFlow(
         notifyStatus(TacticalState.Status.FAILED, "熔断保护生效: $reason")
     }
 
+    /**
+     * 从部队卡片文案里抽体力。
+     *
+     * 分母按**当前知识库的体力上限**拼装，不写死 120：上限不是 120 的游戏
+     * 用写死分母时这一项恒为 null，练级轮换就会永远等不到"体力满"而要么不轮换、
+     * 要么按未知体力乱轮换（静默错，不报错）。
+     */
     fun extractStamina(text: String): Int? {
-        val m = Pattern.compile("(\\d{1,3})\\s*/\\s*120").matcher(text)
+        val max = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules.maxStamina
+        val m = Pattern.compile("(\\d{1,3})\\s*/\\s*" + max + "\\b").matcher(text)
         if (m.find()) return m.group(1)?.toIntOrNull()
         return null
     }

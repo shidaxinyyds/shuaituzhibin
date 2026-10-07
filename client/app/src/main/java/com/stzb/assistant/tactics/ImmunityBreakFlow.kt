@@ -81,20 +81,47 @@ class ImmunityBreakFlow(
             // 3. 检测目标地块当前免战倒计时
             logTactic("🔍 正在通过 OpenCV 金色光罩与局部 RapidOCR 读取地块免战剩余时间...")
             val immunityStatus = EngineBridge.detectTileImmunity()
-            if (!immunityStatus.isImmune || immunityStatus.remainingSeconds <= 0L) {
-                logWarn("⚠️ 未检测到有效免战罩或已过免战期！剩余秒数: ${immunityStatus.remainingSeconds}")
-                // 若本身已无免战，破免可直接出征
-                if (config.mode == ImmunityMode.BREAK_IMMUNITY) {
-                    logInfo("地块已无免战罩，可直接发起普通占领出征。")
+
+            // 破免时刻到底取哪个值——这里原先是一个真缺陷：
+            // 只要读不到倒计时，就不分青红皂白地当“60 秒后就破免”。两种完全不同的
+            // 情况被当成了同一种：
+            //   • 画面上根本没有免战罩（地块本就可选）——那就无需压秒，立刻能打；
+            //   • 看得到金色免战罩但倒计时没读出来——此时“60 秒”几乎一定是错的，
+            //     照它出征会在对方仍免战时撞上去：部队白跑一趟、体力白扣，还可能暴露意图。
+            // 现在分开处理，并把“读不到倒计时时要保守估计多久”交给知识库的免战时长。
+            val durationSec = com.stzb.assistant.knowledge.KnowledgeBaseManager
+                .activeProfile.rules.immunityDurationSec
+            val unlockTimestampMs = when {
+                immunityStatus.isImmune && immunityStatus.remainingSeconds > 0 ->
+                    immunityStatus.unlockTimestampMs
+
+                immunityStatus.isImmune -> {
+                    // 有罩子、读不到时间：**绝不赌一个时刻出征**。
+                    // 保守取“从现在起还要罩满一整段免战时长”作为下界，并直接中止本次流程。
+                    // 为什么不是“那就等一小时再打”：长时间挂在一个错误假设上会把整条
+                    // 流水线锁死在一个地块上，比不执行更糟。宁可不做强于做错。
+                    val conservativeRemainSec = durationSec.coerceAtLeast(1)
+                    logWarn(
+                        "⚠️ 检测到金色免战罩但未能读出剩余倒计时。按知识库免战时长保守估计，" +
+                            "破免至少还要 ${conservativeRemainSec / 60} 分钟，本次压秒中止。"
+                    )
+                    listener?.onStatusChanged(
+                        TacticalState.TaskType.IMMUNITY_BREAK,
+                        TacticalState.Status.FAILED,
+                        "免战倒计时识别失败，已中止（避免往罩子里硬敲）"
+                    )
+                    WatchdogRecovery.recoverToMainMap()
+                    return false
                 }
+
+                // 无免战罩：不需要压秒，直接按“现在”走普通占领（后面的卡秒计算会得到
+                // 一个负的等待量，即立即点火）。
+                else -> System.currentTimeMillis()
             }
 
-            val unlockTimestampMs = if (immunityStatus.isImmune && immunityStatus.remainingSeconds > 0) {
-                immunityStatus.unlockTimestampMs
-            } else {
-                System.currentTimeMillis() + 60 * 1000L // 默认预留 1 分钟测算
+            if (!immunityStatus.isImmune) {
+                logInfo("地块当前无免战罩，无需压秒，按普通占领直接推进。")
             }
-
             logInfo("⏱️ 目标地块免战解锁时间戳: $unlockTimestampMs (剩余: ${immunityStatus.remainingSeconds}秒)")
 
             // 4. 点击地块打开操作菜单

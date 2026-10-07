@@ -72,12 +72,14 @@ object BgeEmbedder {
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
 
-        val modelPath = ModelAssetManager.getOrExtractModelPath(context, "bge_zh_int8.onnx")
+        // 文件名引用 ModelAssetManager 的常量（唯一权威）。bge 是通用中文向量器，
+        // 权重里不含任何游戏专属内容，因此**不按游戏分域**。
+        val modelPath = ModelAssetManager.getOrExtractModelPath(context, ModelAssetManager.BGE_MODEL_FILE)
             ?: run {
-                Log.i(TAG, "未发现 bge_zh_int8.onnx，③ 走 64 维哈希向量降级路径。")
+                Log.i(TAG, "未发现 ${ModelAssetManager.BGE_MODEL_FILE}，③ 走 64 维哈希向量降级路径。")
                 return false
             }
-        val vocabPath = ModelAssetManager.getOrExtractModelPath(context, "bge_zh_vocab.txt")
+        val vocabPath = ModelAssetManager.getOrExtractModelPath(context, ModelAssetManager.BGE_VOCAB_FILE)
         if (vocabPath == null) {
             Log.w(TAG, "发现 bge 模型但没有词表，无法构造输入，放弃加载。")
             return false

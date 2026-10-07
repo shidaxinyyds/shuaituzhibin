@@ -74,11 +74,26 @@
 - **设备硬件指纹绑定与时钟防回拨熔断**：一机一码锁定，系统时钟篡改主动熔断防破解。
 
 ### 7. 模块化进阶：跨游戏独立知识库与云端静默热更体系 (`KnowledgeBaseManager`)
-- **通用引擎与游戏规则解耦**：触控、防封、720p 归一化、悬浮窗为 100% 通用底座，各游戏规则独立封装为 JSON 与实体 Profile。
-- **内置官方级知识库**：
-  - **《率土之滨 · 2026征服赛季旗舰版》(`stzb`)**：120 士气/体力，Lv.3~Lv.8 开荒天梯打分与克制避让，17 组抗版本迭代语义按键，看门狗弹窗过滤。
+- **通用引擎与游戏规则解耦**：触控、防封、720p 归一化、悬浮窗、感知与决策链路是通用底座，各游戏规则独立封装为 JSON 与实体 Profile。
+  唯一的例外是授权链路（`LicenseManager` 的 `game_id` 仍写死率土），所以"通用"目前指的是**玩法链路不换技术**，不是整包无例外。
+- **内置官方级知识库**（**唯一权威是 Kotlin 内置库**，`pipeline/*.json` 只是它的导出产物）：
+  - **《率土之滨 · 2026征服赛季旗舰版》(`stzb`)**：120 士气/体力，Lv.3~Lv.8 开荒天梯打分与克制避让，19 组抗版本迭代语义按键，看门狗弹窗过滤。
   - **《三国志·战略版 · PK赛季旗舰版》(`sgz`)**：100 士气，夜战双倍消耗，占领/调动/筑城按键，守军兵种克制。
-- **云端零发版静默热更**：游戏官方更新数值或按键时，使用 `python tools/upload_profile.py --json pipeline/rate_of_land.json` 即可一键更新 Supabase 配置，全网客户端自动拉取热更新，彻底告别频繁重新发版打包 APK！
+  - **只发云端、APK 里没有内置档案的游戏也能被激活并列进切换对话框**（本机标定/模板/语料按 `gameId` 自动分域并随切游戏重载）。
+    想看清"加一款游戏到底还要人工补什么"（模板图、YOLO 权重、RAG 语料、授权改造）：
+    `python tools/check_multi_game_readiness.py --show-checklist`。
+- **云端零发版静默热更**：游戏官方更新数值或按键时，**先改内置库、再导出、再发布**：
+
+  ```bash
+  python tools/export_profile.py                 # 内置库 → pipeline/*.json（产物不可手工编辑）
+  python tools/check_knowledge_base.py           # 三源对账：内置库 / RAG 表 / 云端产物
+  python tools/upload_profile.py --json pipeline/rate_of_land.json   # 发布到 Supabase
+  ```
+
+  全网客户端自动拉取热更新，彻底告别频繁重新发版打包 APK！
+  > ⚠️ **绝不手改 `pipeline/*.json`**：`run_all_checks.py` 里的 `export-freshness` 是硬闸门，
+  > 产物与内置库不一致时直接失败——因为“版本号相同、内容变了”的云端配置永远不会被
+  > 客户端采纳（端上只接受严格更新的版本），而你从日志上看不出任何异常。
 
 ---
 
@@ -113,11 +128,17 @@ shuaituzhibin/
 │       └── functions/
 │           └── license/index.ts            # Supabase Edge Functions 无服务接口 (鉴权+知识库热更)
 ├── pipeline/
-│   └── rate_of_land.json             # 率土之滨官方知识库全量 JSON 定义
+│   ├── rate_of_land.json             # 率土之滨云端知识库产物（由 export_profile.py 导出）
+│   └── three_kingdoms_profile.json   # 三国志·战略版云端知识库产物（同上）
 ├── tools/
 │   ├── gen_cards.py                  # 商业卡密批量生成工具 (零知识安全)
 │   ├── keep_alive.py                 # Supabase 免费实例自动保活脚本
-│   └── upload_profile.py             # 跨游戏知识库云端热更发布工具
+│   ├── export_profile.py             # 内置知识库 → 云端产物导出器（--check 为新鲜度闸门）
+│   ├── validate_decision_logic.py    # 决策规则镜像 + 源码反照（守军评级/选队/铺路逐格推进）
+│   ├── check_knowledge_base.py       # 知识库一致性与字段接线闸门（三源对账 + 死配置）
+│   ├── run_all_checks.py             # 一键静态回归（共 37 项，上述闸门全部在内）
+│   ├── ...                           # 其余校验脚本均由 run_all_checks.py 调用
+│   └── upload_profile.py             # 知识库云端热更发布工具（缺字段/陈旧/版本倒退一律拒发）
 ├── docs/
 │   └── 00_COMMERCIAL_ROADMAP.md      # 六阶段全流程落地规划文档
 ├── .gitignore

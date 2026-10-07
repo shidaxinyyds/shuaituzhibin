@@ -24,6 +24,10 @@ import org.json.JSONObject
  * 因此改为：**用相对设计画布的比例表达**（0.0~1.0），并按需持久化用户标定值。
  * 比例表达天然跟随机型缩放；标定值则让真机上量到的准确位置可以覆盖默认值。
  *
+ * ## 按游戏分域（见 [PerGameScope]）
+ * 标定值是**在这款游戏的界面上量的**，因此存储键带游戏后缀（`data_stzb` / `data_sgz`），
+ * 切换知识库时整套重载。未标定的游戏只用默认比例，绝不借用别的手游的量。
+ *
  * ## 关于默认值的来源
  * 默认比例是把原有常量按 "1280x720 参考画布" 折算得到的
  * （例如 `220/1280 = 0.1719`、`160/720 = 0.2222`），**不是**在真机上量出来的。
@@ -40,6 +44,10 @@ object UiAnchors {
 
     @Volatile
     private var appContext: Context? = null
+
+    /** 切游戏重载的钩子是否已注册（保证只注册一次）。 */
+    @Volatile
+    private var switchHookRegistered = false
 
     /**
      * 点锚点。`defaultFx/defaultFy` 是相对设计画布的比例。
@@ -132,6 +140,21 @@ object UiAnchors {
     fun attach(context: Context) {
         appContext = context.applicationContext
         load()
+        // 锚点是"这台设备 + 这款游戏 + 这个机型"的产物，切游戏必须整套换掉：
+        // 率土出征面板量出来的部队标签位置用在三战面板上，就是往空白处点。
+        // 只注册一次（attach 可能被重复调用）。
+        if (!switchHookRegistered) {
+            switchHookRegistered = true
+            PerGameScope.reloadOnProfileSwitch { reload() }
+        }
+    }
+
+    /** 换游戏后重新载入：先丢掉内存里上一款游戏的标定，再读本游戏的域。 */
+    private fun reload() {
+        pointOverrides.clear()
+        rectOverrides.clear()
+        load()
+        Log.i(TAG, "已按 [${PerGameScope.gameId()}] 重新载入锚点：${describeAll()}")
     }
 
     // ==========================================================
@@ -246,12 +269,17 @@ object UiAnchors {
         return Rect(left, top, right, bottom)
     }
 
-    /** 清除全部标定，回到折算默认值。 */
+    /**
+     * 清除**本游戏**的全部标定，回到折算默认值。
+     *
+     * 这里刻意不用 `prefs.edit().clear()`：prefs 文件现在同时装着好几款游戏的
+     * 标定，clear() 会把别的游戏一起抹掉，用户会发现"清一个游戏，另一个也白标了"。
+     */
     fun clearAllCalibration() {
         pointOverrides.clear()
         rectOverrides.clear()
-        appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)?.edit()?.clear()?.apply()
-        Log.i(TAG, "已清除全部 UI 锚点标定，回到默认值。")
+        appContext?.let { PerGameScope.removeScopedString(it, PREFS, "data") }
+        Log.i(TAG, "已清除 [${PerGameScope.gameId()}] 的全部 UI 锚点标定，回到默认值。")
     }
 
     /**
@@ -284,8 +312,8 @@ object UiAnchors {
 
     private fun load() {
         val ctx = appContext ?: return
-        val raw = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getString("data", null) ?: return
+        // 键按游戏分域（data_stzb / data_sgz），旧键 data 一次性迁进率土域。
+        val raw = PerGameScope.readScopedString(ctx, PREFS, "data") ?: return
         try {
             val root = JSONObject(raw)
             root.optJSONObject("points")?.let { points ->
@@ -308,7 +336,10 @@ object UiAnchors {
                     }
                 }
             }
-            Log.i(TAG, "已载入 UI 锚点标定：点 ${pointOverrides.size} 项 / 矩形 ${rectOverrides.size} 项。")
+            Log.i(
+                TAG,
+                "已载入 [${PerGameScope.gameId()}] 的 UI 锚点标定：点 ${pointOverrides.size} 项 / 矩形 ${rectOverrides.size} 项。"
+            )
         } catch (e: Exception) {
             Log.w(TAG, "解析 UI 锚点标定失败，改用默认值: ${e.message}")
         }
@@ -329,8 +360,7 @@ object UiAnchors {
                 )
             }
             val root = JSONObject().put("points", points).put("rects", rects)
-            ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString("data", root.toString()).apply()
+            PerGameScope.writeScopedString(ctx, PREFS, "data", root.toString())
         } catch (e: Exception) {
             Log.w(TAG, "保存 UI 锚点标定失败: ${e.message}")
         }

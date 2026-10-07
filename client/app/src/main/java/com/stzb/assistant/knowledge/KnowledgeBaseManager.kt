@@ -17,7 +17,9 @@ import java.util.concurrent.TimeUnit
  * 跨游戏知识库总控管理器 (KnowledgeBaseManager)
  * 
  * 核心职责：
- *   1. 【多游戏即插即用】：原生搭载《率土之滨》与《三国志·战略版》知识库，秒级无缝热切换；
+ *   1. 【多游戏即插即用】：APK 内置《率土之滨》与《三国志·战略版》两份档案可直接切换；
+ *      云端新发布的其它游戏知识包**不需要改代码或重新打包**即可被列出与激活
+ *      （见 [loadProfileForGame] 的纯云端分支），前提是它通过 validateFor 校验；
  *   2. 【脱机离线内置保障】：断网脱机时自动使用官方内置 Profile，零网络死锁；
  *   3. 【云端静默热更新】：支持从 Supabase 云端拉取最新守军打分、按键别名与战术数值，无需重新发布 APK；
  *   4. 【本地分级缓存管理】：从云端拉取的新配置自动持久化到本地沙盒，下次冷启动毫秒级秒开。
@@ -57,7 +59,13 @@ object KnowledgeBaseManager {
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedGameId = prefs.getString(KEY_ACTIVE_GAME_ID, "stzb") ?: "stzb"
-        loadProfileForGame(context, savedGameId)
+        if (!loadProfileForGame(context, savedGameId)) {
+            // 上次选的游戏已经无法激活（纯云端档案被撤、或缓存包校验不过）。
+            // 这里**不**把 active_game_id 改写成兜底值：用户改回原设置后
+            // 云端一旦恢复，就该自动回到他选的那款；只把现状如实说清楚。
+            Log.w(TAG, "上次激活的游戏 [$savedGameId] 已不可用（无内置档案且无有效云端缓存），" +
+                "本次以默认档案运行；可在切换对话框里另选一款。")
+        }
         Log.i(TAG, "知识库总控就绪，当前激活游戏: [${activeProfile.gameName}] (版本: ${activeProfile.profileVersion})")
     }
 
@@ -84,35 +92,91 @@ object KnowledgeBaseManager {
     }
 
     /**
-     * 获取所有支持的游戏列表
+     * 获取所有可挂接的游戏：内置档案 + **纯云端**（本地已有通过校验的知识包、但 APK 没编译进内置档案的游戏）。
+     *
+     * 不传 context 时只能列出内置档案（没有沙盒可读）。
+     * 之所以要把缓存游戏也列进来：分域之前这里只遍历内置表，
+     * 于是云端新发布一款游戏，用户在切换对话框里根本看不见它——
+     * "加一款游戏不用改代码"当时是假的，界面上就没有第二个入口。
      */
-    fun getSupportedGames(): List<Pair<String, String>> {
-        return builtInProfiles.map { (id, profile) -> Pair(id, profile.gameName) }
+    fun getSupportedGames(context: Context? = null): List<Pair<String, String>> {
+        val games = LinkedHashMap<String, String>()
+        builtInProfiles.forEach { (id, profile) -> games[id] = profile.gameName }
+        if (context != null) {
+            for (id in listCachedGameIds(context)) {
+                if (games.containsKey(id)) continue
+                // 只有**能通过校验**的缓存才算"可挂接"：列出一个点进去就失败的条目，
+                // 比不列出来更糟——用户会以为这款产品支持它。
+                readValidCachedProfile(context, id)?.let { games[id] = it.gameName }
+            }
+        }
+        return games.map { (id, name) -> Pair(id, name) }
+    }
+
+    /** 沙盒里已缓存知识包的游戏 id（文件名形如 `<gameId>_profile.json`）。 */
+    private fun listCachedGameIds(context: Context): List<String> {
+        val dir = File(context.filesDir, "profiles")
+        if (!dir.exists()) return emptyList()
+        return dir.listFiles()?.mapNotNull { f ->
+            if (!f.name.endsWith("_profile.json")) null
+            else f.name.removeSuffix("_profile.json").takeIf { it.isNotBlank() }
+        } ?: emptyList()
+    }
+
+    /**
+     * 读取某游戏缓存的知识包，并**用它自己的校验闸**过一遍。
+     *
+     * @return null 表示没有缓存、解析失败、或校验未通过（都会打日志说明原因）
+     */
+    private fun readValidCachedProfile(context: Context, gameId: String): GameProfile? {
+        val cacheFile = getProfileCacheFile(context, gameId)
+        if (!cacheFile.exists()) return null
+        return try {
+            val cached = GameProfile.fromJson(cacheFile.readText(Charsets.UTF_8))
+            val (usable, reason) = cached.validateFor(gameId)
+            if (!usable) {
+                Log.w(TAG, "[$gameId] 的本地缓存知识包不可用（$reason），已忽略。")
+                null
+            } else {
+                cached
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "解析 [$gameId] 的本地缓存知识包失败: ${e.message}")
+            null
+        }
     }
 
     private fun loadProfileForGame(context: Context, gameId: String): Boolean {
-        val baseProfile = builtInProfiles[gameId] ?: return false
+        val baseProfile = builtInProfiles[gameId]
+        if (baseProfile == null) {
+            // 内置表里没有这款游戏，**不等于**不支持。
+            // 原来这里一句 `?: return false` 就是"加一款游戏零代码改动"最不诚实的地方：
+            // 纯云端发布的知识包永远无法被激活，因为激活的入口先要求 APK 里编译进一份内置档案。
+            // 现在按"缓存即唯一来源"处理：读得到、且过 validateFor 才激活；
+            // 读不到就如实返回 false（绝不回落到别的游戏的档案，也不加任何默认值）。
+            val cached = readValidCachedProfile(context, gameId) ?: return false
+            setActiveProfile(cached)
+            Log.i(TAG, "已激活纯云端知识库: ${cached.gameName} (版本: ${cached.profileVersion})；" +
+                "本 APK 未内置该游戏的档案，其知识完全依赖云端知识包。")
+            return true
+        }
 
         // 尝试从本地沙盒缓存载入云端更新过的知识库
-        val cacheFile = getProfileCacheFile(context, gameId)
-        if (cacheFile.exists()) {
-            try {
-                val jsonStr = cacheFile.readText(Charsets.UTF_8)
-                val cachedProfile = GameProfile.fromJson(jsonStr)
-                // 两道闸，缺一不可：
-                //   1. 缓存内容必须真的可用（防止"空壳缓存"永久顶替内置版本）；
-                //   2. 版本比较必须走**数值**比较（compareVersion），
-                //      直接写 `>=` 是字典序，"9" 会被认为大于 "10"。
-                val (usable, reason) = cachedProfile.validateFor(gameId)
-                if (!usable) {
-                    Log.w(TAG, "本地缓存的知识库不可用（$reason），已忽略并降级到内置版本。")
-                } else if (cachedProfile.compareVersion(baseProfile.profileVersion) >= 0) {
-                    setActiveProfile(cachedProfile)
-                    Log.i(TAG, "已从本地沙盒加载热更新知识库: ${cachedProfile.gameId} (版本: ${cachedProfile.profileVersion})")
-                    return true
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "解析本地知识库缓存失败，将平滑降级至内置版本: ${e.message}")
+        val cached = readValidCachedProfile(context, gameId)
+        if (cached != null) {
+            // 版本比较必须走**数值**比较（compareVersion），直接写 `>=` 是字典序，
+            // "9" 会被认为大于 "10"。
+            //
+            // 为什么是严格大于（而不是 >=）：同版本不能算"缓存更新"。
+            // 云端允许发布与内置**同号**的包时（版本号忘改、或旧 APK 已经把同号缓存
+            // 写进了沙盒），端上拿到的往往是**内容更弱**的那一份：缺按键、缺守将、
+            // 旧名单。一旦同版本就采用缓存，内置库后来被修正也永远跑不赢，
+            // 用户升级 APK 后依旧停在旧数据上——这是"热更了个寂寞"里最难查的一种。
+            // 与 checkCloudUpdate 的闸门保持同一个口径：不严格更新就不采纳。
+            if (cached.compareVersion(baseProfile.profileVersion) > 0) {
+                setActiveProfile(cached)
+                Log.i(TAG, "已从本地沙盒加载热更新知识库: ${cached.gameId} (版本: ${cached.profileVersion})")
+                return true
             }
         }
 
@@ -170,7 +234,11 @@ object KnowledgeBaseManager {
             val reqJson = JSONObject().apply {
                 put("action", "get_profile")
                 put("game_id", gameId)
-                put("current_version", activeProfile.profileVersion)
+                // 必须报**这款游戏**当前生效的版本（内置或缓存里更新的那个），
+                // 而不是 activeProfile 的版本：检查更新的目标可以是另一款游戏，
+                // 拿 A 游戏的版本号去问 B 游戏有没有新版，服务端的 has_new_version
+                // 从一开始就是错的，端上再怎么判也救不回来。
+                put("current_version", currentVersionFor(context, gameId))
             }
 
             val body = reqJson.toString().toRequestBody("application/json; charset=utf-8".toMediaType())
@@ -281,6 +349,15 @@ object KnowledgeBaseManager {
      * 重置恢复为官方内置默认知识库 (清除本地热更新缓存)
      */
     fun resetToBuiltIn(context: Context, gameId: String = activeProfile.gameId) {
+        if (builtInProfiles[gameId] == null) {
+            // 纯云端游戏：本地缓存**就是**它唯一的知识库，删掉等于把这款游戏整个清空，
+            // 内存里那份还会留着（下次冷启动才发现没了），是最难解释的一种"重置后失灵"。
+            // 所以对这个语义如实拒绝——"重置为内置"对没有内置档案的游戏不成立。
+            Log.w(TAG, "[$gameId] 只有云端知识库、本 APK 没有它的内置档案：" +
+                "重置会连知识包一起删掉、该游戏随即不可挂接，已拒绝该操作（未改动任何文件）。")
+            return
+        }
+
         val cacheFile = getProfileCacheFile(context, gameId)
         if (cacheFile.exists()) cacheFile.delete()
 

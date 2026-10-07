@@ -5,6 +5,7 @@ import android.graphics.PointF
 import android.util.Log
 import com.stzb.assistant.ai.microbrain.OrderIntent
 import com.stzb.assistant.ai.microbrain.TacticalOrder
+import com.stzb.assistant.ai.microbrain.isConcreteTargetName
 import com.stzb.assistant.service.CoordinateTransformer
 import com.stzb.assistant.service.MapProjection
 import com.stzb.assistant.tactics.AccurateFarmingFlow
@@ -31,8 +32,11 @@ import com.stzb.assistant.tactics.TacticalState
  *   2. **宁可拒绝，也不猜**：如果订单带世界坐标而地图**未标定**，
  *      世界坐标无法换算成点击位置——此时**直接拒绝下发并说明原因**，
  *      而不是退化成点屏幕正中（那等于把部队派到随机地点）；
- *   3. **防幻觉校验**保留：坐标范围 [1,1500]、时间戳不能是过去、
- *      体力基线，再加 Utility AI 效用打分。
+ *   3. **防幻觉校验**保留：坐标范围（**取知识库 `rules.mapCoordMax`，不写死率土 1500**）、
+ *      时间戳不能是过去、
+ *      体力基线（**一律取自知识库 `requiredStaminaNow()`，不在本文件写死数字**；
+ *      体力未经实测时不伪造、也不拿默认值过闸，而是如实跳过并在日志里说明），
+ *      再加 Utility AI 效用打分。
  *
  * ## 职责
  * 端侧微脑（自然语言军令/邮件/法令）与物理点击执行器之间的"防呆防幻觉闸门"：
@@ -82,8 +86,15 @@ class DualTrackSafetyGate(private val context: Context) {
      *
      * ⚠️ 本函数是 `suspend`：目标解析不再靠猜，而是走真实的地图标定链路。
      * 调用方需在协程中调用（悬浮控制台已经是 `scope.launch`）。
+     *
+     * @param currentStamina 队伍体力的**实测值**；`null` 表示"现在没读过"。
+     *   旧默认值是 `100`，那是一个编出来的数字：军师页的「执行军令」从不传体力，
+     *   于是这道闸永远以"体力满"过闸、永远拦不住任何东西，日志还写得像真校验过。
+     *   现在未知就是未知：体力硬基线只在有实测值时参与判定，
+     *   效用分也不再白送体力那一份。真正的逐槽体力门槛在各战术流里
+     *   （RoadPavingFlow / SiegeSyncFlow 选队时会用 OCR 实测体力再判一次）。
      */
-    suspend fun verifyAndDispatch(order: TacticalOrder, currentStamina: Int = 100): Boolean {
+    suspend fun verifyAndDispatch(order: TacticalOrder, currentStamina: Int? = null): Boolean {
         Log.i(TAG, "安全守门员开始审查战术指令: [${order.orderId}] ${order.intent.desc} 目标:${order.targetName}")
 
         val result = evaluateOrder(order, currentStamina)
@@ -109,12 +120,17 @@ class DualTrackSafetyGate(private val context: Context) {
     /**
      * 严苛的多维安全性与效用评估矩阵
      */
-    private fun evaluateOrder(order: TacticalOrder, currentStamina: Int): VerificationResult {
-        // 1. 防幻觉门禁：坐标边界判定 (若有坐标)
+    private fun evaluateOrder(order: TacticalOrder, currentStamina: Int?): VerificationResult {
+        val rules = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
+
+        // 1. 防幻觉门禁：坐标边界判定 (若有坐标)。界取**当前游戏**的地图尺寸，不写死率土的 1500
         val coord = order.targetCoord
         if (coord != null) {
-            if (coord.first !in 1..1500 || coord.second !in 1..1500) {
-                return VerificationResult(false, 0f, "坐标超出率土十三州有效大地图范围: (${coord.first}, ${coord.second})")
+            if (!rules.isValidWorldCoord(coord.first, coord.second)) {
+                return VerificationResult(
+                    false, 0f,
+                    "坐标超出本游戏有效大地图范围 [1,${rules.mapCoordMax}]: (${coord.first}, ${coord.second})"
+                )
             }
         }
 
@@ -124,14 +140,23 @@ class DualTrackSafetyGate(private val context: Context) {
             return VerificationResult(false, 0f, "目标攻城时间已早于当前时刻5分钟以上，禁止向历史发兵")
         }
 
-        // 3. 物理门禁：体力安全基线
-        val minStaminaRequired = 20
-        if (currentStamina < minStaminaRequired) {
-            return VerificationResult(false, 0f, "队伍平均体力过低 (当前:$currentStamina，基线:$minStaminaRequired)，防暴毙拦截")
+        // 3. 物理门禁：体力安全基线（**基线一律取自知识库，不在这里写死**）
+        //
+        //    旧写法是 `val minStaminaRequired = 20`。20 恰好等于 staminaPerAction 的默认值，
+        //    所以看上去从来"是对的"，实际上它是第二权威：把三战改成夜战双倍（应为 40）时，
+        //    RoadPavingFlow / SiegeSyncFlow 会跟着知识库改，这道闸却不动，
+        //    两处判据从此开始打架——这正是 P4 要消除的那类重复定义。
+        val minStaminaRequired = rules.requiredStaminaNow()
+        if (currentStamina != null && currentStamina < minStaminaRequired) {
+            val nightTag = if (rules.isNightNow()) "，含夜间倍率 ${rules.nightStaminaMultiplier}x" else ""
+            return VerificationResult(
+                false, 0f,
+                "队伍体力过低 (实测:$currentStamina，基线:$minStaminaRequired$nightTag)，防暴毙拦截"
+            )
         }
 
         // 4. Utility AI 效用函数打分
-        // Score = 基础分 + 军令权重 + 体力余量权重 + 时间紧迫度权重
+        // Score = 基础分 + 军令权重 + 体力余量权重 + 解析置信度权重
         val wPriority = when (order.intent) {
             OrderIntent.ALLIANCE_SIEGE -> 40f
             OrderIntent.DEFEND_GATE -> 35f
@@ -140,10 +165,17 @@ class DualTrackSafetyGate(private val context: Context) {
             OrderIntent.SPARTAN_SCOUT -> 15f
             OrderIntent.STAMINA_RECOVERY -> 10f
         }
-        val wStamina = (currentStamina.toFloat() / 100f) * 30f
+        // 体力份：未实测就给 0（而不是拿默认 100 算成一个看上去很好的分数）。
+        // 分母取知识库 maxStamina，不假设"体力满值就是 100"（率土是 120，旧写法会让满体力算出 36 分）。
+        val wStamina = currentStamina?.let {
+            (it.toFloat() / rules.maxStamina.coerceAtLeast(1)) * 30f
+        } ?: 0f
         val wConfidence = order.confidence * 30f
 
         val finalScore = (wPriority + wStamina + wConfidence).coerceIn(0f, 100f)
+        if (currentStamina == null) {
+            Log.i(TAG, "体力未实测：体力硬基线（$minStaminaRequired）本轮跳过，效用分不计体力份；实际选队时仍由各战术流实测体力把关。")
+        }
 
         return VerificationResult(true, finalScore)
     }
@@ -210,8 +242,11 @@ class DualTrackSafetyGate(private val context: Context) {
                         demolitionSlots = listOf(2, 3),
                         // 世界坐标下传：攻城流自己会把镜头对准目标城池
                         cityWorldCoord = world,
-                        // 军令里的目标名往往就是要塞/城池的官方书签名，能对上就用书签 0 漂移
-                        fortressName = order.targetName.takeIf { it.isNotBlank() && it != "未明目标" }
+                        // 军令里的目标名往往就是要塞/城池的官方书签名，能对上就用书签 0 漂移。
+                        // ❗ 判据必须用 [isConcreteTargetName]：旧写法 `it != "未明目标"` 恒真
+                        //    （解析器读不到地名时返回的是 "目标据点" 这一类占位名），
+                        //    于是攻城流会拿到一个游戏里根本不存在的书签名去漂移。
+                        fortressName = order.targetName.takeIf { it.isConcreteTargetName() }
                     )
                     pipeline.startSiegeSync(config)
                     callback?.onExecutionDispatched(
@@ -295,7 +330,7 @@ class DualTrackSafetyGate(private val context: Context) {
      * 供悬浮控制台的「执行军令」按钮调用；解析与安全校验都在这里收敛，
      * 避免调用方各自拼装（那正是之前出现"解析了却没人下发"的原因）。
      */
-    suspend fun parseAndDispatch(decreeText: String, currentStamina: Int = 100): Pair<Boolean, String> {
+    suspend fun parseAndDispatch(decreeText: String, currentStamina: Int? = null): Pair<Boolean, String> {
         val order = com.stzb.assistant.ai.microbrain.EdgeSlmEngine(context)
             .parseAllianceDecree(decreeText)
         val ok = verifyAndDispatch(order, currentStamina)

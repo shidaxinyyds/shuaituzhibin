@@ -110,6 +110,10 @@ object EngineBridge {
      * 这与"仅保留无障碍手势通道"的产品决定（见 `MainActivity` 的说明）也是矛盾的。
      */
     suspend fun tap(virtualX: Float, virtualY: Float): Boolean {
+        // 0) 前台闸门：坐标是从游戏画面算出来的，游戏不在前台时这一指就会落在别的应用上。
+        //    拦在这里而不是各战术流里，是因为所有盲点都走这个入口（包括压秒的 firePreparedTap）。
+        if (!ForegroundGate.allowBlindDispatch("点击")) return false
+
         // 微量高斯拟人微扰动 (控制在 1.0px 以内，误差 < ±5dp)
         val jitteredVirtual = com.stzb.assistant.antiban.AntiBanCoordinator.randomizePoint(virtualX, virtualY, 1.0f)
 
@@ -147,6 +151,9 @@ object EngineBridge {
         endX: Float, endY: Float,
         durationMs: Long = Random.nextLong(400, 600)
     ): Boolean {
+        // 前台闸门：滑动在大地图上就是拖动镜头，点在别的应用上会把它的列表/页面拖乱。
+        if (!ForegroundGate.allowBlindDispatch("滑动")) return false
+
         val touch = AutoTouchService.instance
         if (touch != null && touch.swipeVirtual(startX, startY, endX, endY, durationMs)) {
             return true
@@ -183,6 +190,9 @@ object EngineBridge {
         scale: Float,
         durationMs: Long = 500L
     ): Boolean {
+        // 前台闸门：缩放同理，两指手势落到别的应用上就是不可预期的页面缩放。
+        if (!ForegroundGate.allowBlindDispatch("缩放")) return false
+
         val touch = AutoTouchService.instance
         if (touch == null) {
             Log.w(

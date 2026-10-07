@@ -385,7 +385,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showGameSwitchDialog() {
-        val games = com.stzb.assistant.knowledge.KnowledgeBaseManager.getSupportedGames()
+        // 传上下文才能把"只在云端发布、APK 里没有内置档案"的游戏也列进来；
+        // 只列内置表时，云端新游戏在界面上根本没有第二个入口。
+        val games = com.stzb.assistant.knowledge.KnowledgeBaseManager.getSupportedGames(this)
         val gameNames = games.map { it.second }.toTypedArray()
         val currentIndex = games.indexOfFirst {
             it.first == com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameId
@@ -395,9 +397,16 @@ class MainActivity : AppCompatActivity() {
             .setTitle("选择要挂接的游戏知识库")
             .setSingleChoiceItems(gameNames, if (currentIndex >= 0) currentIndex else 0) { dialog, which ->
                 val selectedGameId = games[which].first
-                com.stzb.assistant.knowledge.KnowledgeBaseManager.switchGame(this, selectedGameId)
-                refreshKnowledgeUi()
-                log("🔄 已切换知识库: ${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName}")
+                val switched = com.stzb.assistant.knowledge.KnowledgeBaseManager.switchGame(this, selectedGameId)
+                if (switched) {
+                    refreshKnowledgeUi()
+                    log("🔄 已切换知识库: ${com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameName}")
+                } else {
+                    // 失败时如实说失败。原来这里不看返回值、照旧打"已切换"，
+                    // 用户看到成功提示却发现所有识别通道都不认字，只会怀疑自己操作错了。
+                    log("⚠️ 未能切换到 [$selectedGameId]：本 APK 没有它的内置档案，" +
+                        "本地也没有通过校验的云端知识包。请先为该游戏发布知识包，再点“检查更新”。")
+                }
                 dialog.dismiss()
             }
             .setNegativeButton("取消", null)
@@ -440,8 +449,15 @@ class MainActivity : AppCompatActivity() {
         val sb = StringBuilder()
         sb.append("【SLG-RAG 战术知识库 · 土地打分天梯】\n\n")
         suggestions.toSortedMap().forEach { (lvl, s) ->
-            sb.append("📍【Lv.$lvl 土地守军】推荐兵力: ${s.recommendedSoldiers}+\n")
-            sb.append("  🟢 软柿子优先开: ${s.safeHeroes.joinToString("、")}\n")
+            sb.append("📍【Lv.$lvl 土地守军】推荐我方兵力: ${s.recommendedSoldiers}+\n")
+            // 守军实际有多少兵（官方读数）：玩家判断“能不能打”靠的就是这两个数对比，
+            // 以前只给一个结论值、不给依据。0 = 该等级尚无可靠数据，宁可不显示也不能拿 0 当“守军没兵”。
+            if (s.defenderTotalSoldiers > 0) {
+                sb.append("  🛡️ 守军总兵力约: ${s.defenderTotalSoldiers}\n")
+            }
+            if (s.safeHeroes.isNotEmpty()) {
+                sb.append("  🟢 软柿子优先开: ${s.safeHeroes.joinToString("、")}\n")
+            }
             if (s.blacklistHeroes.isNotEmpty()) {
                 sb.append("  🔴 翻车雷区(避开): ${s.blacklistHeroes.joinToString("、")}\n")
             }
@@ -543,23 +559,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshAdvisorBrainUi() {
-        tvAdvisorEngineStatus.text = "军师大脑：端侧 RAG 向量底座 (100% 本地离线，内存 < 15MB，防杀后台)"
+        // 措辞只讲**结构**，不讲体积与内存数字：以前这里写「内存 < 15MB」，
+        // 而 bge INT8 单件实测 22.8MB、意图微脑 37.1MB，载入预算分别是 40MB / 24MB——
+        // 把预算说小，低内存机型上「军师用着用着就没了」（ResourceGuard 主动拒载）
+        // 就完全找不到原因。真实状态一律看端侧微脑说明页里的逐项体检。
+        tvAdvisorEngineStatus.text = "军师大脑：知识库 + RAG 语义检索（纯本地离线，缺权重时如实回落）"
         tvAdvisorEngineStatus.setTextColor(ContextCompat.getColor(this, R.color.success))
     }
 
     private fun showAiBrainConfigDialog() {
+        // 这段说明里每一个数字都要能在地面上复现，并且**逐项体检直接读资产**：
+        // 手写"已就绪"的文案会在资产变化后变成谎话，而谎话会让用户把故障归因到错的地方。
+        val mgr = com.stzb.assistant.ai.assets.ModelAssetManager
+        val ragName = mgr.modelCandidates(mgr.RAG_INDEX_FILE).first()
+        // 语料资产的体积/条数/维度**现场读容器头**，不写死在文案里：
+        // 这里原本印着"94.3KB / 42 条 / 512 维"，语料一重建就成了假话，
+        // 而用户会拿这句假话去判断"我的 RAG 到底有没有装上"。
+        val ragAsset = com.stzb.assistant.ai.rag.SlgRagEngine.describeShippedIndex(this)
         val text = buildString {
-            append("【端侧微脑真实架构与运行机制】\n\n")
-            append("1. 为什么坚决不塞几百兆的生成式大模型？\n")
-            append("  • 内存硬限制：游戏《率土之滨》自身占用 1.5G~2.5G 内存。后台无障碍服务若加载数百兆模型，必被 Android 系统 LMK 强行击杀！\n")
-            append("  • 耗电发热：手机 CPU 跑大模型会导致严重发烫锁核、游戏掉帧卡顿。\n\n")
-            append("2. 当前落地的端侧最优工业方案：\n")
-            append("  • 【SLG-RAG 密集向量底座】(slg_knowledge_vector_hnsw.bin)\n")
-            append("    体积仅 22KB，运行内存 < 10MB，毫秒级响应！包含全等级土地守军天梯打分、核心战法冲突克制与同盟战术知识库，纯本地离线计算，零延迟、零幻觉、永不闪退。\n")
-            append("  • 【端侧军令语义解析器】(EdgeSlmEngine)\n")
-            append("    精准抽取关卡、城池、世界坐标、攻城时间戳与压秒提前量，0 耗电、0 闪退风险。\n\n")
-            append("3. 总结：\n")
-            append("  真正的商业级辅助追求的是绝对稳定、不杀后台、不发热、不封号。端侧 RAG 底座是当前移动端环境下的最佳工程解！")
+            append("【端侧微脑：真实构成与当前资产状态】\n\n")
+            append("1. 为什么不塞几百兆的生成式大模型？\n")
+            append("  • 内存：游戏本体常驻 1.5G~2.5G，后台无障碍服务再加载数百兆权重会被系统 LMK 击杀。"
+                + "因此每一项权重在载入前都要过资源准入（bge 预算 40MB、意图微脑 24MB、YOLO 24MB，"
+                + "均为按权重大小反推的估算口径，待真机校准）。\n")
+            append("  • 发热与掉帧：CPU 跑大模型会锁核降频，游戏帧率跟着塌。\n\n")
+            append("2. 现在真正在跑的通道（口径可复现）\n")
+            append("  • 土地守军天梯 / 兵力 / 守将名单 / 按键词条：来自知识库，可云端热更，不依赖任何权重文件。\n")
+            append("  • 语义检索兜底：RAG 向量索引（本游戏期望名 assets/models/$ragName；"
+                + "现场读到的是「$ragAsset」）。文件缺失时如实回落内置种子；"
+                + "语料不属于当前激活游戏时整体拒服——宁可没有参考条目，也不把别的游戏的武将战法念给你。\n")
+            append("  • 军令解析：意图微脑存在即走真推理（受约束的意图 + 槽位），缺权重则回落正则；"
+                + "两条通道的输出都必须过 DSL 校验才会变成动作。\n")
+            append("  • 没有生成式大模型，因此不存在「幻觉答案」；"
+                + "但也不会「永不闪退」——稳定性靠的是上面的资源准入、熔断与如实兜底，不是承诺。\n\n")
+            append("3. 当前设备的资产体检（逐项、如实，缺就是缺）\n")
+            mgr.getFullDiagnosticReport(this@MainActivity).forEach {
+                append("  • ").append(it.detail).append('\n')
+            }
         }
 
         androidx.appcompat.app.AlertDialog.Builder(this)

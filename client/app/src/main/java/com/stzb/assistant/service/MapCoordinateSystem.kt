@@ -102,6 +102,10 @@ object MapProjection {
     @Volatile
     private var appContext: Context? = null
 
+    /** 切游戏重载的钩子是否已注册（保证只注册一次）。 */
+    @Volatile
+    private var switchHookRegistered = false
+
     val isCalibrated: Boolean
         get() = calibration != null
 
@@ -109,6 +113,21 @@ object MapProjection {
     fun attach(context: Context) {
         appContext = context.applicationContext
         load()
+        // 地图投影（每格像素数、镜头中心世界坐标、基地坐标）是在**这一款游戏**的
+        // 大地图上量出来的。拿率土的量去换算三战的目标坐标，得到的每个坐标都是错的，
+        // 而且错得"看起来合法"——这类错误必须靠分域挡在源头。
+        if (!switchHookRegistered) {
+            switchHookRegistered = true
+            PerGameScope.reloadOnProfileSwitch { reload() }
+        }
+    }
+
+    /** 换游戏后重新载入：先退回未标定，再读本游戏的域（没有就如实未标定）。 */
+    private fun reload() {
+        calibration = null
+        baseWorld = null
+        load()
+        Log.i(TAG, "已按 [${PerGameScope.gameId()}] 重新载入地图投影：${describeCalibration()}")
     }
 
     // ==========================================================
@@ -232,8 +251,10 @@ object MapProjection {
     fun clearCalibration() {
         calibration = null
         baseWorld = null
-        prefs()?.edit()?.clear()?.apply()
-        Log.i(TAG, "已清除地图投影标定。")
+        // 只删本游戏那一份：prefs 文件现在同时装着多款游戏的标定，
+        // edit().clear() 会把别的游戏一起抹掉（"清一个、白标另一个"）。
+        appContext?.let { PerGameScope.removeScopedString(it, PREFS, "data") }
+        Log.i(TAG, "已清除 [${PerGameScope.gameId()}] 的地图投影标定。")
     }
 
     // ==========================================================
@@ -416,10 +437,10 @@ object MapProjection {
     // 持久化
     // ==========================================================
 
-    private fun prefs() = appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
     private fun load() {
-        val raw = prefs()?.getString("data", null) ?: return
+        val ctx = appContext ?: return
+        // 键按游戏分域（data_stzb / data_sgz），旧键 data 一次性迁进率土域。
+        val raw = PerGameScope.readScopedString(ctx, PREFS, "data") ?: return
         try {
             val o = JSONObject(raw)
             val cal = o.optJSONObject("calibration")
@@ -440,14 +461,14 @@ object MapProjection {
             if (o.has("baseX") && o.has("baseY")) {
                 baseWorld = Pair(o.getInt("baseX"), o.getInt("baseY"))
             }
-            Log.i(TAG, "已载入地图投影标定: ${describeCalibration()}")
+            Log.i(TAG, "已载入 [${PerGameScope.gameId()}] 的地图投影标定: ${describeCalibration()}")
         } catch (e: Exception) {
             Log.w(TAG, "解析地图投影标定失败，按未标定处理: ${e.message}")
         }
     }
 
     private fun save() {
-        val p = prefs() ?: return
+        val ctx = appContext ?: return
         try {
             val o = JSONObject()
             calibration?.let { c ->
@@ -469,7 +490,7 @@ object MapProjection {
                 o.put("baseX", it.first)
                 o.put("baseY", it.second)
             }
-            p.edit().putString("data", o.toString()).apply()
+            PerGameScope.writeScopedString(ctx, PREFS, "data", o.toString())
         } catch (e: Exception) {
             Log.w(TAG, "保存地图投影标定失败: ${e.message}")
         }

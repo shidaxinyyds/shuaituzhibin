@@ -13,14 +13,21 @@ import java.util.regex.Pattern
  * 端侧军令语义提取器 (EdgeSlmEngine)
  *
  * ## 诚实说明（重要）
- * 这个类**不是**语言模型推理引擎，三个公开方法
- * （[parseAllianceDecree] / [diagnoseBattleReport] / [generateAdvisorLiveStream]）
- * 全部是**正则 + 关键词提取**实现，没有任何权重参与推理。
+ * 本类的主通道是**正则 + 关键词提取**：
+ *   * [parseAllianceDecree]：正则为主，另有一条**可选**的 ONNX 意图通道（[IntentSlotModel]）；
+ *   * [diagnoseBattleReport] / [generateAdvisorLiveStream]：纯正则 + RAG 检索，没有任何权重参与。
  *
- * 本类的 KDoc 曾声称"主通道加载端侧 INT4 GGUF/MNN 权重做多步条件因果生成，
+ * 意图通道能做的和**不能做的**已被严格限定（见下方 8.5 节的注释）：
+ * 它只能在正则未命中任何意图关键词时补位一个抽象分类，
+ * 永远不得改写原文里已经读到的目标名与坐标，也不得给自己的置信度加底分。
+ * 理由很直接：`intent_slot_zh.onnx` 的准确率**从未在本机实测过**，
+ * 而它的输出会一路走到 `DualTrackSafetyGate.resolveTarget` 变成真实下发目标。
+ *
+ * ## 关于 GGUF/MNN 那套旧声明
+ * 本类的 KDoc 曾声称"主通道加载端侧 INT4 GGUF/MNN 权重做多步条件生成，
  * 无权重时自动切换"，并配套维护 `isModelWeightLoaded` / `modelPath` 等字段。
  * 实际情况是：那些字段**从未被任何代码读取**，而 `ModelAssetManager` 的诚实报告
- * 也已写明"需 GGUF/MNN 运行时；当前 EdgeSlmEngine 为纯正则实现，权重从未参与推理"。
+ * 也已写明"需 GGUF/MNN 运行时；当前 EdgeSlmEngine 无生成式推理后端"。
  * 因此这里删除了那套字段，并把启动日志改成如实汇报探测结果——
  * 探测到权重也只是"文件在"，不代表存在能跑它的推理后端。
  *
@@ -43,14 +50,27 @@ class EdgeSlmEngine(private val context: Context) {
      */
     private fun probeOptionalAssets() {
         try {
-            val intent = probeAsset("intent_slot_zh.onnx", 1L * 1024 * 1024)
-            val bge = probeAsset("bge_zh_int8.onnx", 5L * 1024 * 1024)
-            val hnsw = probeAsset("slg_knowledge_vector_hnsw.bin", 5L * 1024 * 1024)
-    
+            // 文件名一律引用 ModelAssetManager 的常量：探针、资产体检、真正加载的引擎
+            // 必须读同一个名字，各抄一份就会出现"体检说齐备、引擎说没找到"的自相矛盾。
+            // 游戏专属的两份（意图微脑、RAG 索引）按当前游戏派生标记后再探，
+            // bge 是通用中文向量器、与游戏无关，因此不分域。
+            val intentPath = probeAssetPath(
+                com.stzb.assistant.ai.assets.ModelAssetManager.INTENT_MODEL_FILE,
+                1L * 1024 * 1024, gameScoped = true
+            )
+            val bgePath = probeAssetPath(
+                com.stzb.assistant.ai.assets.ModelAssetManager.BGE_MODEL_FILE,
+                5L * 1024 * 1024, gameScoped = false
+            )
+            val hnswPath = probeAssetPath(
+                com.stzb.assistant.ai.assets.ModelAssetManager.RAG_INDEX_FILE,
+                5L * 1024 * 1024, gameScoped = true
+            )
+
             val found = buildList {
-                if (intent) add("intent_slot_zh.onnx")
-                if (bge) add("bge_zh_int8.onnx")
-                if (hnsw) add("slg_knowledge_vector_hnsw.bin")
+                intentPath?.let { add(java.io.File(it).name) }
+                bgePath?.let { add(java.io.File(it).name) }
+                hnswPath?.let { add(java.io.File(it).name) }
             }
             if (found.isEmpty()) {
                 Log.i(
@@ -69,11 +89,19 @@ class EdgeSlmEngine(private val context: Context) {
         }
     }
 
-    /** 资产是否存在且达到最小体积。返回 true 仅代表"文件在"，不代表可推理。 */
-    private fun probeAsset(name: String, minBytes: Long): Boolean {
-        val p = com.stzb.assistant.ai.assets.ModelAssetManager.getOrExtractModelPath(context, name)
-            ?: return false
-        return java.io.File(p).length() > minBytes
+    /**
+     * 资产是否存在且达到最小体积，返回它**实际落地**的绝对路径；缺文件或体积不达标返回 null。
+     *
+     * 返回路径而不是布尔值：日志要念出真正被发现的那个文件名（带游戏标记的那个），
+     * 念一个"名义上应该有的名字"会把排查的人引向错的文件。
+     * "文件在"不等于"可推理"，所以对外措辞仍然只用"发现"。
+     */
+    private fun probeAssetPath(name: String, minBytes: Long, gameScoped: Boolean): String? {
+        val mgr = com.stzb.assistant.ai.assets.ModelAssetManager
+        val p = if (gameScoped) mgr.extractScopedModelPath(context, name, true)
+                else mgr.getOrExtractModelPath(context, name)
+            ?: return null
+        return if (java.io.File(p).length() > minBytes) p else null
     }
 
     /**
@@ -100,8 +128,10 @@ class EdgeSlmEngine(private val context: Context) {
         // 5. 提取分配队伍角色
         val assignedTeams = extractTeamRoles(cleanText)
 
-        // 6. 提取战术意图类型
-        val intent = deduceIntent(cleanText, targetName)
+        // 6. 提取战术意图：只在原文**真的出现**关键词时才算命中，读不到就是 null。
+        //    （旧写法把"一个关键词都没匹配上"直接当成「全盟攻城/集火」，于是任何一条
+        //    看不懂的军令都会被派去攻城——那是最贵的一种静默错判。）
+        val regexIntent = deduceIntentOrNull(cleanText)
 
         // 7. 提取应急预案 (如抢跑/被抢城皮)
         val contingency = extractContingency(cleanText)
@@ -109,18 +139,50 @@ class EdgeSlmEngine(private val context: Context) {
         // 8. 结合 RAG 向量检索丰富战术操作指南与应急预案
         val ragMatch = com.stzb.assistant.ai.rag.SlgRagEngine.matchDecreeTactics(cleanText)
 
-        // 8.5 A++ 意图+槽位微脑（ONNX 真推理）：权重存在且置信足够时，用受约束槽位结论覆盖正则。
-        //       缺权重 / 内存不足 / 低置信 → parse 返回 null，保留上面的正则结论，行为不变（fail-safe）。
+        // 8.5 意图+槽位微脑（ONNX 真推理）：**只允许补证据，不允许替换原文已经读到的事实**。
+        //
+        // 三个槽位区别对待，依据是"原文里到底有没有可核对的字面证据"：
+        //   * intent：抽象分类，但"驻守/铺路/集火"这些词本身是字面证据，正则命中即确定正确，
+        //     所以模型只在**原文一个意图关键词都没有**时才接管。
+        //   * target：字面实体。模型只能从目标词表里挑一个，原文写"宛城"而它挑"洛阳"时，
+        //     旧写法是**模型赢**，部队就去打洛阳了。因此只采纳"原文里确实出现"的名字。
+        //   * coord：**永远只认原文**。模型的坐标输出是 10×10 桶的桶心（一格 60、只覆盖 0..600），
+        //     而正则读的是原文里的精确数字。用桶心覆盖精确值 = 把部队派到最多偏 ±60 格的错地方，
+        //     而这个值会经 DualTrackSafetyGate.resolveTarget 直接变成下发目标，
+        //     [1, map_coord_max] 的边界检查永远抓不到它（桶心必然在界内）。
+        //
+        // 缺权重 / 内存不足 / 低置信 → parse 返回 null，全部退回正则结论（fail-safe）。
         IntentSlotModel.ensureLoaded(context)
         val modelParse = IntentSlotModel.parse(cleanText)
-            ?.takeIf { it.confidence >= 0.60f && it.intent != null }
-        val effIntent = modelParse?.intent ?: intent
-        val effTargetName = modelParse?.target?.takeIf { it.isNotBlank() } ?: targetName
-        val effCoord = modelParse?.coord ?: targetCoord
-        val effConfidence = modelParse?.confidence?.let { 0.80f + 0.18f * it }
-            ?: if (targetName != "未明目标") 0.96f else 0.82f
+            ?.takeIf { it.intent != null && it.confidence >= MODEL_INTENT_MIN_CONFIDENCE }
+        val modelTarget = modelParse?.target?.takeIf {
+            it.isConcreteTargetName() && cleanText.contains(it)
+        }
+        val effIntent = regexIntent ?: modelParse?.intent ?: OrderIntent.ALLIANCE_SIEGE
+        val effTargetName = modelTarget ?: targetName
+        val effCoord = targetCoord
+        // 模型坐标永远不采纳，但**要把它当线索写进日志**：一旦原文没坐标而模型报了个桶心，
+        // 人能看到"模型觉得在附近"，而不会被默默当成目标（刻意 unused ≠ 遗忘）。
+        val modelCoordHint = modelParse?.coord?.let { "(${it.first}, ${it.second})[10x10桶心，不采纳]" } ?: "无"
+        val effConfidence = evidenceConfidence(
+            targetName = effTargetName,
+            coord = effCoord,
+            timeMs = targetTime,
+            intentHit = regexIntent != null || modelParse != null
+        )
+        val intentSource = when {
+            regexIntent != null -> "正则(原文关键词)"
+            modelParse != null -> "意图微脑"
+            else -> "无证据，默认攻城"
+        }
+        Log.i(
+            TAG,
+            "军令裁决来源：intent=$intentSource 目标=${if (modelTarget != null) "微脑(原文印证)" else "正则原文"} " +
+                "坐标=原文 微脑坐标线索=$modelCoordHint 置信度=$effConfidence"
+        )
         if (modelParse != null) {
-            Log.i(TAG, "\ud83e\udde0 意图微脑覆盖正则：intent=${effIntent.desc} conf=${modelParse.confidence}")
+            Log.i(TAG, "\ud83e\udde0 意图微脑补位：softmax=${"%.2f".format(modelParse.confidence)} raw=${modelParse.intentRaw}；"
+                    + "该概率只衡量意图头选类的陡峭程度（准确率从未在本机实测），不参与置信度加分")
         }
 
         // 9. 实时生成军师思考推演流
@@ -152,26 +214,10 @@ class EdgeSlmEngine(private val context: Context) {
      *      现在从战报原文解析，读不到就如实报 0（并在评述里注明未读到）。
      */
     fun diagnoseBattleReport(reportText: String): BattleDiagnosis {
-        val keySkills = mutableListOf<String>()
-
-        // 核心战法特征字典
-        val skillsDatabase = listOf(
-            "战必断金" to "前3回合封锁普攻 (控制)",
-            "反计之策" to "前3回合封锁主动战法 (控制)",
-            "浑水摸鱼" to "陷入混乱不能行动 (强控)",
-            "妖术" to "陷入暴走无差别攻击 (控制)",
-            "空城" to "规避伤害减免 (防御)",
-            "神兵天降" to "前3回合敌军承受伤害暴增 (爆发)",
-            "大赏三军" to "前3回合我军伤害暴增 (爆发)",
-            "垒实迎击" to "规避/移除负面/援护友军 (防御)"
-        )
-
-        for ((skill, _) in skillsDatabase) {
-            if (reportText.contains(skill)) {
-                keySkills.add(skill)
-            }
-        }
-
+        // 战法命中一律由 RAG 层按**当前知识包的战法字典**（scene_keywords.KNOWN_SKILLS）判定。
+        // 这里原本自带一份 8 条的率土战法字典，而且 `(skill, _)` 把说明文字整列丢掉不用：
+        // 同一件事两个来源、名单还比知识包窄（热更改动知识包时这一份跟不上），
+        // 属于典型的第二权威，已删除。
         val isVictory = reportText.contains("大捷") || reportText.contains("胜")
         val isDefeat = reportText.contains("战败") || reportText.contains("败")
         val result = when {
@@ -182,7 +228,7 @@ class EdgeSlmEngine(private val context: Context) {
 
         // 调用 RAG 向量引擎进行深层机制复盘与克制推演（自动做 PVE/PVP 分流）
         val ragDiag = com.stzb.assistant.ai.rag.SlgRagEngine.diagnoseBattleReport(reportText)
-        val allSkills = (keySkills + ragDiag.detectedSkills).distinct()
+        val allSkills = ragDiag.detectedSkills
 
         val commentary = buildString {
             append("【诸葛军师 · RAG战报会诊】: 此役定性为${result.desc}。")
@@ -286,30 +332,97 @@ class EdgeSlmEngine(private val context: Context) {
             append("▶ 核心兵法: ").append(ragAdvice.executionTimingAdvice).append("\n")
             append("▶ 风险提示: ").append(ragAdvice.riskWarning).append("\n\n")
             append("💡 本地军师锦囊：\n")
-            when {
-                cleanQuery.contains("开荒") || cleanQuery.contains("5级地") || cleanQuery.contains("打地") -> {
-                    append("• 开荒切忌急躁，5级地守军兵力9000，我军建议5000兵+主战法7级以上再探路进攻。\n")
-                    append("• 软柿子优先开：魏智郭嘉队、张郃队；严厉避开：周泰肉步、黄埔嵩、法正等带暴走或减伤反击队伍。")
-                }
-                cleanQuery.contains("神兵") || cleanQuery.contains("法刀") || cleanQuery.contains("大赏") -> {
-                    append("• 破法刀关键在前3回合：法刀伤害集中在前3回合，可用【空城】规避爆发，或带【反计之策】封其主动战法。\n")
-                    append("• 肉步队伍带【避其锋芒】+【步步为营】可大幅削弱神兵大赏加成收益。")
-                }
-                cleanQuery.contains("攻城") || cleanQuery.contains("压秒") -> {
-                    append("• 攻城两阶段原则：主力先锋必须在整点（如20:00:00）前 3~5 秒到达，先清守军；\n")
-                    append("• 拆迁队严禁提前触城（避免送人头），设定在主力触城后 1~3 秒压秒触城，实现无缝破皮。")
-                }
-                cleanQuery.contains("配将") || cleanQuery.contains("战法") || cleanQuery.contains("队伍") -> {
-                    append("• 配将三要素：先手控制（反计/战必）+ 核心输出（一骑当千/折戟强攻）+ 防御减伤（垒实/避其）。\n")
-                    append("• 务必注意战法冲突：同类指挥减伤不叠加，始计与大赏三军增伤冲突，避免浪费宝贵格子。")
-                }
-                else -> {
-                    append("• 凡战者，以正合，以奇胜。大地图交战先铺路立要塞，卡免破免控行军线，善用斯巴达探路知己知彼。")
-                }
-            }
+            append(advisorPlaybook(cleanQuery))
             append("\n\n[端侧状态: 100% 本地运行 | 0 网络流量 | 0 隐私外传]")
         }
         callback(response)
+    }
+
+    /**
+     * 军师锦囊正文（**一条游戏数据都不许写在这里**，P7 实测后重写）。
+     *
+     * 旧实现有两条会给玩家念错药方：
+     *   1. "5级地守军兵力9000，我军建议5000兵" —— 知识包里 Lv5 的建议兵力是 **5500**，
+     *      同一事实两个数，而热更只能改到知识那一条；
+     *   2. "软柿子优先开：魏智郭嘉队" —— 知识包把**郭嘉明确列进 Lv5 黑名单**
+     *      （十胜十败高概率混乱，极易自相残杀灭队）。把该避开的将推荐成软柿子，
+     *      不是措辞不佳，是把主力送去翻车。
+     * 现在开荒类问题一律现取 `activeProfile.defenderDb.landSuggestions`；
+     * 战法名一类的具体建议属于语料层，只在语料归属的游戏上才输出（见 [corpusPlaybookActive]）。
+     */
+    private fun advisorPlaybook(query: String): String {
+        val asksPaving = query.contains("开荒") || query.contains("打地") ||
+            Regex("\\d{1,2}\\s*级地").containsMatchIn(query)
+        if (asksPaving) return pavingPlaybook(query)
+
+        val asksSkill = query.contains("神兵") || query.contains("法刀") || query.contains("大赏") ||
+            query.contains("配将") || query.contains("战法") || query.contains("队伍")
+        if (asksSkill && !corpusPlaybookActive()) {
+            // 问的是具体战法搭配，但这套建议属于另一款游戏的语料：如实不答，
+            // 只给不依赖任何游戏文案的通用行军建议。宁可少答，不许串游戏。
+            return GENERIC_PLAYBOOK + "\n" +
+                "• 本游戏的战法/配将建议需要它自己的知识包（scene_keywords + defender_db）" +
+                "与语料资产，当前尚未配置，故此项不作答。"
+        }
+        return when {
+            query.contains("神兵") || query.contains("法刀") || query.contains("大赏") ->
+                "• 破法刀关键在前3回合：法刀伤害集中在前3回合，可用【空城】规避爆发，或带【反计之策】封其主动战法。\n" +
+                    "• 肉步队伍带【避其锋芒】+【步步为营】可大幅削弱神兵大赏加成收益。"
+            query.contains("攻城") || query.contains("压秒") ->
+                "• 攻城两阶段原则：主力先锋必须在整点（如20:00:00）前 3~5 秒到达，先清守军；\n" +
+                    "• 拆迁队严禁提前触城（避免送人头），设定在主力触城后 1~3 秒压秒触城，实现无缝破皮。"
+            query.contains("配将") || query.contains("战法") || query.contains("队伍") ->
+                "• 配将三要素：先手控制（反计/战必）+ 核心输出（一骑当千/折戟强攻）+ 防御减伤（垒实/避其）。\n" +
+                    "• 务必注意战法冲突：同类指挥减伤不叠加，始计与大赏三军增伤冲突，避免浪费宝贵格子。"
+            else -> GENERIC_PLAYBOOK
+        }
+    }
+
+    /**
+     * 战法类锦囊只对**语料归属的那款游戏**输出。
+     *
+     * 判据取 SlgRagEngine.corpusOwnerId（内存里那份语料真实属于谁），
+     * 而不是一个写死的游戏 id：写死的常量不跟着语料走，
+     * 换一款游戏备齐了自己的语料后，该服的锦囊也会被它一起拒掉。
+     */
+    private fun corpusPlaybookActive(): Boolean =
+        com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.gameId ==
+            com.stzb.assistant.ai.rag.SlgRagEngine.corpusOwnerId
+
+    /**
+     * 开荒/打地锦囊：数字与守军名单全部现取当前知识包的地块建议。
+     *
+     * 地块等级取自玩家问句（"5级地"/"Lv.7"），问句里没写就退回知识包覆盖的最低等级
+     * （= 起步参考）。知识包没覆盖该等级时**如实说没有**，绝不拿别的等级凑。
+     */
+    private fun pavingPlaybook(query: String): String {
+        val lands = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile
+            .defenderDb.landSuggestions
+        if (lands.isEmpty()) {
+            return "• 当前知识包没有地块开荒数据（defender_db.land_suggestions 为空），" +
+                "请先用【查看守军】逐块侦察，或热更该游戏的守军天梯。"
+        }
+        val asked = Regex("(?:Lv\\.?|LV\\.?|等级)\\s*(\\d{1,2})|(\\d{1,2})\\s*级地?")
+            .find(query)?.groupValues?.drop(1)?.firstNotNullOfOrNull { it.toIntOrNull() }
+        if (asked != null && !lands.containsKey(asked)) {
+            val have = lands.keys.sorted().joinToString("/")
+            return "• 知识包里没有 Lv.$asked 地的数据（现有覆盖：Lv.$have），" +
+                "这一档请先侦察或热更 defender_db.land_suggestions，我不猜兵力。"
+        }
+        val suggestion = lands.getValue(asked ?: lands.keys.minOrNull()!!)
+        val garrison = if (suggestion.defenderTotalSoldiers > 0)
+            "，守军总兵力约 ${suggestion.defenderTotalSoldiers}" else ""
+        val safeText = suggestion.safeHeroes.joinToString("、")
+            .ifBlank { "（本等级尚未登记软柿名单，逐块侦察后再打）" }
+        val blackText = suggestion.blacklistHeroes.joinToString("、")
+            .ifBlank { "（本等级尚未登记黑名单，见到高星守将按有疑问处理）" }
+        return buildString {
+            append("• 开荒切忌急躁：Lv.").append(suggestion.landLevel)
+                .append(" 地建议带兵不低于 ").append(suggestion.recommendedSoldiers)
+                .append(garrison).append("（数字取自当前知识包，可热更）。\n")
+            append("• 软柿守军可优先挑：").append(safeText).append("；坚决避开：").append(blackText).append("。\n")
+            if (suggestion.note.isNotBlank()) append("• ").append(suggestion.note)
+        }
     }
 
     /** 获取当前军师大脑激活模式描述 */
@@ -369,12 +482,14 @@ class EdgeSlmEngine(private val context: Context) {
     }
 
     private fun extractCoordinates(text: String): Pair<Int, Int>? {
+        val rules = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
         val p = Pattern.compile("(?:[\\(（\\[])?\\s*(\\d{2,4})\\s*[,，\\s]\\s*(\\d{2,4})\\s*(?:[\\)）\\]])?")
         val m = p.matcher(text)
         while (m.find()) {
             val x = m.group(1)?.toIntOrNull() ?: 0
             val y = m.group(2)?.toIntOrNull() ?: 0
-            if (x in 1..1500 && y in 1..1500) {
+            // 有效界按**当前游戏**的地图尺寸判（知识库 map_coord_max），率土的 1500 不是宇宙常数
+            if (rules.isValidWorldCoord(x, y)) {
                 return Pair(x, y)
             }
         }
@@ -440,15 +555,49 @@ class EdgeSlmEngine(private val context: Context) {
         return roles
     }
 
-    private fun deduceIntent(text: String, targetName: String): OrderIntent {
+    /**
+     * 从原文推战术意图；**一个关键词都没出现时返回 null**，而不是硬塞一个默认意图。
+     *
+     * 返回值交给调用方决定兜底策略（正则 null → 问微脑 → 都没有才落默认），
+     * 这样"到底是哪条通道决定了这次行动"在日志里是可追问的。
+     */
+    private fun deduceIntentOrNull(text: String): OrderIntent? {
         return when {
             text.contains("打关") || text.contains("攻城") || text.contains("集火") || text.contains("触城") -> OrderIntent.ALLIANCE_SIEGE
             text.contains("铺路") || text.contains("翻地") || text.contains("起要塞") -> OrderIntent.ROAD_PAVING
             text.contains("驻守") || text.contains("守关") || text.contains("关口") -> OrderIntent.DEFEND_GATE
             text.contains("撤退") || text.contains("回防") -> OrderIntent.RETREAT_AND_GUARD
             text.contains("斯巴达") || text.contains("探路") -> OrderIntent.SPARTAN_SCOUT
-            else -> OrderIntent.ALLIANCE_SIEGE
+            text.contains("屯田") || text.contains("征兵") || text.contains("休整") -> OrderIntent.STAMINA_RECOVERY
+            else -> null
         }
+    }
+
+    /**
+     * 置信度：**只按原文里实际读到的证据累加，不给任何通道加底分**。
+     *
+     * 被替掉的旧写法是 `0.80f + 0.18f * 模型概率`，两个问题：
+     *   1.  intent_slot 的**准确率从未在本机实测过**，0.80 起步等于替模型吹牛；
+     *   2.  正则分支里的 `targetName != "未明目标"` **恒真**（见 [GENERIC_TARGET_NAMES]），
+     *      所以无论军令读到了什么，置信度永远算出 0.96。
+     *
+     * 这个数原先只默默进入 Utility 的 `wConfidence`（面板根本不显示）；
+     * 现在军师页会把它如实打出来，低置信不再被底分抹平。
+     *
+     * 现在的口径：证据越多分越高，一条硬证据都没读到就只给 0.40。
+     */
+    private fun evidenceConfidence(
+        targetName: String,
+        coord: Pair<Int, Int>?,
+        timeMs: Long,
+        intentHit: Boolean
+    ): Float {
+        var conf = 0.40f
+        if (targetName.isConcreteTargetName()) conf += 0.20f
+        if (coord != null) conf += 0.18f
+        if (timeMs > 0L) conf += 0.10f
+        if (intentHit) conf += 0.12f
+        return conf.coerceAtMost(0.95f)
     }
 
     private fun extractContingency(text: String): ContingencyAction? {
@@ -490,5 +639,21 @@ class EdgeSlmEngine(private val context: Context) {
 
     companion object {
         private const val TAG = "EdgeSlmEngine"
+
+        /**
+         * 军师锦囊的通用兜底句：**不点任何一款游戏的战法名/武将名**，因此对任何 SLG 都成立。
+         * 游戏专属的锦囊内容属于语料与知识包，不能出现在这一句里。
+         */
+        private const val GENERIC_PLAYBOOK =
+            "• 凡战者，以正合，以奇胜。大地图交战先铺路立要塞，卡免破免控行军线，善用斯巴达探路知己知彼。"
+
+        /**
+         * 意图微脑接管意图闸的最低 softmax 概率。
+         *
+         * ❗ 这个数字是**保守门槛，不是准确率**：它只表示"选类本身够不够陡"。
+         * intent_slot_zh.onnx 在本工程里**从未做过真实标注集评测**，所以它只能在
+         * 正则一个关键词都没命中的时候补位，永远不得改写原文已读到的事实。
+         */
+        private const val MODEL_INTENT_MIN_CONFIDENCE = 0.60f
     }
 }

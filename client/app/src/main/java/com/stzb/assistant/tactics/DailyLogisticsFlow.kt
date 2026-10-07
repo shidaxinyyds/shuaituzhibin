@@ -29,7 +29,7 @@ import java.util.Locale
  *      - **付费熔断**：点【税收】之前先用 OCR 检查屏幕是否出现"玉/元宝/符/充值"等
  *        付费字样，一旦命中就**放弃本轮并记录**，杜绝把免费征税误点到付费强征上去。
  *   2. 【自动预备役征兵/伤兵补充】：巡检各部队槽位伤兵损耗，低于健康阈值时补充预备役；
- *   3. 【体力防溢出巡回】：监测各编队体力，达到 110 告警、达到 120 满溢，
+ *   3. 【体力防溢出巡回】：体力上限取自当前知识库，接近上限告警、到上限即满溢，
  *      并**真正派发一次练兵/演武去消耗体力**（而不是只打印一句"建议消耗"）；
  *   4. 【城建/技术自动升级】：巡检内政与军事设施升级队列，空闲时自动排队升级；
  *   5. 【全链路看门狗防卡死】：每步操作后状态自愈，高仿生触控微扰动，保障 7x24 稳定运转。
@@ -384,7 +384,17 @@ class DailyLogisticsFlow(
      * 主力与辅队体力防溢出巡回检查
      */
     private suspend fun performStaminaProtection(config: LogisticsConfig): Boolean {
-        logTactic("⚡ 正在巡回检查各编队体力水位（防溢出阈值: ${config.staminaOverflowThreshold}/120）...")
+        // 体力上限一律取当前知识库，不再用写死的 120。
+        //
+        // 为什么这不只是“换个数字”：旧实现拿常量 120 做满溢判据、又拿默认 110 做告警判据，
+        // 两者都假定了“上限至少 120”。一旦某个游戏的体力上限是 100（三战类玩法常见），
+        // `stamina >= 120` 与 `stamina >= 110` **永远不成立**，整个防溢出巡回就会“跑得很勤但什
+        // 么也不做”——体力满溢挂机损失恰恰是这项功能要防的东西。现在上限来自热更可达的库，
+        // 并把告警水位夹到上限之内，让两级判据在任何上限下都真的能命中。
+        val staminaMax = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules.maxStamina
+        val warnAt = config.staminaOverflowThreshold.coerceIn(1, staminaMax)
+
+        logTactic("⚡ 正在巡回检查各编队体力水位（上限 $staminaMax，防溢出告警线 $warnAt）...")
         val center = MapProjection.viewportCenterCanvas()
 
         EngineBridge.tap(center.x, center.y)
@@ -419,23 +429,26 @@ class DailyLogisticsFlow(
                     val stamina = detail.stamina
                     if (stamina != null) {
                         // 与 validate_logistics_farming.py 的 M3 水位模型保持一致：
-                        //   >= 120 满溢（OVERFLOW_CRITICAL）/ >= 110 告警（OVERFLOW_WARNING）/ 其余正常
+                        //   >= 上限 满溢（OVERFLOW_CRITICAL）/ >= 告警线 告警（OVERFLOW_WARNING）/ 其余正常
+                        // “是否满溢”直接用感知层给出的 [TroopSlotDetail.isStaminaFull]，不再在这里
+                        // 拿 stamina 与 staminaMax 再比一遍：同一个判据写两处，一旦两处取数不同源
+                        // （比如热更只改到了其中一边）就会出现“卡片上显示满溢、流程却说没满”。
                         when {
-                            stamina >= STAMINA_MAX -> {
-                                logTactic("🚨 部队[$slot] 体力已满溢 $stamina/$STAMINA_MAX，立即派发消耗动作...")
+                            detail.isStaminaFull -> {
+                                logTactic("🚨 部队[$slot] 体力已满溢 $stamina/$staminaMax，立即派发消耗动作...")
                                 if (config.enableStaminaConsumption) {
                                     consumeOverflowStamina(slot)
                                 }
                             }
-                            stamina >= config.staminaOverflowThreshold -> {
-                                logTactic("⚠️ 部队[$slot] 体力 $stamina/$STAMINA_MAX 接近满溢，派发消耗动作...")
+                            stamina >= warnAt -> {
+                                logTactic("⚠️ 部队[$slot] 体力 $stamina/$staminaMax 接近满溢，派发消耗动作...")
                                 if (config.enableStaminaConsumption) {
                                     consumeOverflowStamina(slot)
                                 } else {
                                     logTactic("（已按配置关闭体力消耗派发，仅告警）")
                                 }
                             }
-                            else -> logTactic("部队[$slot] 当前体力: $stamina/$STAMINA_MAX (正常)")
+                            else -> logTactic("部队[$slot] 当前体力: $stamina/$staminaMax (正常)")
                         }
                     }
                 }
@@ -561,9 +574,6 @@ class DailyLogisticsFlow(
 
     companion object {
         private const val TAG = "DailyLogisticsFlow"
-
-        /** 体力上限（率土 2026 为 120，与 GameRules.maxStamina 默认值一致）。 */
-        private const val STAMINA_MAX = 120
 
         /** 税收熔断状态的持久化文件与键。 */
         const val PREFS_LOGISTICS = "stzb_logistics_state"

@@ -7,14 +7,25 @@
 对应清单 ③ 的「你侧训练才能产出」：`slg_knowledge_vector_hnsw.bin`。
 
 输入语料格式（JSONL，每行一条）：
-    {"id":"DEF-LV5-001","category":"DEFENDER_LAND","title":"5级地守军-李典徐晃阵容",
+    {"id":"DEF-LV5-001","category":"DEFENDER_SAFE","title":"5级地守军-李典徐晃阵容",
      "keywords":"李典,徐晃,5级地","content":"...","advice":"🟢 难度评级..."}
+
+    `category` **不能随手写**：端侧每次检索都带通道名，通道→category 的对照表只有一张
+    （`SlgRagEngine.SEARCH_CHANNELS`）。这里写出对照表里没有的 category，产物在真机上
+    会一条都检索不到（不报错，只是静默空手）。所以构建完必须跑
+    `python tools/rag_bench.py --contract`，它拿真实 .bin 里的 category 集合三方对账。
 
 输出容器（V2，向后兼容 V1）：
     头   magic[16] = "SLG_HNSW_RAG_V2\\0" | version u32=2 | item_count u32 | dim u32
     条目 6×u32 长度 + id/category/title/keywords/content/advice(UTF-8) + dim×float32
     尾图 u32 图区字节数 + 每节点 u32 度 + 度×u32 邻居（HNSW 第 0 层）
-    → `SlgRagEngine` 解析到 V2 时按头里的 dim 走，并用尾图做近似检索；
+    → `SlgRagEngine` 解析到 V2 时按头里的 dim 走；**尾图当前不被读取**，端侧做的是
+    按通道过滤后的全量精确扫。这是有实测依据的决策（语料 95 条、最大单类池 21 条，
+    扫描乘加只占一次查询侧 bge embedd 的 0.054%），阈值与理由见
+    `tools/RAG_INDEX_MIGRATION_ASSESSMENT.md`，复跑 `python tools/rag_bench.py` 现算。
+    图区照旧写出，是给"语料越过临界阈值后启用真 HNSW"预留的位置——注意现在写出的
+    只是第 0 层邻接、**没有固定入口点**，那不是一份能直接拿来用的 ANN 索引
+    （实测：从全部节点起 BFS 的候选集恒等于全量扫，省不到任何计算）。
     V1（dim=64 哈希向量）仍按老路解析，不受影响。
 
 铁律

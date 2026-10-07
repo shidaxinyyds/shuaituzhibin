@@ -111,20 +111,19 @@ class YoloDetector(private val context: Context) {
     }
 
     private fun initModel() {
-        // 候选权重基名（ncnn 需要 .param + .bin 成对）。优先 A++ 的 YOLO26，再回 v11/v8。
-        val candidates = listOf(
-            "yolo26s_stzb",
-            "yolo26n_stzb",
-            "yolov11s_multiscale_stzb",
-            "yolov8s_stzb",
-            "yolov8n_stzb"
-        )
+        // 候选权重基名（ncnn 需要 .param + .bin 成对）直接取自 ModelAssetManager.YOLO_WEIGHT_BASES：
+        // 这里以前自己抄了一份同样含义的名单，两份顺序不一致时，
+        // "资产体检判就绪"和"检测器实际加载"会挑不同的权重，对外就表现为时好时坏。
+        // 游戏后缀由 extractScopedModelPath 按当前激活游戏派生——
+        // 权重是照着某款游戏的界面采集训练的，拿它去检测另一款游戏的画面，
+        // 框出来的是上一款游戏的按钮坐标，而我们会照着那个框点下去。
+        val candidates = com.stzb.assistant.ai.assets.ModelAssetManager.YOLO_WEIGHT_BASES
         try {
             for (base in candidates) {
                 val paramPath = com.stzb.assistant.ai.assets.ModelAssetManager
-                    .getOrExtractModelPath(context, "$base.param")
+                    .extractScopedModelPath(context, "$base.param")
                 val binPath = com.stzb.assistant.ai.assets.ModelAssetManager
-                    .getOrExtractModelPath(context, "$base.bin")
+                    .extractScopedModelPath(context, "$base.bin")
                 if (paramPath == null || binPath == null) continue
                 if (java.io.File(binPath).length() < 50 * 1024) continue
 

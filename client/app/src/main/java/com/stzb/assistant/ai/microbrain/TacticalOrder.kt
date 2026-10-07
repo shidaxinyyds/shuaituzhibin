@@ -59,3 +59,20 @@ enum class BattleResult(val desc: String) {
     DEFEAT("战败"),
     DRAW("战平打平")
 }
+
+/**
+ * [EdgeSlmEngine.extractTargetName] 在原文里读不到具体地名时返回的**占位名**。
+ *
+ * 为什么要把它们列成一张明表：工程里有两处曾写 `targetName != "未明目标"` 来判"是否读到了目标"，
+ * 而解析器**从来不返回** "未明目标" 这个串（它返回的是 "目标要地/目标城池/目标据点"），
+ * 于是那两个判断**恒真**——无论是否真的读到地名，置信度永远算出 0.96、
+ * 攻城流也永远带上一个占位名去当书签名漂移。
+ * 判据必须落在真实哨兵值上，所以哨兵值本身要集中定义、不许各处自己抄。
+ */
+val GENERIC_TARGET_NAMES: Set<String> = setOf(
+    "目标要地", "目标城池", "目标据点", "未指定目标", "未明目标"
+)
+
+/** 是否是"真的从军令原文里读到的地名"（而不是占位名/空串）。 */
+fun String?.isConcreteTargetName(): Boolean =
+    !this.isNullOrBlank() && this !in GENERIC_TARGET_NAMES

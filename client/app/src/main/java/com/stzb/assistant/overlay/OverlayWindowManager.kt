@@ -25,6 +25,7 @@ import android.widget.TextView
 import android.widget.TimePicker
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.stzb.assistant.ai.microbrain.isConcreteTargetName
 import com.stzb.assistant.R
 import com.stzb.assistant.ocr.StzbUiMatcher
 import com.stzb.assistant.service.CoordinateTransformer
@@ -838,10 +839,25 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             // 原文一并留存：执行军令时要基于原文重走"解析→安全校验"，
             // 只凭 TacticalOrder 会丢掉语境，也就判断不出该不该拒绝。
             lastExtractedDecreeText = decreeText
+            // 证据清单必须直接上屏：置信度以前只默默进 Utility 打分，面板上不显示，
+            // 于是"读到了什么 / 什么都没读到"在界面上完全看不出来。
+            val missing = buildList {
+                if (!order.targetName.isConcreteTargetName()) add("具体地名")
+                if (order.targetCoord == null) add("坐标")
+                if (order.targetTime <= 0L) add("时间")
+            }
             tvAdvisorStream?.text = buildString {
                 append("📜【军令已解析】目标【${order.targetName}】")
                 append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
                 append(order.advisorThinking)
+                append("\n— 证据置信度 ${"%.0f".format(order.confidence * 100f)}%")
+                if (missing.isNotEmpty()) {
+                    append("（未读到：${missing.joinToString("、")}）")
+                    if (order.confidence < 0.60f) {
+                        append("\n⚠️ 证据不足：缺少坐标时「执行军令」会被安全闸直接拒掉（不允许拿屏幕正中当目标）。")
+                        append("请在军令文本里明确写出坐标，如 582,391。")
+                    }
+                }
                 append("\n— 识别原文: ")
                 append(decreeText.take(120))
             }
@@ -1124,7 +1140,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             val types = com.stzb.assistant.ocr.StzbUiMatcher.ButtonType.values()
             val store = com.stzb.assistant.service.ButtonTemplateStore
             val labels = types.map { t ->
-                "${t.primaryKeyword}（${t.name}）" + if (store.has(t)) " ✓ 已登记" else ""
+                // 分清"本机登记过"和"只是随包种子"：后者是别人手机上的像素，
+                // 正是最该被本机重新登记替换掉的那一张。
+                val mark = when (store.sourceOf(t)) {
+                    com.stzb.assistant.service.ButtonTemplateStore.Source.USER -> " ✓ 本机已登记"
+                    com.stzb.assistant.service.ButtonTemplateStore.Source.SEED -> " ◦ 随包种子"
+                    else -> ""
+                }
+                "${t.primaryKeyword}（${t.name}）$mark"
             }.toTypedArray()
             val dlg = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                 .setTitle("选择要登记模板的按键")
@@ -1409,7 +1432,14 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             append("按键：").append(type.primaryKeyword).append("（").append(type.name).append("）\n")
             append("OpenCV 通道：")
                 .append(if (cv.isAvailable) "可用（主通道）" else "不可用（走纯 Java 兜底）").append('\n')
-            append("模板：").append(if (store.has(type)) "已登记" else "未登记").append("\n\n")
+            append("模板：").append(
+                when (store.sourceOf(type)) {
+                    com.stzb.assistant.service.ButtonTemplateStore.Source.USER -> "本机登记"
+                    com.stzb.assistant.service.ButtonTemplateStore.Source.SEED ->
+                        "随包种子（不是本机像素，命中不稳时请重新登记）"
+                    else -> "未登记"
+                }
+            ).append("\n\n")
 
             val b = lookup?.button
             if (b != null) {
@@ -2383,8 +2413,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     /**
      * 从 OCR 结果里拼出用于语义解析的文本，但**排除 HUD 的当前坐标读数区域**。
      *
-     * 为什么必须排除：`EdgeSlmEngine.extractCoordinates` 取的是**第一个**落在 1..1500
-     * 的"x y"匹配，而 HUD 右上角显示的正是**你自己当前的坐标**，
+     * 为什么必须排除：`EdgeSlmEngine.extractCoordinates` 取的是**第一个**落在本游戏坐标界
+     * （知识库 `map_coord_max`）内的"x y"匹配，而 HUD 右上角显示的正是**你自己当前的坐标**，
      * 格式与军令里的目标坐标一模一样。军师页喂进去的是整屏文本，HUD 又常驻画面，
      * 于是存在这样一条路径：**把"你所在的位置"当成"军令里的目标"**。
      *

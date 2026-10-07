@@ -287,6 +287,13 @@ class SiegeSyncFlow(
         val checkSlots = listOf(config.mainSquadSlot) + config.demolitionSlots
         val lowStaminaSquads = mutableListOf<Int>()
 
+        // 出征需求体力 = 知识库单次消耗 × 当前时段的体力倍率（两者都是可热更的库字段）。
+        // 旧实现在这里写死 20：门槛不随知识库变，热更把单次消耗改成 15/25 也不会影响体检告警；
+        // 而夜间窗口内倍率大于 1 时，写着"体力充足"的部队实际根本出征不了。
+        // 声明在函数顶部：下面的告警文案也要用同一个值，两处不得各自再算一遍。
+        val needStamina =
+            com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules.requiredStaminaNow()
+
         // 1. 体能勘测
         val tapPoint = resolveCityTapPoint(config)
         EngineBridge.tap(tapPoint.x, tapPoint.y)
@@ -306,7 +313,7 @@ class SiegeSyncFlow(
                     if (cardBmp != null) {
                         val detail = TroopStatusDetector.parseTroopCard(cardBmp, slot)
                         cardBmp.recycle()
-                        if (detail.stamina != null && detail.stamina < 20) {
+                        if (detail.stamina != null && detail.stamina < needStamina) {
                             lowStaminaSquads.add(slot)
                         }
                     }
@@ -317,7 +324,7 @@ class SiegeSyncFlow(
 
         // 体力不足：轻微震动提醒玩家，绝不暴雷
         if (lowStaminaSquads.isNotEmpty()) {
-            logWarn("⚠️【发车前30分钟体检告警】参战部队 $lowStaminaSquads 当前体力不足 20！请尽快补充体力！")
+            logWarn("⚠️【发车前30分钟体检告警】参战部队 $lowStaminaSquads 当前体力不足 $needStamina（按知识库规则与当前时段计算）！请尽快补充体力！")
             val v = context?.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 v?.vibrate(VibrationEffect.createOneShot(500, VibrationEffect.DEFAULT_AMPLITUDE))

@@ -76,13 +76,30 @@ object DefenderTemplateClassifier {
             )
             return false
         }
-        matchThreshold = value
+        // 必须**先**把持久化状态载回来再赋值：原实现先赋值再 ensureThresholdLoaded()，
+        // 于是"本进程第一次设门槛"会用旧持久值把刚设的值盖回去（界面显示新值、
+        // 实际匹配仍用旧值，重启后又变成旧值）。
         ensureThresholdLoaded()
+        matchThreshold = value
         appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            ?.edit()?.putFloat(KEY_THRESHOLD, value)?.apply()
-        Log.i(TAG, "守军头像采信门槛已设为 ${"%.3f".format(value)}（已持久化）。")
+            ?.edit()?.putFloat(scopedThresholdKey(), value)?.apply()
+        Log.i(
+            TAG,
+            "已设 [${com.stzb.assistant.service.PerGameScope.gameId()}] 的守军头像采信门槛为 " +
+                "${"%.3f".format(value)}（已持久化）。"
+        )
         return true
     }
+
+    /**
+     * 门槛的存储键带游戏后缀。
+     *
+     * 门槛是"在这款游戏的头像美术 + 这台机型的抓帧路径"上收敛出来的经验值：
+     * 率土上调到 0.86 不代表三战也该 0.86，共用一个值会让其中一款要么整体打死、
+     * 要么整体放开（这两端都正是注释里写明的安全红线）。
+     */
+    private fun scopedThresholdKey(): String =
+        com.stzb.assistant.service.PerGameScope.key(KEY_THRESHOLD)
 
     /** 从持久化恢复门槛（若曾标定）。appContext 未就绪时留待 init 之后重试。 */
     private fun ensureThresholdLoaded() {
@@ -91,9 +108,13 @@ object DefenderTemplateClassifier {
         synchronized(this) {
             if (thresholdLoaded) return
             val sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            if (sp.contains(KEY_THRESHOLD)) {
-                matchThreshold = sp.getFloat(KEY_THRESHOLD, DEFAULT_MATCH_THRESHOLD)
+            val key = scopedThresholdKey()
+            if (sp.contains(key)) {
+                matchThreshold = sp.getFloat(key, DEFAULT_MATCH_THRESHOLD)
                     .coerceIn(MIN_MATCH_THRESHOLD, MAX_MATCH_THRESHOLD)
+            } else {
+                // 本游戏没设过：回到出厂值，绝不沿用上一款游戏的门槛。
+                matchThreshold = DEFAULT_MATCH_THRESHOLD
             }
             thresholdLoaded = true
         }
@@ -101,6 +122,10 @@ object DefenderTemplateClassifier {
 
     @Volatile
     private var appContext: Context? = null
+
+    /** 切游戏钩子是否已注册（保证只注册一次）。 */
+    @Volatile
+    private var switchHookRegistered = false
 
     @Volatile
     private var loaded = false
@@ -117,6 +142,28 @@ object DefenderTemplateClassifier {
     fun init(context: Context) {
         appContext = context.applicationContext
         ensureThresholdLoaded()
+        if (!switchHookRegistered) {
+            switchHookRegistered = true
+            // 切游戏：整套头像库与门槛都要跟着换。头像库是照着某款游戏的守将美术建的，
+            // 拿它去认另一款游戏的守将，输出的是一条**看起来很有依据的错评级**。
+            com.stzb.assistant.service.PerGameScope.reloadOnProfileSwitch { resetForGameSwitch() }
+        }
+    }
+
+    /** 换游戏后作废内存里的头像库与门槛，下一次 classify 按新游戏重新载入。 */
+    private fun resetForGameSwitch() {
+        synchronized(this) {
+            loaded = false
+            thresholdLoaded = false
+            heroTemplateKeys.clear()
+            slotRects = emptyList()
+        }
+        ensureThresholdLoaded()
+        Log.i(
+            TAG,
+            "已按 [${com.stzb.assistant.service.PerGameScope.gameId()}] 作废头像库缓存，" +
+                "门槛回到本游戏的持久值 ${"%.3f".format(matchThreshold)}。"
+        )
     }
 
     val isReady: Boolean get() = loaded && heroTemplateKeys.isNotEmpty()
@@ -128,41 +175,58 @@ object DefenderTemplateClassifier {
         if (!OpenCvMatcher.isAvailable) return false
         synchronized(this) {
             if (loaded) return heroTemplateKeys.isNotEmpty()
-            try {
-                val json = ctx.assets.open("$ASSET_DIR/index.json")
-                    .bufferedReader(Charsets.UTF_8).use { it.readText() }
-                val root = JSONObject(json)
-
-                val canon = root.getJSONArray("canon")
-                canonW = canon.getInt(0)
-                canonH = canon.getInt(1)
-
-                val slots = root.getJSONArray("slots")
-                slotRects = (0 until slots.length()).map { i ->
-                    val a = slots.getJSONArray(i)
-                    floatArrayOf(
-                        a.getDouble(0).toFloat(), a.getDouble(1).toFloat(),
-                        a.getDouble(2).toFloat(), a.getDouble(3).toFloat()
-                    )
-                }
-
-                val heroes = root.getJSONObject("heroes") // 武将名 -> 文件名哈希
-                val names = heroes.keys()
-                while (names.hasNext()) {
-                    val name = names.next()
-                    val hash = heroes.getString(name)
-                    val key = "defender:$name"
-                    if (OpenCvMatcher.loadTemplateFromAsset(ctx, "$ASSET_DIR/$hash.png", key)) {
-                        heroTemplateKeys[name] = key
-                    }
-                }
-                Log.i(TAG, "头像模板库载入完成: ${heroTemplateKeys.size} 名守将, 槽位 ${slotRects.size}")
-            } catch (e: Throwable) {
-                Log.w(TAG, "载入头像模板库失败: ${e.message}")
+            // 候选目录：本游戏专属 →（仅率土）旧的无后缀目录。
+            // 绝不跨游戏兜底：读不到就如实"没有头像库"，而不是拿别款游戏的守将美术来认人。
+            var loadedFrom: String? = null
+            for (dir in com.stzb.assistant.service.PerGameScope.assetDirs(ASSET_DIR)) {
+                if (loadFromDir(ctx, dir)) { loadedFrom = dir; break }
+            }
+            if (loadedFrom == null) {
+                Log.w(TAG, "本游戏没有可用的头像模板库（已尝试目录，均无 index.json），守军头像通道不启用。")
             }
             loaded = true
         }
         return heroTemplateKeys.isNotEmpty()
+    }
+
+    /** 从某个资产目录载入 index.json 与全部头像模板；失败返回 false（由调用方换下一个目录）。 */
+    private fun loadFromDir(ctx: Context, dir: String): Boolean {
+        return try {
+            val json = ctx.assets.open("$dir/index.json")
+                .bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val root = JSONObject(json)
+
+            val canon = root.getJSONArray("canon")
+            canonW = canon.getInt(0)
+            canonH = canon.getInt(1)
+
+            val slots = root.getJSONArray("slots")
+            slotRects = (0 until slots.length()).map { i ->
+                val a = slots.getJSONArray(i)
+                floatArrayOf(
+                    a.getDouble(0).toFloat(), a.getDouble(1).toFloat(),
+                    a.getDouble(2).toFloat(), a.getDouble(3).toFloat()
+                )
+            }
+
+            val heroes = root.getJSONObject("heroes") // 武将名 -> 文件名哈希
+            val names = heroes.keys()
+            var loadedCount = 0
+            while (names.hasNext()) {
+                val name = names.next()
+                val hash = heroes.getString(name)
+                val key = "defender:$name"
+                if (OpenCvMatcher.loadTemplateFromAsset(ctx, "$dir/$hash.png", key)) {
+                    heroTemplateKeys[name] = key
+                    loadedCount++
+                }
+            }
+            Log.i(TAG, "头像模板库载入完成（$dir）: $loadedCount 名守将, 槽位 ${slotRects.size}")
+            loadedCount > 0
+        } catch (e: Throwable) {
+            Log.w(TAG, "从 [$dir] 载入头像模板库失败: ${e.message}")
+            false
+        }
     }
 
     /**

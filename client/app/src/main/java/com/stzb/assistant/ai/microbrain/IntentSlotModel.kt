@@ -50,6 +50,17 @@ object IntentSlotModel {
     private var targets: List<String> = emptyList()
     private var releaseHookRegistered = false
 
+    /**
+     * “为什么现在走正则”的真实原因。
+     *
+     * 这个字段存在的唯一理由：上一版 `describe()` 不管什么原因都只说
+     * “未找到 intent_slot_zh.onnx 权重”，而实际上词表缺失、内存不足、
+     * 加载抛异常都会被归成同一句——用户与开发者因此永远看不出区别，
+     * 也就看不出“装了 37MB 模子却从来没跑过”这种事实。
+     */
+    @Volatile
+    private var unavailableReason: String = "尚未调用 ensureLoaded"
+
     fun isReady(): Boolean = loaded
 
     data class Parsed(
@@ -73,23 +84,38 @@ object IntentSlotModel {
         tokenVocab = emptyMap()
         targets = emptyList()
         loaded = false
+        unavailableReason = "会话已释放（内存回收）"
         Log.i(TAG, "已释放意图微脑会话，军令解析将回落正则通道。")
     }
 
     fun ensureLoaded(context: Context): Boolean {
         if (loaded) return true
-        val modelPath = ModelAssetManager.getOrExtractModelPath(context, "intent_slot_zh.onnx")
+        // 权重按游戏分域（理由见 ModelAssetManager 中 INTENT 那条能力的 gameScoped 注释：
+        // 目标槽位词表是率土地名，换游戏必须吃自己训练的那份）。
+        // 缺失原因里报**当前游戏该放的文件名**，报一个本游戏永远读不到的名字等于误导排查。
+        val modelCandidates = ModelAssetManager.modelCandidates(ModelAssetManager.INTENT_MODEL_FILE)
+        val modelPath = ModelAssetManager.extractScopedModelPath(
+            context, ModelAssetManager.INTENT_MODEL_FILE
+        )
         if (modelPath == null) {
-            Log.i(TAG, "未发现 intent_slot_zh.onnx，军令解析走正则通道。")
+            unavailableReason = "未打包 ${modelCandidates.joinToString(" / ")}"
+            Log.i(TAG, "未发现 ${modelCandidates.joinToString(" / ")}，军令解析走正则通道。")
             return false
         }
-        val tokPath = ModelAssetManager.getOrExtractModelPath(context, "intent_slot_token_vocab.txt")
-        val tgtPath = ModelAssetManager.getOrExtractModelPath(context, "intent_slot_vocab.txt")
+        val tokPath = ModelAssetManager.extractScopedModelPath(
+            context, ModelAssetManager.INTENT_TOKEN_VOCAB_FILE
+        )
+        val tgtPath = ModelAssetManager.extractScopedModelPath(
+            context, ModelAssetManager.INTENT_TARGET_VOCAB_FILE
+        )
         if (tokPath == null || tgtPath == null) {
+            unavailableReason = "权重在但缺词表（${if (tokPath == null) "分词表" else ""}" +
+                "${if (tokPath == null && tgtPath == null) "+" else ""}${if (tgtPath == null) "目标表" else ""}），输入都无法构造"
             Log.w(TAG, "发现意图模型但缺分词词表或目标词表，无法构造输入，放弃加载。")
             return false
         }
         if (!com.stzb.assistant.runtime.ResourceGuard.canAfford(COST_MB)) {
+            unavailableReason = "内存不足（需约 ${COST_MB}MB）"
             Log.w(TAG, "内存不足（意图微脑约需 ${COST_MB}MB）：${com.stzb.assistant.runtime.ResourceGuard.describe()}，回落正则。")
             return false
         }
@@ -99,6 +125,7 @@ object IntentSlotModel {
             val env = ai.onnxruntime.OrtEnvironment.getEnvironment()
             session = env.createSession(modelPath, ai.onnxruntime.OrtSession.SessionOptions())
             loaded = true
+            unavailableReason = ""
             if (!releaseHookRegistered) {
                 com.stzb.assistant.runtime.ResourceGuard.registerReleaseHook { release() }
                 releaseHookRegistered = true
@@ -106,6 +133,7 @@ object IntentSlotModel {
             Log.i(TAG, "意图+槽位微脑已加载（真实推理），目标词表 ${targets.size} 项。")
             true
         } catch (e: Throwable) {
+            unavailableReason = "加载异常: ${e.message}"
             Log.w(TAG, "意图微脑加载失败（回落正则）: ${e.message}")
             session = null
             false
@@ -186,7 +214,12 @@ object IntentSlotModel {
             }
 
             val target = targets.getOrNull(targetIdx)?.takeIf { it.isNotBlank() }
-            val coord = coordCenter(coordBucket)
+            // 坐标：训练脚本把“军令里没写坐标”统一标成了 bucket 0
+            // （train_intent_slot.py：labels["coord"] = coord_bucket(...) if s.get("coord") else 0），
+            // 而解码端又会把 bucket 0 还原成桶心 (30,30)：**“没有坐标”与“地图左下角”在输出上完全同形**。
+            // 所以 bucket 0 一律当“没坐标”：这个值会直接决定部队往哪走，
+            // 而“把不存在的坐标当成 (30,30) ”恰好是最贵的一种错。
+            val coord = if (coordBucket == 0) null else coordCenter(coordBucket)
             val at = "%02d:%02d".format(hour.coerceIn(0, 23), minute.coerceIn(0, 55))
             val troops = TROOP_BUCKETS.getOrElse(troopIdx) { 0 }.takeIf { it > 0 }
 
@@ -252,7 +285,11 @@ object IntentSlotModel {
         else -> null
     }
 
-    /** 一句话状态，供 UI/日志展示当前微脑是"真推理"还是"正则回落"。 */
+    /** 一句话状态，供 UI/日志展示当前微脑是"真推理"还是"正则回落"（回落时带上真实原因）。 */
     fun describe(): String =
-        if (loaded) "意图微脑：ONNX 真推理已激活（rbt3 INT8）" else "意图微脑：正则通道（未找到 intent_slot_zh.onnx 权重）"
+        if (loaded) {
+            "意图微脑：ONNX 真推理已激活（rbt3 INT8；只提供意图与目标名证据，坐标一律以军令原文为准）"
+        } else {
+            "意图微脑：正则通道（$unavailableReason）"
+        }
 }

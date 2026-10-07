@@ -20,19 +20,45 @@ object TroopStatusDetector {
 
     private const val TAG = "TroopStatusDetector"
 
+    /**
+     * 士气档位。
+     *
+     * 名字里**不再**带 120/100：这两个数过去是按率土写死的，可三战满士气是 100。
+     * 写死的后果是切到三战后，一支士气 100（=满士气）的部队会被判成
+     * “介于 100~119 的普通档”，而 120 那条判据在三战永远不可能命中——
+     * 档位判定与当前游戏无关，等于没判。
+     * 现在档位一律由**当前激活知识库**的上限与基准换算得到（见 [gradeMorale]）。
+     */
     enum class MoraleGrade {
-        OPTIMAL_120, // 满士气 120 (金色高昂，战力 +16%)
-        NORMAL_100,  // 普通士气 100~119 (基准战力)
-        LOW_PENALTY, // 低士气 < 80 (战力严重削弱，严禁远射打架)
+        OPTIMAL,     // 满士气（增伤档）
+        NORMAL,      // 达到基准士气（无减损）
+        LOW_PENALTY, // 低于基准士气（战力削弱，远射/打架需谨慎）
         UNKNOWN
+    }
+
+    /** 当前生效的游戏机制数值（体力/士气上限、基准士气都来自这里，可随热更变化）。 */
+    private fun rules() = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
+
+    /**
+     * 按当前知识库把士气值归档。
+     * 基准值与上限值都取自知识库，因此热更改一个数，判档立刻跟着变。
+     */
+    private fun gradeMorale(morale: Int?): MoraleGrade {
+        val r = rules()
+        return when {
+            morale == null -> MoraleGrade.UNKNOWN
+            morale >= r.maxMorale -> MoraleGrade.OPTIMAL
+            morale >= r.moraleStandard -> MoraleGrade.NORMAL
+            else -> MoraleGrade.LOW_PENALTY
+        }
     }
 
     data class TroopSlotDetail(
         val slotIndex: Int,          // 部队编号 1 ~ 5
-        val stamina: Int?,           // 体力值 (0 ~ 120)
-        val isStaminaFull: Boolean,  // 体力是否达到 120 (溢出预警)
-        val morale: Int?,            // 士气值 (0 ~ 120)
-        val moraleGrade: MoraleGrade,// 士气等级评估
+        val stamina: Int?,           // 体力值 (0 ~ 上限，上限取自知识库)
+        val isStaminaFull: Boolean,  // 体力是否已到知识库上限 (满溢，回复在白白浪费)
+        val morale: Int?,            // 士气值 (0 ~ 上限，上限取自知识库)
+        val moraleGrade: MoraleGrade,// 士气等级评估（相对当前游戏的上限/基准）
         val currentTroops: Int?,     // 当前兵力
         val maxTroops: Int?,         // 满编兵力
         val isFullHealth: Boolean    // 是否满编无伤
@@ -46,7 +72,14 @@ object TroopStatusDetector {
         val waitDelayMs: Long              // 距离出征点击还需等待的毫秒倒计时
     )
 
-    private val PATTERN_STAMINA = Pattern.compile("(\\d{1,3})\\s*/\\s*120")
+    /**
+     * 体力形如 "88/120"。分母写死 120 的话，一旦某个游戏的体力上限不是 120，
+     * 这一整项就再也读不出来（OCR 读到 "88/100" 直接不匹配 → 体力未知）。
+     * 因此分母在**调用时**按当前知识库拼装，而不是做成静态常量。
+     */
+    private fun staminaPattern(maxStamina: Int): Pattern =
+        Pattern.compile("(\\d{1,3})\\s*/\\s*" + maxStamina + "\\b")
+
     private val PATTERN_MORALE = Pattern.compile("(?:士气|气)[\\s:：]*(\\d{2,3})")
     private val PATTERN_TROOPS = Pattern.compile("(\\d{3,5})\\s*/\\s*(\\d{3,5})")
     private val PATTERN_TIME = Pattern.compile("(\\d{1,2})\\s*[:：]\\s*(\\d{2})\\s*[:：]\\s*(\\d{2})")
@@ -61,29 +94,31 @@ object TroopStatusDetector {
         val ocrResult = OcrManager.detectRoi(cardRoiBitmap)
         val text = ocrResult?.strRes ?: ""
 
-        // 1. 体力抽取
+        val r = rules()
+
+        // 1. 体力抽取（分母 = 当前知识库的体力上限）
         var stamina: Int? = null
-        val staminaMatcher = PATTERN_STAMINA.matcher(text)
+        val staminaMatcher = staminaPattern(r.maxStamina).matcher(text)
         if (staminaMatcher.find()) {
             stamina = staminaMatcher.group(1)?.toIntOrNull()
         }
 
-        // 2. 2026 赛季士气抽取
+        // 2. 士气抽取
         var morale: Int? = null
         val moraleMatcher = PATTERN_MORALE.matcher(text)
         if (moraleMatcher.find()) {
             morale = moraleMatcher.group(1)?.toIntOrNull()
-        } else if (text.contains("120") && stamina != 120) {
-            // 容错：文字识别可能略过“士气”标签直接出现 120
-            morale = 120
+        } else if (stamina != r.maxMorale && text.contains(r.maxMorale.toString())) {
+            // 容错：OCR 有时把"士气"标签吃掉、只剩一个数字，于是按"出现了满士气数值"补。
+            //
+            // ⚠️ 这仍是**猜测**，且是已知弱点：卡片上任何位置出现该数字都会命中。
+            // 之所以保留，是因为率土部队卡确实常只读到裸数字；但它绝不能再写死 120——
+            // 三战满士气 100 时，"100/xxx" 的体力分母就会被当成满士气，凭空判成"士气极佳"。
+            // 同时先排除"体力本身已经等于该数值"的情况，避免把满体力误读成满士气。
+            morale = r.maxMorale
         }
 
-        val moraleGrade = when {
-            morale == null -> MoraleGrade.UNKNOWN
-            morale >= 120 -> MoraleGrade.OPTIMAL_120
-            morale >= 100 -> MoraleGrade.NORMAL_100
-            else -> MoraleGrade.LOW_PENALTY
-        }
+        val moraleGrade = gradeMorale(morale)
 
         // 3. 兵力抽取
         var currentTroops: Int? = null
@@ -101,7 +136,7 @@ object TroopStatusDetector {
         return TroopSlotDetail(
             slotIndex = slotIndex,
             stamina = stamina,
-            isStaminaFull = (stamina != null && stamina >= 120),
+            isStaminaFull = (stamina != null && stamina >= r.maxStamina),
             morale = morale,
             moraleGrade = moraleGrade,
             currentTroops = currentTroops,

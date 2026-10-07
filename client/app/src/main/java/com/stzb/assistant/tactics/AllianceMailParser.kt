@@ -93,13 +93,14 @@ object AllianceMailParser {
             }
         }
 
-        // 2. 提取所有坐标
+        // 2. 提取所有坐标（有效界取**当前游戏**的地图尺寸，不写死率土的 1500）
+        val rules = com.stzb.assistant.knowledge.KnowledgeBaseManager.activeProfile.rules
         val coords = mutableListOf<Pair<Int, Int>>()
         val cm = PATTERN_COORD.matcher(cleanText)
         while (cm.find()) {
             val x = cm.group(1)?.toIntOrNull() ?: continue
             val y = cm.group(2)?.toIntOrNull() ?: continue
-            if (x in 1..1500 && y in 1..1500) {
+            if (rules.isValidWorldCoord(x, y)) {
                 coords.add(Pair(x, y))
             }
         }

@@ -1,0 +1,382 @@
+{
+  "game_id": "sgz",
+  "game_name": "三国志·战略版 · PK赛季旗舰版",
+  "profile_version": "2026.03.2",
+  "target_package": "com.aligames.sgzzlb",
+  "description": "适配三国志战略版 PK 赛季，支持 100 士气系统、夜战双倍消耗预警、守军兵种克制与一键打地调动。",
+  "rules": {
+    "max_stamina": 120,
+    "stamina_per_action": 15,
+    "max_morale": 100,
+    "morale_standard": 100,
+    "min_morale_for_paving": 80,
+    "immunity_duration_sec": 3600,
+    "immunity_padding_ms": 1200,
+    "night_window_start_hour": 0,
+    "night_window_end_hour": 6,
+    "night_stamina_multiplier": 2.0,
+    "map_coord_max": 1500
+  },
+  "semantic_buttons": {
+    "ATTACK": {
+      "primary_keyword": "占领",
+      "aliases": [
+        "占 领",
+        "出征占领",
+        "出兵"
+      ]
+    },
+    "SWEEP": {
+      "primary_keyword": "扫荡",
+      "aliases": [
+        "扫 荡"
+      ]
+    },
+    "DEFEND": {
+      "primary_keyword": "驻守",
+      "aliases": [
+        "驻 守",
+        "协助驻守"
+      ]
+    },
+    "FARM": {
+      "primary_keyword": "屯田",
+      "aliases": [
+        "屯 田"
+      ]
+    },
+    "TRAIN": {
+      "primary_keyword": "讨伐",
+      "aliases": [
+        "讨 伐",
+        "贼寇"
+      ]
+    },
+    "SCOUT_DEFENDERS": {
+      "primary_keyword": "侦察",
+      "aliases": [
+        "侦 察",
+        "查看守军",
+        "守军兵种"
+      ]
+    },
+    "BUILD": {
+      "primary_keyword": "筑城",
+      "aliases": [
+        "筑 城",
+        "营帐",
+        "拒马",
+        "箭塔"
+      ]
+    },
+    "ABANDON": {
+      "primary_keyword": "放弃",
+      "aliases": [
+        "放 弃",
+        "放弃领地"
+      ]
+    },
+    "CONFIRM": {
+      "primary_keyword": "确定",
+      "aliases": [
+        "确 定",
+        "确认",
+        "出征",
+        "行军"
+      ]
+    },
+    "MARCH": {
+      "primary_keyword": "行军",
+      "aliases": [
+        "行 军"
+      ]
+    },
+    "TRANSFER": {
+      "primary_keyword": "调动",
+      "aliases": [
+        "调 动",
+        "调兵"
+      ]
+    },
+    "RETREAT": {
+      "primary_keyword": "撤退",
+      "aliases": [
+        "撤 退",
+        "返回"
+      ]
+    },
+    "RECRUIT": {
+      "primary_keyword": "征兵",
+      "aliases": [
+        "征 兵",
+        "预备兵"
+      ]
+    },
+    "COORDINATE": {
+      "primary_keyword": "坐标",
+      "aliases": [
+        "定位",
+        "跳转",
+        "坐标"
+      ]
+    },
+    "JUMP": {
+      "primary_keyword": "跳转",
+      "aliases": [
+        "前 往",
+        "跳转"
+      ]
+    },
+    "CANCEL": {
+      "primary_keyword": "取消",
+      "aliases": [
+        "取 消",
+        "关闭",
+        "返回",
+        "再想想"
+      ]
+    },
+    "TAX": {
+      "primary_keyword": "税收",
+      "aliases": [
+        "征 税",
+        "赋税",
+        "收取税收"
+      ]
+    },
+    "UPGRADE": {
+      "primary_keyword": "升级",
+      "aliases": [
+        "升 级",
+        "建筑升级",
+        "提升等级"
+      ]
+    },
+    "FORGE": {
+      "primary_keyword": "锻造",
+      "aliases": [
+        "打铁",
+        "铸 造",
+        "装备锻造"
+      ]
+    }
+  },
+  "defender_db": {
+    "danger_heroes": [
+      {
+        "name": "丁奉",
+        "tag": "短兵相见",
+        "threat_score": 5,
+        "description": "高概率破防+单体高伤，极易打崩前锋",
+        "counter_tip": "坚决避开"
+      },
+      {
+        "name": "潘璋",
+        "tag": "不辱使命-震慑",
+        "threat_score": 5,
+        "description": "兵刃伤害并有概率施加震慑（无法行动），很容易把我方主动战法节奏打断",
+        "counter_tip": "换地打"
+      },
+      {
+        "name": "皇甫嵩",
+        "tag": "后发制人",
+        "threat_score": 4,
+        "description": "自带强力反击，反击战损极高",
+        "counter_tip": "避开或兵力压制"
+      },
+      {
+        "name": "沙摩柯",
+        "tag": "弯弓饮羽",
+        "threat_score": 4,
+        "description": "减防+计穷封技能",
+        "counter_tip": "谨慎攻打"
+      }
+    ],
+    "hard_heroes": [
+      {
+        "name": "孙坚",
+        "tag": "江东猛虎",
+        "threat_score": 4,
+        "description": "嘲讽并提高自身免伤",
+        "counter_tip": "需要法伤爆发队"
+      },
+      {
+        "name": "关平",
+        "tag": "奋突连击",
+        "threat_score": 3,
+        "description": "普攻缴械附带增伤",
+        "counter_tip": "法系队可打"
+      },
+      {
+        "name": "曹真",
+        "tag": "白马义从",
+        "threat_score": 3,
+        "description": "增加先攻与规避",
+        "counter_tip": "战损略高"
+      }
+    ],
+    "moderate_heroes": [
+      {
+        "name": "郭淮",
+        "tag": "御敌屏障",
+        "threat_score": 2,
+        "description": "纯群体减伤，无爆发伤害",
+        "counter_tip": "推荐打"
+      },
+      {
+        "name": "曹洪",
+        "tag": "骁勇善战",
+        "threat_score": 2,
+        "description": "普通兵刃战法，容易战平",
+        "counter_tip": "兵力充足可拿下"
+      }
+    ],
+    "safe_heroes": [
+      {
+        "name": "宋宪",
+        "tag": "白给软柿子",
+        "threat_score": 1,
+        "description": "开荒极度推荐，极低战损",
+        "counter_tip": "🟢 推荐优先攻打"
+      },
+      {
+        "name": "糜芳",
+        "tag": "软柿子守军",
+        "threat_score": 1,
+        "description": "毫无伤害，开荒首选",
+        "counter_tip": "🟢 推荐收割"
+      },
+      {
+        "name": "傅士仁",
+        "tag": "白给守军",
+        "threat_score": 1,
+        "description": "极度脆弱",
+        "counter_tip": "🟢 轻松拿下"
+      }
+    ],
+    "land_suggestions": [
+      {
+        "land_level": 4,
+        "recommended_soldiers": 3200,
+        "safe_heroes": [
+          "宋宪",
+          "糜芳"
+        ],
+        "blacklist_heroes": [
+          "丁奉",
+          "潘璋"
+        ],
+        "note": "三战 4 级地务必先派斥候侦察兵种克制，骑克盾、盾克弓、弓克枪、枪克骑！",
+        "defender_total_soldiers": 5400
+      },
+      {
+        "land_level": 5,
+        "recommended_soldiers": 5000,
+        "safe_heroes": [
+          "郭淮",
+          "曹洪"
+        ],
+        "blacklist_heroes": [
+          "皇甫嵩",
+          "沙摩柯"
+        ],
+        "note": "5级地为开荒关键跃升期，兵种大克制方可低损拿下",
+        "defender_total_soldiers": 9000
+      },
+      {
+        "land_level": 6,
+        "recommended_soldiers": 10000,
+        "safe_heroes": [
+          "宋宪",
+          "糜芳",
+          "傅士仁"
+        ],
+        "blacklist_heroes": [
+          "孙坚",
+          "曹真"
+        ],
+        "note": "6级地起守军为两队且第二队不可侦察，必须带第二队补刀防翻车（软柿名单为跨等级守将池推断，待真机校准）",
+        "defender_total_soldiers": 30000
+      },
+      {
+        "land_level": 7,
+        "recommended_soldiers": 15000,
+        "safe_heroes": [
+          "郭淮",
+          "曹洪"
+        ],
+        "blacklist_heroes": [
+          "丁奉",
+          "潘璋",
+          "皇甫嵩",
+          "沙摩柯"
+        ],
+        "note": "7级地输出与控制战法搭配成型，至少两队 15000+ 再上",
+        "defender_total_soldiers": 42000
+      }
+    ]
+  },
+  "tactical_defaults": {
+    "paving_default_slots": [
+      1,
+      2
+    ],
+    "paving_step_interval_ms": 3000,
+    "immunity_default_troop_slot": 1,
+    "siege_main_squad_slot": 1,
+    "siege_demolition_slots": [
+      2,
+      3
+    ],
+    "raid_patrol_interval_ms": 5000,
+    "raid_decision_c_auto_counter": false,
+    "raid_alarm_sound": true
+  },
+  "watchdog_keywords": [
+    "点击空白处继续",
+    "确定",
+    "知道了",
+    "领奖",
+    "签到",
+    "邮件",
+    "势力值提升",
+    "暂不升级",
+    "放弃",
+    "跳过",
+    "关闭"
+  ],
+  "scene_keywords": {
+    "KNOWN_HEROES": [
+      "丁奉",
+      "潘璋",
+      "皇甫嵩",
+      "沙摩柯",
+      "孙坚",
+      "关平",
+      "曹真",
+      "郭淮",
+      "曹洪",
+      "宋宪",
+      "糜芳",
+      "傅士仁"
+    ],
+    "KNOWN_SKILLS": [
+      "短兵相见",
+      "不辱使命",
+      "后发制人",
+      "弯弓饮羽",
+      "江东猛虎",
+      "奋突连击",
+      "白马义从",
+      "御敌屏障",
+      "骁勇善战"
+    ]
+  },
+  "hero_base_speed": {},
+  "pve_mechanic_notes": {},
+  "vision_policy": [
+    "DETERMINISTIC",
+    "OCR",
+    "CLASSIFIER"
+  ]
+}
