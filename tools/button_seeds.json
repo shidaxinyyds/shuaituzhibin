@@ -10,7 +10,7 @@
   ],
   "game_id": "stzb",
   "canvas_height": 720,
-  "shots_dir": ["tools/p3/3", "tools/train_yolo/raw"],
+  "shots_dir": ["tools/p3/3", "tools/train_yolo/raw", "tools/p3/4"],
   "all_shots": [
     "0c26391a", "1304b308", "15320ddd", "329a2bff", "396077bf", "4e9b1f4c",
     "5549ed83", "84469cbb", "8dbdb126", "8f1a9c1f", "8f903c98", "9568e623",
@@ -83,6 +83,60 @@
       "rect": [955, 640, 1100, 686],
       "anchor": "fixed",
       "same_ui": ["78c74642"]
+    },
+    {
+      "type": "BUILD",
+      "_note": "筑城面板底部白胶囊「00:00:10/建造」（实心底，非地图上的暗胶囊）",
+      "src": "6ac44183",
+      "rect": [690, 565, 1030, 618],
+      "anchor": "fixed",
+      "same_ui": [],
+      "other_ui": ["de537e3c", "eb2e8d3b", "0d41946d", "1b34f283", "8b5c5bd9"]
+    },
+    {
+      "type": "UPGRADE",
+      "_note": "伐木场面板底部白胶囊「02:37:30/升级」；与 BUILD 同位同形，仅靠末词与数字区分，故互相列为负例",
+      "src": "eb2e8d3b",
+      "rect": [680, 565, 1030, 618],
+      "anchor": "fixed",
+      "same_ui": [],
+      "other_ui": ["6ac44183", "de537e3c", "0d41946d", "1b34f283", "8b5c5bd9"]
+    },
+    {
+      "type": "CANCEL",
+      "_note": "确认弹窗左下「取消」——只裁那两个字（与 CONFIRM 同口径），带大片白底会误命中「停留/撤退」白胶囊",
+      "src": "de537e3c",
+      "rect": [625, 455, 712, 493],
+      "anchor": "fixed",
+      "same_ui": ["df87d173"],
+      "other_ui": ["6ac44183", "eb2e8d3b", "0d41946d", "1b34f283", "8b5c5bd9"]
+    },
+    {
+      "type": "TRANSFER",
+      "_note": "出征/调动面板右下角白胶囊「20/调动」",
+      "src": "0d41946d",
+      "rect": [1175, 635, 1370, 685],
+      "anchor": "fixed",
+      "same_ui": [],
+      "other_ui": ["6ac44183", "de537e3c", "eb2e8d3b", "1b34f283", "8b5c5bd9"]
+    },
+    {
+      "type": "RETREAT",
+      "_note": "撤退面板右下角白胶囊「撤退」（左侧「停留」是另一动作，不裁进来）",
+      "src": "1b34f283",
+      "rect": [1160, 635, 1395, 690],
+      "anchor": "fixed",
+      "same_ui": [],
+      "other_ui": ["6ac44183", "de537e3c", "eb2e8d3b", "0d41946d", "8b5c5bd9"]
+    },
+    {
+      "type": "TAX",
+      "_note": "主城政事堂里的菱形「税收」入口（含图标与文字）；单帧，未做跨帧检验",
+      "src": "8b5c5bd9",
+      "rect": [1293, 342, 1402, 428],
+      "anchor": "fixed",
+      "same_ui": [],
+      "other_ui": ["6ac44183", "de537e3c", "eb2e8d3b", "0d41946d", "1b34f283"]
     }
   ]
 }
