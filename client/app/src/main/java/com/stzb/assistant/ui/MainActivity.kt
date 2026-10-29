@@ -133,7 +133,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 当前安装包的版本串，形如 `1.2.0-core-fix (120)`。
+     * 当前安装包的版本串，形如 `1.3.0-battle-intel (121)`。
      *
      * 走 PackageManager 而不是 BuildConfig：AGP 8 默认关闭 `buildConfig`，
      * 直接引用 `BuildConfig.VERSION_NAME` 会直接编译失败；而这个值始终存在。

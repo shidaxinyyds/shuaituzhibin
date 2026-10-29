@@ -273,14 +273,14 @@ jobs:
             exit 1
           fi
           echo "Selected Commercial APK: $APK_FILE"
-          cp "$APK_FILE" single-release-apk/RateOfLand-v1.2.0-core-fix.apk
+          cp "$APK_FILE" single-release-apk/RateOfLand-v1.3.0-battle-intel.apk
           ls -lah single-release-apk/
 
       - name: Upload Single Commercial APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: RateOfLand-Commercial-Release
-          path: single-release-apk/RateOfLand-v1.2.0-core-fix.apk
+          path: single-release-apk/RateOfLand-v1.3.0-battle-intel.apk
           retention-days: 30
 
       # 刻意**不**复用 v1.1.0 这个 tag：同名 tag 覆盖资产会让新旧包彻底无法区分，
@@ -288,29 +288,38 @@ jobs:
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.2.0"
-          name: "率土之滨全能管家 v1.2.0（内核链路修复：手势回调超时 / 任务生命周期 / 并发抓帧与 OCR）"
+          tag_name: "v1.3.0"
+          name: "率土之滨全能管家 v1.3.0（战报情报：结构化入库 / 战斗推演 / 三级告警）"
           body: |
             ## ⚠️ 装之前先看三条
 
-            1. **请先卸载旧版（v1.1.0）再安装本包。**
-               历史 CI 每次运行都会新建一张随机签名证书，v1.1.0 与本包的证书不同，
-               直接覆盖会提示「应用未安装」。从本版起签名改为固定（Secret 或缓存），
-               以后的版本可以直接覆盖升级。
+            1. **本版可直接覆盖 v1.2.0**（签名已固定，不必再卸载）。
+               若手机里仍是 v1.1.0：那一版每一轮 CI 都新建随机签名证书，与本版不同，
+               直接覆盖会提示「应用未安装」，请先卸载 v1.1.0。
             2. **v1.1.0 已知全链路失效**：手势结果回调可能永不返回，表现为
                「点了有提示、游戏一动不动、日志空白」。请不要再拿 v1.1.0 复测新修复。
             3. 安装后打开主程序，运行日志第一行会打印版本号，
-               请确认是 `1.2.0-core-fix (120)`；不是这一行就说明装的还是旧包。
+               请确认是 `1.3.0-battle-intel (121)`；不是这一行就说明装的还是旧包。
 
-            ## 本版修复（均属「静态全绿、真机不动」一类）
-            - 手势派发等待回调加超时兜底，超时按已派发处理，不再永久挂起
-            - 切换任务时等待上一个任务真正退出，避免旧任务迟到的复位打死新任务
-            - 抓帧 / OCR 引擎 / 手势派发三处串行化，消除跨线程读已释放缓冲区与互取消
-            - 场景轮询加帧哈希门控，静止画面不再重复全帧 OCR
-            - 面板中的抓帧与 OCR 移出主线程，消除点击后假死
-            - 竖屏几何拒绝派发（横屏画布坐标在竖屏下必然落空且不报错）
-            - 前台闸门对输入法 / 系统 UI / 游戏助手浮球做覆盖层降级，不再整场误拦
-            - 面板报错全部上屏：派发超时、任务被拦、方向不对、前台不对都有明确文案
-          files: single-release-apk/RateOfLand-v1.2.0-core-fix.apk
+            ## 本版新增（战斗情报能力）
+            - **战报结构化入库**：点「战报会诊」即把 胜负/回合/兵力/损失 解析成字段，
+              按游戏分域写本地 JSONL（上限 400 条、先写 .tmp 再改名、坏行逐条容错）
+            - **战报面板**：胜率 / 平均战损 / 最近若干场一览（胜率分母不含“没读到”）
+            - **打地推演**：输入 地块等级 / 出征兵力 / 士气，给出战损区间与四档建议；
+              士气可留空，留空则按知识库基准代入并**明确标注为「代入值」**而不是实测
+            - **实测对照**：每份战报自动比对“推演说会掉多少”与“实际掉了多少”；
+              战报摘要一并印出原始的 损失/兵力，配对错了能当场看出来
+            - **敌情卡 + 三级告警**：紧急=持续鸣叫，提醒=约 3 秒一次性提示，告知=仅日志；
+              卡片带过期时刻，看一眼就自动剪掉已失效的
+            - **换游戏时清空告警台并停铃**：上一款的“主城遭敌袭”不会挂在这一款屏幕上
+
+            ## 已知边界（不要当已完成用）
+            - 战损配对按“我方数字在前”的版面假设；真机若相反请反馈（摘要已带原始数可核对）
+            - 三国志战略版的战报词表尚未录入（缺真机样张），该模式下结构化会报“一个都没读到”
+            - 推演系数为经验值，需按真实战报校准（面板里的实测对照就是校准依据）
+
+            ## 构建说明
+            - 本 APK 由本次 CI 真实编译产出；48 项静态校验全绿（46 PASS / 2 SKIP 需真机截图）
+          files: single-release-apk/RateOfLand-v1.3.0-battle-intel.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
