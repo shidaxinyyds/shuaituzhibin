@@ -65,7 +65,9 @@ class RoadPavingFlow(
      */
     suspend fun startPaving(config: PavingConfig): Boolean {
         if (!isRunning.compareAndSet(false, true)) {
-            Log.w(TAG, "自动铺路已在运行中，请勿重复启动。")
+            // 不能只写 Log.w：这条路径在面板上完全不可见，
+            // 用户看到的就是“点了开始、什么都没发生”。
+            logWarn("自动铺路已在运行中：请先点「停止当前」再启动，否则两条流程会抢屏。")
             return false
         }
 

@@ -34,10 +34,45 @@ jobs:
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.1.8937393" "cmake;3.22.1"
 
-      - name: Grant Execute Permission & Pre-create Keystore
+      # ==========================================================================
+      # 签名必须**跨次固定**。原实现每次都 keytool -genkey 新建一张随机证书，
+      # 而 Android 只允许同证书覆盖安装 —— 于是用户点安装直接“应用未安装”，
+      # 只能先卸载；卸载重装又会丢掉锚点标定，更糟的是用户会以为“没更新/新包更差”，
+      # 转而继续用旧包复测新修复（本项目已真实发生过一次）。
+      #
+      # 优先级：仓库 Secret `KEYSTORE_BASE64`（推荐，永久固定）
+      #        > actions/cache 复用上一次生成的证书
+      #        > 新建（并在日志与 Summary 里醒目提示本次不可覆盖安装）。
+      # ==========================================================================
+      - name: Cache Signing Keystore
+        uses: actions/cache@v4
+        with:
+          path: client/debug.keystore
+          key: stzb-debug-keystore-v1
+
+      - name: Restore or Create Signing Keystore
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
+          set -e
           chmod +x client/gradlew
-          keytool -genkey -v -keystore client/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US" || true
+          KS=client/debug.keystore
+          if [ -n "$KS_B64" ]; then
+            printf '%s' "$KS_B64" | base64 -d > "$KS"
+            echo "✅ 已用 Secret KEYSTORE_BASE64 恢复固定签名证书。"
+          elif [ -s "$KS" ]; then
+            echo "✅ 已从 actions/cache 恢复签名证书。"
+          else
+            keytool -genkey -v -keystore "$KS" -storepass android -alias androiddebugkey \
+              -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+            echo "::warning::未配置 KEYSTORE_BASE64 且无缓存，本次新建了签名证书：该 APK 不能覆盖安装旧版，需先卸载。"
+            echo "## ⚠️ 本次签名证书为新建" >> $GITHUB_STEP_SUMMARY
+            echo "本包无法覆盖安装旧版，请先卸载；建议配置 Secret KEYSTORE_BASE64 以永久固定签名。" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "=== APK 签名证书 SHA256（用于核对是否与已装版本同签）==="
+          keytool -list -v -keystore "$KS" -storepass android -alias androiddebugkey \
+            | grep -E "SHA256:|Alias name:|Valid" || true
 
       # ==========================================================================
       # 为 CMake 提供 ncnn + OpenCV，使默认构建走「真推理」分支：
@@ -238,22 +273,44 @@ jobs:
             exit 1
           fi
           echo "Selected Commercial APK: $APK_FILE"
-          cp "$APK_FILE" single-release-apk/RateOfLand-Commercial-Release.apk
+          cp "$APK_FILE" single-release-apk/RateOfLand-v1.2.0-core-fix.apk
           ls -lah single-release-apk/
 
       - name: Upload Single Commercial APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: RateOfLand-Commercial-Release
-          path: single-release-apk/RateOfLand-Commercial-Release.apk
+          path: single-release-apk/RateOfLand-v1.2.0-core-fix.apk
           retention-days: 30
 
+      # 刻意**不**复用 v1.1.0 这个 tag：同名 tag 覆盖资产会让新旧包彻底无法区分，
+      # 而本项目已经因为“分不清装的是哪一版”白白多跑了几轮排查。
       - name: Publish to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v1.1.0"
-          name: "率土之滨全能管家 v1.1.0 商业化稳定运行版 (彻底修复OCR真编译/前台触控闸门/官服渠道服兼容)"
-          files: single-release-apk/RateOfLand-Commercial-Release.apk
-          generate_release_notes: true
+          tag_name: "v1.2.0"
+          name: "率土之滨全能管家 v1.2.0（内核链路修复：手势回调超时 / 任务生命周期 / 并发抓帧与 OCR）"
+          body: |
+            ## ⚠️ 装之前先看三条
+
+            1. **请先卸载旧版（v1.1.0）再安装本包。**
+               历史 CI 每次运行都会新建一张随机签名证书，v1.1.0 与本包的证书不同，
+               直接覆盖会提示「应用未安装」。从本版起签名改为固定（Secret 或缓存），
+               以后的版本可以直接覆盖升级。
+            2. **v1.1.0 已知全链路失效**：手势结果回调可能永不返回，表现为
+               「点了有提示、游戏一动不动、日志空白」。请不要再拿 v1.1.0 复测新修复。
+            3. 安装后打开主程序，运行日志第一行会打印版本号，
+               请确认是 `1.2.0-core-fix (120)`；不是这一行就说明装的还是旧包。
+
+            ## 本版修复（均属「静态全绿、真机不动」一类）
+            - 手势派发等待回调加超时兜底，超时按已派发处理，不再永久挂起
+            - 切换任务时等待上一个任务真正退出，避免旧任务迟到的复位打死新任务
+            - 抓帧 / OCR 引擎 / 手势派发三处串行化，消除跨线程读已释放缓冲区与互取消
+            - 场景轮询加帧哈希门控，静止画面不再重复全帧 OCR
+            - 面板中的抓帧与 OCR 移出主线程，消除点击后假死
+            - 竖屏几何拒绝派发（横屏画布坐标在竖屏下必然落空且不报错）
+            - 前台闸门对输入法 / 系统 UI / 游戏助手浮球做覆盖层降级，不再整场误拦
+            - 面板报错全部上屏：派发超时、任务被拦、方向不对、前台不对都有明确文案
+          files: single-release-apk/RateOfLand-v1.2.0-core-fix.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

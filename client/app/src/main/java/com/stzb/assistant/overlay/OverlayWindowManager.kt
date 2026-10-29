@@ -290,6 +290,18 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         createCapsuleView()
         createDashboardView()
         createPickerView()
+
+        // 版本号写进「日志」页签顶部：这是用户确认“自己跑的是哪一版”最快的地方。
+        // 本项目曾因为版本不可见，拿 21 天前的旧包反复复测新修复。
+        emitAdvisorLog("INFO", "📦 战术内核就绪 · 版本 ${panelVersion()}")
+    }
+
+    /** 安装包版本串（仅用于上屏，读不到时给“未知”而不抛异常）。 */
+    private fun panelVersion(): String = try {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        "${info.versionName}"
+    } catch (e: Exception) {
+        "未知"
     }
 
     private fun initLayoutParams() {
@@ -317,17 +329,31 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         // gravity 用 TOP|START 而非 CENTER_HORIZONTAL：右下角缩放要跟手 1:1，
         // 居中重力下改宽度会让左右两边同时外扩、角标只走一半距离，手感是错的。
         val screenWidth = context.resources.displayMetrics.widthPixels
+        val screenHeight = context.resources.displayMetrics.heightPixels
         val geom = context.getSharedPreferences(PREFS_OVERLAY, Context.MODE_PRIVATE)
         val defaultWidth = (screenWidth * DASHBOARD_WIDTH_RATIO).toInt()
         val savedW = geom.getInt(KEY_DASH_W, 0)
         val savedH = geom.getInt(KEY_DASH_H, 0)
         val savedX = geom.getInt(KEY_DASH_X, -1)
         val savedY = geom.getInt(KEY_DASH_Y, -1)
-        val panelWidth = if (savedW > 0) savedW.coerceAtMost(screenWidth) else defaultWidth
+
+        // 存过的几何不能原样照搬：内容区是固定 140dp 且**不可滚动**，
+        // 一旦存下的高度比「表头 + 页签 + 内容区 + 底部按钮 + 缩放角标」还矮，
+        // 下次展开就会把底部按钮与角标一起裁出屏幕——用户看到的是
+        // “面板一片空白、点哪里都没用”，而且重启也不会自愈（缺陷存在 SharedPreferences 里）。
+        // 因此这里把高度夹到最小可用值，并把位置收回屏内。
+        val minUsableHeight = dp(MIN_DASHBOARD_HEIGHT_DP)
+        val heightCeiling = maxOf(minUsableHeight, screenHeight)
+        val usableH = if (savedH > 0) savedH.coerceIn(minUsableHeight, heightCeiling) else 0
+        val panelWidth = if (savedW > 0) savedW.coerceIn(dp(200), screenWidth) else defaultWidth
+        val restoredX =
+            if (savedX >= 0) savedX.coerceIn(0, (screenWidth - panelWidth).coerceAtLeast(0)) else -1
+        val restoredY =
+            if (savedY >= 0) savedY.coerceIn(0, (screenHeight - minUsableHeight).coerceAtLeast(0)) else -1
 
         dashboardParams = WindowManager.LayoutParams(
             panelWidth,
-            if (savedH > 0) savedH else WindowManager.LayoutParams.WRAP_CONTENT,
+            if (usableH > 0) usableH else WindowManager.LayoutParams.WRAP_CONTENT,
             layoutType,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
@@ -335,9 +361,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            // 首次（没拖动过）水平居中；之后按用户放的位置还原。
-            x = if (savedX >= 0) savedX else (screenWidth - panelWidth) / 2
-            y = if (savedY >= 0) savedY else dp(35) // 默认贴顶，避开游戏底部主力队伍栏与操作菜单
+            // 首次（没拖动过）水平居中；之后按用户放的位置还原（已夹回屏内）。
+            x = if (restoredX >= 0) restoredX else (screenWidth - panelWidth) / 2
+            y = if (restoredY >= 0) restoredY else dp(35) // 默认贴顶，避开游戏底部主力队伍栏与操作菜单
         }
 
         pickerParams = WindowManager.LayoutParams(
@@ -495,17 +521,54 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private fun setupDashboardActions() {
         val root = dashboardView ?: return
 
+        // 执行前的统一预检。它要回答的不是“通道有没有开”，而是“这一次执行有没有可能真的点中”：
+        //   1. 抓屏会话在跑 ≠ 抓到的是游戏画面（Android 14+ 误选「单个应用」就是这个坑）；
+        //   2. 无障碍连上了 ≠ 文字识别可用（空桩构建会两者分开）；
+        //   3. 任何一条不满足都要给出可执行的原因，而不是让流程在里面静默超时。
+        val rejectExecution = { reason: String ->
+            // 同步写进「日志」页签：用户下次回来能找到“刚才到底为什么不干活”。
+            emitAdvisorLog("WARN", "⛔ 未执行：$reason")
+            Toast.makeText(context, reason, Toast.LENGTH_LONG).show()
+            false
+        }
+
         val ensureEngineReady = {
             when {
-                !EngineBridge.isCaptureReady -> {
-                    Toast.makeText(context, "请先在主程序开启屏幕捕获", Toast.LENGTH_SHORT).show()
-                    false
+                !EngineBridge.isCaptureReady ->
+                    rejectExecution("请先在主程序开启屏幕捕获")
+
+                !EngineBridge.isTouchReady ->
+                    rejectExecution("请先开启无障碍触控通道")
+
+                // 方向不对时所有坐标都落在别处：这一条必须在抓屏/OCR 之前报，
+                // 否则用户会去查识别或权限，而真正的问题是手机没有横过来。
+                !com.stzb.assistant.service.CoordinateTransformer.isLandscapeGeometryConsistent() ->
+                    rejectExecution("当前是竖屏：所有坐标都按横屏画布计算，竖屏点出去必然落空。请把手机横过来（或确认游戏处于横屏）后重试")
+
+                // 这一条不是新闸门（真正的派发拦在 ForegroundGate 里），而是把
+                // “已点击但界面没跳”背后的真实原因说出来：游戏不在前台。
+                com.stzb.assistant.service.ForegroundGate.isDefinitelyNotTargetForeground() ->
+                    rejectExecution("当前前台不是目标游戏：请先把游戏切回前台。后台派发的点击会落到别的应用上，已被拦下")
+
+                !com.stzb.assistant.ocr.OcrManager.isEngineAvailable ->
+                    rejectExecution(
+                        "文字识别不可用：" +
+                            (com.stzb.assistant.ocr.OcrManager.unavailableReason
+                                ?: "引擎未就绪，请用带 ncnn/OpenCV 的构建重装")
+                    )
+
+                else -> {
+                    // 最后一道：拿真实帧当证据。纯色帧几乎只可能是“授权选成了单个应用”
+                    // 或捕获会话已失效——这两种情况下无论点多少次都不会有反应。
+                    val health = com.stzb.assistant.service.ScreenCaptureService.instance
+                        ?.probeFrameHealth()
+                    when {
+                        health == null ->
+                            rejectExecution("屏幕捕获服务异常，请先关闭再重新授权捕获")
+                        !health.readable || health.degenerate -> rejectExecution(health.detail)
+                        else -> true
+                    }
                 }
-                !EngineBridge.isTouchReady -> {
-                    Toast.makeText(context, "请先开启无障碍触控通道", Toast.LENGTH_SHORT).show()
-                    false
-                }
-                else -> true
             }
         }
 
@@ -586,7 +649,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                         else -> Log.w("OverlayWindowManager", "书签跳转未完成，继续读取画面")
                     }
                 }
-                val status = EngineBridge.detectTileImmunity()
+                val status = withContext(Dispatchers.IO) { EngineBridge.detectTileImmunity() }
                 withContext(Dispatchers.Main) {
                     if (status.isImmune && status.remainingSeconds > 0) {
                         lastDetectedImmunityUnlockMs = status.unlockTimestampMs
@@ -816,110 +879,142 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
         root.findViewById<Button>(R.id.btnAdvisorScanDecree)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val screenshot = EngineBridge.captureFrame()
-            if (screenshot == null) {
-                tvAdvisorStream?.text = "⚠️ 抓屏失败，无法读取军令文本。请确认屏幕捕获通道仍在运行。"
-                return@setOnClickListener
-            }
-            val ocrResult = com.stzb.assistant.ocr.OcrManager.detect(screenshot)
-            screenshot.recycle()
-            val rawDecree = ocrResult?.strRes?.trim().orEmpty()
-            // 用"排除 HUD 坐标读数"的文本做解析：否则可能把你**自己**的坐标当成军令目标。
-            val decreeText = semanticTextExcludingHud(ocrResult)
+            tvAdvisorMetrics?.text = "状态: 正在读取军令文字..."
+            // 抓帧 + 整帧 OCR 是 100~300ms 级的阻塞操作。它们此前直接跑在**主线程**上，
+            // 点一下按钮面板就“假死”（不重绘、后续点击排队），很容易被判定成“按钮坏了”。
+            // 现在只有 UI 更新留在主线程，重活全部下放 IO。
+            scope.launch {
+                val read = withContext(Dispatchers.IO) {
+                    val shot = EngineBridge.captureFrame()
+                    if (shot == null) {
+                        null
+                    } else {
+                        try {
+                            // OcrResult 里的文本/坐标在 native 推理返回时已拷贝到 Kotlin 对象，
+                            // 所以位图可以在这里立即回收，不必等 UI 用完。
+                            com.stzb.assistant.ocr.OcrManager.detect(shot)
+                        } finally {
+                            shot.recycle()
+                        }
+                    }
+                }
+                if (read == null) {
+                    tvAdvisorStream?.text = "⚠️ 抓屏失败，无法读取军令文本。请确认屏幕捕获通道仍在运行。"
+                    return@launch
+                }
+                val ocrResult = read
+                val rawDecree = ocrResult.strRes.trim()
+                // 用"排除 HUD 坐标读数"的文本做解析：否则可能把你**自己**的坐标当成军令目标。
+                val decreeText = semanticTextExcludingHud(ocrResult)
 
-            if (decreeText.isBlank()) {
-                // 原实现在这里会拿一段**硬编码的军令样本**继续往下解析，
-                // 于是无论画面是什么，用户看到的永远是"已解析 虎牢关(782,451)"，
-                // 完全无法察觉 OCR 其实从未工作过——这正是"识别不到"被掩盖的方式。
+                if (decreeText.isBlank()) {
+                    // 原实现在这里会拿一段**硬编码的军令样本**继续往下解析，
+                    // 于是无论画面是什么，用户看到的永远是"已解析 虎牢关(782,451)"，
+                    // 完全无法察觉 OCR 其实从未工作过——这正是"识别不到"被掩盖的方式。
+                    tvAdvisorStream?.text = buildString {
+                        append("⚠️ 未能从当前画面读到任何军令文字，解析已中止。\n")
+                        if (rawDecree.isNotEmpty()) {
+                            append("（画面里读到了文字，但都落在已排除的 HUD 坐标读数区域里，")
+                            append("没有可用于解析的军令内容。）\n")
+                        }
+                        append("OCR 状态：")
+                        append(
+                            com.stzb.assistant.ocr.OcrManager.unavailableReason
+                                ?: "引擎已就绪，但当前画面中未检测到文字"
+                        )
+                        append("\n请把游戏切到含军令文字的界面（同盟聊天 / 邮件 / 法令）后重试。")
+                    }
+                    tvAdvisorMetrics?.text = "状态: 无可用文本输入"
+                    return@launch
+                }
+
+                val order = edgeSlmEngine.parseAllianceDecree(decreeText)
+                lastExtractedOrder = order
+                // 原文一并留存：执行军令时要基于原文重走"解析→安全校验"，
+                // 只凭 TacticalOrder 会丢掉语境，也就判断不出该不该拒绝。
+                lastExtractedDecreeText = decreeText
+                // 证据清单必须直接上屏：置信度以前只默默进 Utility 打分，面板上不显示，
+                // 于是"读到了什么 / 什么都没读到"在界面上完全看不出来。
+                val missing = buildList {
+                    if (!order.targetName.isConcreteTargetName()) add("具体地名")
+                    if (order.targetCoord == null) add("坐标")
+                    if (order.targetTime <= 0L) add("时间")
+                }
                 tvAdvisorStream?.text = buildString {
-                    append("⚠️ 未能从当前画面读到任何军令文字，解析已中止。\n")
-                    if (rawDecree.isNotEmpty()) {
-                        append("（画面里读到了文字，但都落在已排除的 HUD 坐标读数区域里，")
-                        append("没有可用于解析的军令内容。）\n")
+                    append("📜【军令已解析】目标【${order.targetName}】")
+                    append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
+                    append(order.advisorThinking)
+                    append("\n— 证据置信度 ${"%.0f".format(order.confidence * 100f)}%")
+                    if (missing.isNotEmpty()) {
+                        append("（未读到：${missing.joinToString("、")}）")
+                        if (order.confidence < 0.60f) {
+                            append("\n⚠️ 证据不足：缺少坐标时「执行军令」会被安全闸直接拒掉（不允许拿屏幕正中当目标）。")
+                            append("请在军令文本里明确写出坐标，如 582,391。")
+                        }
                     }
-                    append("OCR 状态：")
-                    append(
-                        com.stzb.assistant.ocr.OcrManager.unavailableReason
-                            ?: "引擎已就绪，但当前画面中未检测到文字"
-                    )
-                    append("\n请把游戏切到含军令文字的界面（同盟聊天 / 邮件 / 法令）后重试。")
+                    append("\n— 识别原文: ")
+                    append(decreeText.take(120))
                 }
-                tvAdvisorMetrics?.text = "状态: 无可用文本输入"
-                return@setOnClickListener
+                val brainDesc = edgeSlmEngine.getBrainDescription()
+                tvAdvisorMetrics?.text = "状态: 军令解析完成 ($brainDesc)"
             }
-
-            val order = edgeSlmEngine.parseAllianceDecree(decreeText)
-            lastExtractedOrder = order
-            // 原文一并留存：执行军令时要基于原文重走"解析→安全校验"，
-            // 只凭 TacticalOrder 会丢掉语境，也就判断不出该不该拒绝。
-            lastExtractedDecreeText = decreeText
-            // 证据清单必须直接上屏：置信度以前只默默进 Utility 打分，面板上不显示，
-            // 于是"读到了什么 / 什么都没读到"在界面上完全看不出来。
-            val missing = buildList {
-                if (!order.targetName.isConcreteTargetName()) add("具体地名")
-                if (order.targetCoord == null) add("坐标")
-                if (order.targetTime <= 0L) add("时间")
-            }
-            tvAdvisorStream?.text = buildString {
-                append("📜【军令已解析】目标【${order.targetName}】")
-                append("(${order.targetCoord?.first ?: "-"}, ${order.targetCoord?.second ?: "-"})\n")
-                append(order.advisorThinking)
-                append("\n— 证据置信度 ${"%.0f".format(order.confidence * 100f)}%")
-                if (missing.isNotEmpty()) {
-                    append("（未读到：${missing.joinToString("、")}）")
-                    if (order.confidence < 0.60f) {
-                        append("\n⚠️ 证据不足：缺少坐标时「执行军令」会被安全闸直接拒掉（不允许拿屏幕正中当目标）。")
-                        append("请在军令文本里明确写出坐标，如 582,391。")
-                    }
-                }
-                append("\n— 识别原文: ")
-                append(decreeText.take(120))
-            }
-            val brainDesc = edgeSlmEngine.getBrainDescription()
-            tvAdvisorMetrics?.text = "状态: 军令解析完成 ($brainDesc)"
         }
 
         root.findViewById<Button>(R.id.btnAdvisorDiagnose)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val screenshot = EngineBridge.captureFrame()
-            if (screenshot == null) {
-                tvAdvisorStream?.text = "⚠️ 抓屏失败，无法读取战报文本。请确认屏幕捕获通道仍在运行。"
-                return@setOnClickListener
-            }
-            val ocrResult = com.stzb.assistant.ocr.OcrManager.detect(screenshot)
-            screenshot.recycle()
-            val rawReport = ocrResult?.strRes?.trim().orEmpty()
-            // 战报同样排除 HUD 读数：战报里常有"坐标 (x,y)"字样，
-            // 若把常驻的 HUD 读数混进来，会与战报自身的坐标混淆。
-            val reportText = semanticTextExcludingHud(ocrResult)
-
-            if (reportText.isBlank()) {
-                tvAdvisorStream?.text = buildString {
-                    append("⚠️ 未能从当前画面读到战报文字，会诊已中止。\n")
-                    if (rawReport.isNotEmpty()) {
-                        append("（画面里读到了文字，但都落在已排除的 HUD 坐标读数区域里。）\n")
+            tvAdvisorMetrics?.text = "状态: 正在读取战报文字..."
+            // 同「识别军令」：抓帧 + 整帧 OCR 不能压在主线程上。
+            scope.launch {
+                val read = withContext(Dispatchers.IO) {
+                    val shot = EngineBridge.captureFrame()
+                    if (shot == null) {
+                        null
+                    } else {
+                        try {
+                            com.stzb.assistant.ocr.OcrManager.detect(shot)
+                        } finally {
+                            shot.recycle()
+                        }
                     }
-                    append("OCR 状态：")
-                    append(
-                        com.stzb.assistant.ocr.OcrManager.unavailableReason
-                            ?: "引擎已就绪，但当前画面中未检测到文字"
-                    )
-                    append("\n请把游戏切到战报详情页后重试。")
                 }
-                return@setOnClickListener
-            }
+                if (read == null) {
+                    tvAdvisorStream?.text = "⚠️ 抓屏失败，无法读取战报文本。请确认屏幕捕获通道仍在运行。"
+                    return@launch
+                }
+                val ocrResult = read
+                val rawReport = ocrResult.strRes.trim()
+                // 战报同样排除 HUD 读数：战报里常有"坐标 (x,y)"字样，
+                // 若把常驻的 HUD 读数混进来，会与战报自身的坐标混淆。
+                val reportText = semanticTextExcludingHud(ocrResult)
 
-            tvAdvisorMetrics?.text = "状态: 战报会诊分析中..."
-            tvAdvisorStream?.text = "📜 正在结合 RAG 向量底座与军师大脑推演战报克制机制，请稍候..."
-
-            edgeSlmEngine.diagnoseBattleReportAsync(reportText) { diagnosis ->
-                mainHandler.post {
+                if (reportText.isBlank()) {
                     tvAdvisorStream?.text = buildString {
-                        append(diagnosis.militaryCommentary)
-                        append("\n— 识别原文: ")
-                        append(reportText.take(120))
+                        append("⚠️ 未能从当前画面读到战报文字，会诊已中止。\n")
+                        if (rawReport.isNotEmpty()) {
+                            append("（画面里读到了文字，但都落在已排除的 HUD 坐标读数区域里。）\n")
+                        }
+                        append("OCR 状态：")
+                        append(
+                            com.stzb.assistant.ocr.OcrManager.unavailableReason
+                                ?: "引擎已就绪，但当前画面中未检测到文字"
+                        )
+                        append("\n请把游戏切到战报详情页后重试。")
                     }
-                    tvAdvisorMetrics?.text = "状态: 战报会诊完成 (${edgeSlmEngine.getBrainDescription()})"
+                    return@launch
+                }
+
+                tvAdvisorMetrics?.text = "状态: 战报会诊分析中..."
+                tvAdvisorStream?.text = "📜 正在结合 RAG 向量底座与军师大脑推演战报克制机制，请稍候..."
+
+                edgeSlmEngine.diagnoseBattleReportAsync(reportText) { diagnosis ->
+                    mainHandler.post {
+                        tvAdvisorStream?.text = buildString {
+                            append(diagnosis.militaryCommentary)
+                            append("\n— 识别原文: ")
+                            append(reportText.take(120))
+                        }
+                        tvAdvisorMetrics?.text = "状态: 战报会诊完成 (${edgeSlmEngine.getBrainDescription()})"
+                    }
                 }
             }
         }
@@ -946,7 +1041,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             tvAdvisorMetrics?.text = "状态: 军令安全审查中（防幻觉 + 效用评估）..."
             hideDashboard()
             scope.launch {
-                val (ok, detail) = safetyGate.parseAndDispatch(lastExtractedDecreeText)
+                val (ok, detail) = withContext(Dispatchers.IO) {
+                    safetyGate.parseAndDispatch(lastExtractedDecreeText)
+                }
                 withContext(Dispatchers.Main) {
                     tvAdvisorMetrics?.text = "状态: ${if (ok) "军令已下发" else "军令被拦截"}"
                     tvAdvisorStream?.append("\n$detail")
@@ -1030,32 +1127,37 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         //    这是让世界坐标真正可用的入口：没有标定，MapProjection 的默认值在真机上
         //    只是折算出来的猜测，"点不准"就是这么来的。
         root.findViewById<Button>(R.id.btnCalibReadHud)?.setOnClickListener {
-            val world = com.stzb.assistant.service.MapProjection.readCurrentCenterWorld()
-            if (world == null) {
-                val reason = com.stzb.assistant.ocr.OcrManager.unavailableReason
-                    ?: "未能在右上角读到坐标读数（可能该界面不显示坐标，或识别区域需要标定）"
-                Toast.makeText(context, "读取 HUD 坐标失败", Toast.LENGTH_SHORT).show()
-                dashboardView?.findViewById<TextView>(R.id.tvCalibrateStatus)?.text =
-                    "❌ 读取 HUD 坐标失败：$reason\n" +
-                        "请确认已开启屏幕捕获；若 OCR 不可用，请改用「③ 两点标定」手工输入。"
-                return@setOnClickListener
-            }
-            com.stzb.assistant.service.MapProjection.setBaseWorld(world.first, world.second)
-            // 已有标定时，顺便把镜头中心校正到刚读到的值
-            com.stzb.assistant.service.MapProjection.calibration?.let { c ->
-                com.stzb.assistant.service.MapProjection.calibrate(
-                    c.copy(
-                        centerWorldX = world.first.toFloat(),
-                        centerWorldY = world.second.toFloat()
+            // readCurrentCenterWorld() 内部是「抓帧 + 右上角 OCR」，压在主线程上会直接把面板卡住。
+            scope.launch {
+                val world = withContext(Dispatchers.IO) {
+                    com.stzb.assistant.service.MapProjection.readCurrentCenterWorld()
+                }
+                if (world == null) {
+                    val reason = com.stzb.assistant.ocr.OcrManager.unavailableReason
+                        ?: "未能在右上角读到坐标读数（可能该界面不显示坐标，或识别区域需要标定）"
+                    Toast.makeText(context, "读取 HUD 坐标失败", Toast.LENGTH_SHORT).show()
+                    dashboardView?.findViewById<TextView>(R.id.tvCalibrateStatus)?.text =
+                        "❌ 读取 HUD 坐标失败：$reason\n" +
+                            "请确认已开启屏幕捕获；若 OCR 不可用，请改用「③ 两点标定」手工输入。"
+                    return@launch
+                }
+                com.stzb.assistant.service.MapProjection.setBaseWorld(world.first, world.second)
+                // 已有标定时，顺便把镜头中心校正到刚读到的值
+                com.stzb.assistant.service.MapProjection.calibration?.let { c ->
+                    com.stzb.assistant.service.MapProjection.calibrate(
+                        c.copy(
+                            centerWorldX = world.first.toFloat(),
+                            centerWorldY = world.second.toFloat()
+                        )
                     )
-                )
+                }
+                refreshCalibrateDisplay()
+                Toast.makeText(
+                    context,
+                    "已读到 HUD 坐标 (${world.first},${world.second}) 并记为基地",
+                    Toast.LENGTH_LONG
+                ).show()
             }
-            refreshCalibrateDisplay()
-            Toast.makeText(
-                context,
-                "已读到 HUD 坐标 (${world.first},${world.second}) 并记为基地",
-                Toast.LENGTH_LONG
-            ).show()
         }
 
         root.findViewById<Button>(R.id.btnCalibPickTile)?.setOnClickListener {
@@ -2903,6 +3005,23 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             if (taskType == TacticalState.TaskType.SQUAD_LEVELING) {
                 dashboardView?.findViewById<TextView>(R.id.tvLevelingLiveStatus)?.text = "流水线状态: $detail"
             }
+
+            // 任务的结局（完成/失败/中断）必须同时进「日志」页签。
+            // 胶囊上那行小字在面板展开时基本看不到，而“为什么没干活”正是排查时的第一个问题；
+            // 此前 FAILED 的 detail 只进胶囊，用户能看到的就只有“点了没反应”。
+            when (status) {
+                TacticalState.Status.FAILED,
+                TacticalState.Status.INTERRUPTED,
+                TacticalState.Status.COMPLETED -> {
+                    val level = if (status == TacticalState.Status.COMPLETED) "DONE" else "WARN"
+                    val tvLogs = dashboardView?.findViewById<TextView>(R.id.tvInGameLogs)
+                    if (tvLogs != null) {
+                        tvLogs.text =
+                            "[$level] ${taskType.displayName} → ${status.desc}：$detail\n" + tvLogs.text
+                    }
+                }
+                else -> Unit
+            }
         }
     }
 
@@ -2955,6 +3074,16 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
          * 既满足「减小三分之一」的需求，又让面板宽度在所有机型上可预测。
          */
         private const val DASHBOARD_WIDTH_RATIO = 0.53f
+
+        /**
+         * 面板可用的最小高度（dp）。
+         *
+         * 组成：表头 26 + 页签约 26 + 内容区 140 + 底部按钮 32 + 缩放角标 30
+         * + 各层 8dp 间隔与 10dp 内边距 ≈ 290dp。当存下的高度低于这个值时，
+         * 底部按钮与缩放角标会被裁出窗口，而内容区不可滚动——面板就“废了”。
+         * 还原几何时以此作为下限，宁可让面板高一点，也不能让它不可用。
+         */
+        private const val MIN_DASHBOARD_HEIGHT_DP = 300
 
         /**
          * 面板尺寸/位置持久化：用户拖角缩放或拖动过之后，下次展开按上次的大小和位置还原，

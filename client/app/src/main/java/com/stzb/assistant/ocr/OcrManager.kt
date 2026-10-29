@@ -29,6 +29,18 @@ object OcrManager {
     private var isInitialized = false
 
     /**
+     * native 推理的**串行闸门**。
+     *
+     * `OcrEngine` 内部持有 ncnn 的 DBNet/CRNN 会话与输出缓冲，**不是线程安全的**。
+     * 而本工程至少有 6 条执行线会同时识图：前台战术流水线、夜战哨兵、
+     * 看门狗恢复、悬浮窗按钮、世界坐标回读、定时任务。
+     * 并发进 native 的后果不是「慢一点」，而是结果错乱或 native 崩溃——
+     * 在界面上表现为「同一张图有时读得到、有时一个字都没有」，
+     * 这是最难定位的一类故障，也是所有战术流「静默不动」的常见源头。
+     */
+    private val engineLock = Any()
+
+    /**
      * OCR 引擎是否真的可用。
      *
      * 为什么需要这个标志：native 层的空桩（`OcrStub.cpp`）过去会"成功初始化并返回空结果"，
@@ -145,7 +157,11 @@ object OcrManager {
             return null
         }
         return try {
-            engine.detect(bitmap, emptyOutput, maxSideLen)
+            // 串行化 native 调用（见 [engineLock]）。宁可让并发的第二条识别
+            // 排队几十毫秒，也不能让两条线程同时进同一个 ncnn 会话。
+            synchronized(engineLock) {
+                engine.detect(bitmap, emptyOutput, maxSideLen)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "OCR 推理异常: ${e.message}")
             null

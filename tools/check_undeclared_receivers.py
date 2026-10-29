@@ -47,6 +47,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 # 被当作"类型名/自有对象"使用的接收者，无需在本文件声明。
+#
+# 另注：Activity / Context 的**继承属性**（packageManager / applicationContext /
+# layoutInflater / window）也必须在白名单里：它们不是未解析引用，而是基类成员。
+# 不列就会产生系统性假红——例如在 Activity 里读版本号必然报一次。
 WHITELIST = set("""
 it this super that self
 String Int Long Float Double Boolean Char Byte Short Unit Any Nothing Array List Map Set
@@ -65,6 +69,7 @@ SimpleDateFormat Date Calendar Locale UUID Arrays Collections Objects Collectors
 Entry Iterator ValueOf Companion INSTANCE
 FloatArray IntArray DoubleArray BooleanArray ByteArray CharArray LongArray ShortArray
 entries resources list map set array items values keys
+packageManager applicationContext layoutInflater window
 """.split())
 
 # 包名根段：`com.stzb.assistant.X`、`kotlinx.coroutines.Y` 这类全限定名会被正则切出首段。

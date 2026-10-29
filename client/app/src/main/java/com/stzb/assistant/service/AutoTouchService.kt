@@ -11,6 +11,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.random.Random
 
 /**
@@ -27,6 +28,14 @@ class AutoTouchService : AccessibilityService() {
         private const val TAG = "AutoTouchService"
         var instance: AutoTouchService? = null
             private set
+
+        /**
+         * 等待 `GestureResultCallback` 的宽限时长（叠加在手势本身时长之上）。
+         *
+         * 系统**不保证**回调一定到来：部分 OEM ROM 在手势被导航条/输入法抢占时
+         * 只取消手势、不回调 onCancelled。没有超时兜底，`await()` 会永久挂起。
+         */
+        private const val DISPATCH_CALLBACK_GRACE_MS = 2000L
 
         val isConnected: Boolean
             get() = instance != null
@@ -102,7 +111,7 @@ class AutoTouchService : AccessibilityService() {
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
-        dispatchGestureAsync(gesture)
+        dispatchGestureAsync(gesture, durationMs)
     }
 
     /**
@@ -143,10 +152,10 @@ class AutoTouchService : AccessibilityService() {
                     )
                 )
                 .build()
-            return@withContext dispatchGestureAsync(gesture)
+            return@withContext dispatchGestureAsync(gesture, totalMs)
         }
 
-        return@withContext when (dispatchOutcome(chained)) {
+        return@withContext when (dispatchOutcome(chained, totalMs)) {
             DispatchResult.COMPLETED -> true
             DispatchResult.CANCELLED -> false
             DispatchResult.NOT_STARTED -> {
@@ -160,7 +169,7 @@ class AutoTouchService : AccessibilityService() {
                         )
                     )
                     .build()
-                dispatchGestureAsync(legacy)
+                dispatchGestureAsync(legacy, totalMs)
             }
         }
     }
@@ -279,22 +288,34 @@ class AutoTouchService : AccessibilityService() {
             .addStroke(rightStroke)
             .build()
 
-        dispatchGestureAsync(gesture)
+        dispatchGestureAsync(gesture, durationMs)
     }
 
     /**
      * 异步派发手势并等待系统回调确认
      */
-    private suspend fun dispatchGestureAsync(gesture: GestureDescription): Boolean {
-        return dispatchOutcome(gesture) == DispatchResult.COMPLETED
+    private suspend fun dispatchGestureAsync(
+        gesture: GestureDescription,
+        timeoutMs: Long
+    ): Boolean {
+        return dispatchOutcome(gesture, timeoutMs) == DispatchResult.COMPLETED
     }
 
     /**
      * 派发结果的**三态**版本。区分“系统根本没接受”与“接受了但中途被取消”
      * 是必要的：前者重试是安全的（一个事件都没注入过），后者重试会变成
      * “拖了两下”，对地图来说就是双倍位移。
+     *
+     * ## 为什么必须有超时（真实缺陷的修复）
+     * 旧实现的最后一步是裸的 `deferred.await()`：只要系统不回调，
+     * 调用它的协程就**永久挂起**。而手工查真机日志时看到的现象正是
+     * “点了开始、界面无任何提示、游戏也不动”——因为整条战术流就挂在第一指上，
+     * 既不报错也不结束。超时后按“已派发”处理（而不是失败）：
+     * dispatchGesture 已返回 true 说明手势请求被系统接下了，回调丢失不等于没执行，
+     * 而重放一次点击的风险（双击出征/双倍位移）比误判成功更大；
+     * 真实结果交给上层 [com.stzb.assistant.service.EngineBridge.clickAndExpect] 的场景校验兜底。
      */
-    private suspend fun dispatchOutcome(gesture: GestureDescription): DispatchResult {
+    private suspend fun dispatchOutcome(gesture: GestureDescription, timeoutMs: Long): DispatchResult {
         val deferred = CompletableDeferred<DispatchResult>()
         val callback = object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
@@ -307,12 +328,28 @@ class AutoTouchService : AccessibilityService() {
             }
         }
 
-        val dispatched = dispatchGesture(gesture, callback, null)
+        val dispatched = try {
+            dispatchGesture(gesture, callback, null)
+        } catch (t: Throwable) {
+            // 无障碍服务被系统回收/断开的那一瞬调用会直接抛异常（而不是返回 false）。
+            Log.e(TAG, "派发手势异常: ${t.javaClass.simpleName} ${t.message}")
+            false
+        }
         if (!dispatched) {
             Log.e(TAG, "系统拒绝派发手势，请检查当前是否有锁屏或权限受限。")
             return DispatchResult.NOT_STARTED
         }
-        return deferred.await()
+
+        // 手势本身时长 + 宽限；超时后按已派发处理（理由见方法注释）。
+        val budget = timeoutMs.coerceAtLeast(1L) + DISPATCH_CALLBACK_GRACE_MS
+        return withTimeoutOrNull(budget) { deferred.await() } ?: run {
+            Log.w(
+                TAG,
+                "手势派发等回调超时（${budget}ms 未回传），按已派发处理。" +
+                    "若后续界面无变化，请重新开启无障碍服务。"
+            )
+            DispatchResult.COMPLETED
+        }
     }
 
     private enum class DispatchResult { COMPLETED, CANCELLED, NOT_STARTED }

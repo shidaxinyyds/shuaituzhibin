@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
@@ -99,6 +100,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         initViews()
+        // 第一件事就把版本号打到界面上。这不是装饰：本项目真实发生过「用户手里一直是
+        // v1.1.0 旧包，却在用之后的修复反复复测」，而版本号不可见时，任何“用不了”
+        // 都无法判断是代码问题还是装错了包。这一行是排查的起点，不要删。
+        log("📦 当前安装版本：${installedVersion()}")
         setupButtons()
         checkPermissions()
         refreshKnowledgeUi()
@@ -125,6 +130,25 @@ class MainActivity : AppCompatActivity() {
         // 及时摘掉延迟任务，避免 Activity 已销毁后仍持有引用
         uiHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
+    }
+
+    /**
+     * 当前安装包的版本串，形如 `1.2.0-core-fix (120)`。
+     *
+     * 走 PackageManager 而不是 BuildConfig：AGP 8 默认关闭 `buildConfig`，
+     * 直接引用 `BuildConfig.VERSION_NAME` 会直接编译失败；而这个值始终存在。
+     */
+    private fun installedVersion(): String = try {
+        val info = packageManager.getPackageInfo(packageName, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
+        }
+        "${info.versionName} ($code)"
+    } catch (e: Exception) {
+        "未知版本（${e.javaClass.simpleName}）"
     }
 
     private fun initViews() {
@@ -204,7 +228,27 @@ class MainActivity : AppCompatActivity() {
                 btnCapture.post { checkPermissions() }
             } else {
                 val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                captureLauncher.launch(mpm.createScreenCaptureIntent())
+                // Android 14(API 34) 起，系统授权弹窗多出「单个应用 / 整个屏幕」二选一，
+                // 而且**默认停在「单个应用」，默认选中的就是本助手自己**。用户顺手点「立即开始」之后：
+                //   * isCapturing 仍为 true，主界面四项状态全绿；
+                //   * 但捕获面拿到的永远是助手自己的界面（切到游戏后只剩静止帧或黑屏）；
+                //   * 于是 OCR 一个字都读不到，所有战术流在"未能定位按键"处静默止步——
+                //     用户看到的现象就是"全都开着，进游戏完全没反应"。
+                // createConfigForDefaultDisplay() 明确要求镜像整个默认显示屏，系统不再给
+                // 「单个应用」这个选项，从根上消除这次误选。API 34 以下没有该概念，保持原调用。
+                val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    try {
+                        mpm.createScreenCaptureIntent(
+                            MediaProjectionConfig.createConfigForDefaultDisplay()
+                        )
+                    } catch (e: Exception) {
+                        log("⚠️ 无法强制全屏捕获授权，退回系统默认弹窗: ${e.message}")
+                        mpm.createScreenCaptureIntent()
+                    }
+                } else {
+                    mpm.createScreenCaptureIntent()
+                }
+                captureLauncher.launch(captureIntent)
             }
         }
 

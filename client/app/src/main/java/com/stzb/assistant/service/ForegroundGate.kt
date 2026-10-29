@@ -117,8 +117,57 @@ object ForegroundGate {
             }
         }
 
+        // 焦点窗口是**覆盖层**（输入法 / 系统 UI / 各家游戏助手浮球）时，
+        // 它拿到焦点并不等于游戏退到了后台——而按下面那条「明确不是目标游戏就拦」
+        // 处理的话，真机上会因为一个输入法或游戏助手浮球把**整场挂机全部拦死**：
+        // 画面完好、按钮有 Toast、游戏就是一动不动。
+        // 所以这里不定罪，改看事件流里最后观测到的前台包名。
+        if (isOverlayLike(actual)) {
+            val lastSeen = svc.foregroundPackage?.takeIf { it.isNotBlank() }
+            return when {
+                lastSeen == null -> {
+                    Log.i(
+                        TAG,
+                        "焦点窗口为覆盖层 [$actual]，且尚无事件观测值，按放行处理。"
+                    )
+                    Verdict.UNKNOWN_FOREGROUND_ALLOW
+                }
+
+                isMatchingTargetGame(lastSeen, expected) -> Verdict.TARGET_FOREGROUND
+
+                // 事件流本身也只记到覆盖层（例如刚点过悬浮窗、或最后一条事件就是本应用）：
+                // 这仍然不是「游戏已离开前台」的证据，继续按未知处理。
+                isOverlayLike(lastSeen) -> Verdict.UNKNOWN_FOREGROUND_ALLOW
+
+                // 覆盖层之下确实是别的应用（用户下拉了通知栏去看微信等）：仍要拦。
+                else -> {
+                    Log.w(TAG, "焦点窗口为覆盖层 [$actual]，其下前台为 [$lastSeen]，与 [$expected] 不符。")
+                    Verdict.BLOCKED_NOT_FOREGROUND
+                }
+            }
+        }
+
         // 明确看到别的第三方包在前台（如微信、浏览器等）——一律拦下，保护安全。
         return Verdict.BLOCKED_NOT_FOREGROUND
+    }
+
+    /**
+     * 是否属于「叠加在游戏画面之上、但游戏可能仍在运行」的覆盖层类包名。
+     *
+     * 典型来源：输入法（点击输入框时抢焦点）、系统 UI（下拉通知栏/音量条/手势条），
+     * 以及小米/华为/荣耀/OPPO/vivo 的游戏助手、加速器、游戏空间浮球。
+     * 这些包名**不能**作为「游戏已不在前台」的证据。
+     */
+    private fun isOverlayLike(pkg: String): Boolean {
+        val p = pkg.lowercase()
+        if (p == "com.stzb.assistant") return true
+        if (p.startsWith("com.android.systemui")) return true
+        if (p.startsWith("com.android.permissioncontroller")) return true
+        if (p.contains("inputmethod")) return true
+        if (p.contains("gamebooster") || p.contains("gameassistant")) return true
+        if (p.contains("gamespace") || p.contains("gamebox")) return true
+        if (p.contains("gamemaster") || p.contains("gamecenter") || p.contains("gameapp")) return true
+        return false
     }
 
     /**

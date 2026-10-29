@@ -448,9 +448,26 @@ class ScreenCaptureService : Service() {
     }
 
     /**
+     * 抓帧的**串行闸门**。
+     *
+     * `ImageReader.acquireLatestImage()` 会把「上一次尚未 close 的 Image」直接回收。
+     * 若两条线程同时抓帧，A 线程手里的 `image.planes[0].buffer` 可能在
+     * `copyPixelsFromBuffer` 途中被 B 线程 acquire 掉——读到的是已释放的缓冲区，
+     * 轻则撕裂成花屏位图（OCR 一个字都读不出），重则 native 崩溃。
+     *
+     * 本方法确实会被并发调用：前台战术流水线、悬浮窗按钮、定时任务、
+     * 夜战哨兵、看门狗恢复都在各自的线程/协程里抓屏。因此必须串行，
+     * 抓一帧的代价只有几毫秒，排队远比读坏帧划算。
+     */
+    private val frameLock = Any()
+
+    /**
      * 捕获当前 1280x720 单帧高清位图 (线程安全)
      */
-    fun captureCurrentFrame(): Bitmap? {
+    fun captureCurrentFrame(): Bitmap? = synchronized(frameLock) { grabFrameLocked() }
+
+    /** 真正的抓帧实现；**调用方必须持有 [frameLock]**。 */
+    private fun grabFrameLocked(): Bitmap? {
         if (!isCapturing.get()) return null
         // 先取本地快照：几何调整会在主线程关闭并替换 ImageReader，
         // 直接读字段可能拿到"刚好被关掉"的那个实例。
@@ -501,6 +518,81 @@ class ScreenCaptureService : Service() {
     }
 
     /**
+     * 单帧健康度快照：把「抓屏通道在跑」与「抓到的是不是游戏画面」区分开。
+     *
+     * 为什么必须有这一层：`isCapturing` 只说明 MediaProjection 会话还活着。
+     * Android 14+ 的授权弹窗允许用户选「单个应用」（默认就是本助手自己），
+     * 一旦误选，切到游戏后会话依然"在跑"，但每帧都是助手界面或黑屏——
+     * 全绿、无报错、所有战术流静默不动。把帧本身当证据，是唯一可靠的判据。
+     */
+    data class FrameHealth(
+        /** 能不能抓到帧。false = 会话失效/未授权。 */
+        val readable: Boolean,
+        /** 帧是不是近乎纯色（几乎可以确定捕获的不是游戏画面）。 */
+        val degenerate: Boolean,
+        /** 给人看的结论；可直接上 Toast / 日志。 */
+        val detail: String
+    )
+
+    /**
+     * 对当前帧做一次健康度探测（只在用户按下执行按钮时调用，不进循环）。
+     *
+     * 刻意「宁松勿紧」：率土夜间大地图本来就暗、成片同色，阈值定得太紧
+     * 会把正常画面误判成故障，反而把用户引到错误的排查方向。
+     */
+    fun probeFrameHealth(): FrameHealth {
+        if (!isCapturing.get()) {
+            return FrameHealth(false, false, "屏幕捕获通道未运行（未授权或已被系统挂断）")
+        }
+        val frame = captureCurrentFrame()
+            ?: return FrameHealth(
+                false, false,
+                "抓不到任何一帧（可能正逢转屏重建），请再点一次；仍不行请重新授权屏幕捕获"
+            )
+        return try {
+            val uniqueColors = sampleUniqueColors(frame)
+            if (uniqueColors <= 2) {
+                FrameHealth(
+                    true, true,
+                    "抓到的画面近乎纯色（采样唯一色仅 $uniqueColors 种），" +
+                        "说明捕获的不是游戏画面。若是 Android 14 及以上，请重新授权屏幕捕获并选择「整个屏幕」。"
+                )
+            } else {
+                FrameHealth(
+                    true, false,
+                    "捕获正常：${frame.width}x${frame.height}，采样唯一色 $uniqueColors 种"
+                )
+            }
+        } finally {
+            frame.recycle()
+        }
+    }
+
+    /** 把一帧缩到 24x14 采样，返回唯一颜色数（足以区分纯色与真实画面）。 */
+    private fun sampleUniqueColors(src: Bitmap): Int {
+        val w = 24
+        val h = 14
+        val scaled = try {
+            Bitmap.createScaledBitmap(src, w, h, false)
+        } catch (e: Exception) {
+            Log.w(TAG, "帧采样缩放失败: ${e.message}")
+            return Int.MAX_VALUE // 判不了就当作正常，不阻塞用户
+        }
+        return try {
+            val seen = HashSet<Int>(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    seen.add(scaled.getPixel(x, y) and 0x00FFFFFF)
+                }
+            }
+            seen.size
+        } finally {
+            // 尺寸相同时 createScaledBitmap 会返回原图，不能把它回收掉。
+            if (scaled !== src) scaled.recycle()
+        }
+    }
+
+    /**
      * 计算图像的 8x8 均值哈希（纯函数，不维护任何状态）。
      *
      * 供"点击后是否生效"这类**局部判断**使用：调用方自己取点击前后的两次哈希再比较，
@@ -527,29 +619,39 @@ class ScreenCaptureService : Service() {
     }
 
     private fun computeAverageHash(src: Bitmap): Long {
-        val scaled = Bitmap.createScaledBitmap(src, 8, 8, false)
-        var total = 0
-        val pixels = IntArray(64)
-        for (y in 0 until 8) {
-            for (x in 0 until 8) {
-                val pixel = scaled.getPixel(x, y)
-                // 灰度化：0.299R + 0.587G + 0.114B
-                val r = (pixel shr 16) and 0xFF
-                val g = (pixel shr 8) and 0xFF
-                val b = pixel and 0xFF
-                val gray = (r * 299 + g * 587 + b * 114) / 1000
-                pixels[y * 8 + x] = gray
-                total += gray
-            }
+        // `createScaledBitmap` 在目标尺寸与原图一致时会**直接返回原图**，
+        // 此时绝不能 recycle，否则会把调用方的位图销毁掉；异常路径也必须回退为 0。
+        val scaled = try {
+            Bitmap.createScaledBitmap(src, 8, 8, false)
+        } catch (t: Throwable) {
+            Log.w(TAG, "均值哈希缩放失败: ${t.message}")
+            return 0L
         }
-        val avg = total / 64
-        var hash = 0L
-        for (i in 0 until 64) {
-            if (pixels[i] >= avg) {
-                hash = hash or (1L shl i)
+        return try {
+            var total = 0
+            val pixels = IntArray(64)
+            for (y in 0 until 8) {
+                for (x in 0 until 8) {
+                    val pixel = scaled.getPixel(x, y)
+                    // 灰度化：0.299R + 0.587G + 0.114B
+                    val r = (pixel shr 16) and 0xFF
+                    val g = (pixel shr 8) and 0xFF
+                    val b = pixel and 0xFF
+                    val gray = (r * 299 + g * 587 + b * 114) / 1000
+                    pixels[y * 8 + x] = gray
+                    total += gray
+                }
             }
+            val avg = total / 64
+            var hash = 0L
+            for (i in 0 until 64) {
+                if (pixels[i] >= avg) {
+                    hash = hash or (1L shl i)
+                }
+            }
+            hash
+        } finally {
+            if (scaled !== src) scaled.recycle()
         }
-        scaled.recycle()
-        return hash
     }
 }

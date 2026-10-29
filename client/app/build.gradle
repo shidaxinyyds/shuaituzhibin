@@ -12,8 +12,8 @@ android {
         applicationId "com.stzb.assistant"
         minSdk 26
         targetSdk 34
-        versionCode 110
-        versionName "1.1.0-commercial-release"
+        versionCode 120
+        versionName "1.2.0-core-fix"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 

@@ -3,6 +3,7 @@ package com.stzb.assistant.service
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.Rect
+import android.os.SystemClock
 import android.util.Log
 import com.stzb.assistant.ocr.DefenderEvaluator
 import com.stzb.assistant.ocr.OcrManager
@@ -14,6 +15,8 @@ import com.stzb.assistant.ocr.TileStatusDetector
 import com.stzb.assistant.ocr.TroopStatusDetector
 import com.stzb.assistant.antiban.TimingFingerprintEngine
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.random.Random
 
 /**
@@ -48,6 +51,36 @@ object EngineBridge {
      * ~112ms..750ms 之间连续变化（均值仍≈ 250ms，响应延迟不变差）。
      */
     private const val POLL_INTERVAL_MS = 250L
+
+    /**
+     * 手势派发的**串行闸门**。
+     *
+     * 系统同一时刻只能容纳一条注入手势：两个协程同时 `dispatchGesture` 时，
+     * 后一条会**直接取消**前一条（回调 onCancelled），于是双方都拿到失败，
+     * 却各自重试，越重试越乱。前台战术流、夜战哨兵、看门狗、定时任务
+     * 完全可能同时点——这是「偶发、越忙越点不动」的成因。
+     * 排队而非并发，才是真实手指的行为。
+     */
+    private val gestureMutex = Mutex()
+
+    /**
+     * 场景判定的**帧门控缓存**。
+     *
+     * [detectGameState] 的代价是一次整帧 OCR（约 100~300ms）。它最热的调用方
+     * 是 [waitForState]，后者以 ~250ms 为周期轮询：等一次 3s 的场景跳转，
+     * 等于对**同一张静止画面**做十几次全帧识别。真机上的表现是点完开始按钮后
+     * 手机发烫、识别吞吐被自己吃掉，而结果一点新信息都没有。
+     *
+     * 门控判据刻意保守：画面与上次判定时几乎一致（8×8 均值哈希汉明距离 ≤ 1）
+     * **且**在 [SCENE_CACHE_TTL_MS] 内，才复用上次结论。只要有真正的界面变化
+     * （弹窗、切页、动画位移），哈希就会变，照常走 OCR；TTL 则保证即使画面真的静止，
+     * 结论也不会被无限期复用。
+     */
+    private val sceneCacheLock = Any()
+    private var sceneCacheHash = 0L
+    private var sceneCacheState = StzbUiMatcher.GameState.UNKNOWN
+    private var sceneCacheAtMs = 0L
+    private const val SCENE_CACHE_TTL_MS = 1500L
 
     val isCaptureReady: Boolean
         get() = ScreenCaptureService.isCapturing.get()
@@ -97,6 +130,26 @@ object EngineBridge {
     }
 
     /**
+     * 屏幕几何是否与「横屏设计画布」假设一致；不一致时**拒绝派发**并返回 true。
+     *
+     * `dispatchGesture` 解释坐标用的是**当前显示旋转**，而本工程全部战术常量都建立在
+     * 720 高的横屏画布上（见 `CoordinateTransformer`）。竖屏时把长边当 X 发出去的一指
+     * 不会抛异常、不会返回 false，只会**落在别处**——这是「点了没反应 / 点错位置」里
+     * 最难自查的一类。宁可拒绝并说明，也不发一指「看上去成功」的点击。
+     *
+     * 判定本身很便宜（一次 `maximumWindowMetrics` 读取），放在每个入口而不是轮询里。
+     */
+    private fun geometryRejectsTouch(action: String): Boolean {
+        if (CoordinateTransformer.isLandscapeGeometryConsistent()) return false
+        Log.w(
+            TAG,
+            "已拒绝${action}：当前为竖屏几何，横屏画布坐标无法安全映射到屏幕，" +
+                "请把手机横过来后再执行。"
+        )
+        return true
+    }
+
+    /**
      * 拟人化点击（支持自适应虚拟坐标）。
      *
      * **触控通道策略（本轮修正）**：无障碍是**主通道**——它也是产品在界面上
@@ -113,33 +166,39 @@ object EngineBridge {
         // 0) 前台闸门：坐标是从游戏画面算出来的，游戏不在前台时这一指就会落在别的应用上。
         //    拦在这里而不是各战术流里，是因为所有盲点都走这个入口（包括压秒的 firePreparedTap）。
         if (!ForegroundGate.allowBlindDispatch("点击")) return false
+        // 几何闸门：竖屏下发出去的坐标必然落空（见 [geometryRejectsTouch]）。
+        if (geometryRejectsTouch("点击")) return false
 
         // 微量高斯拟人微扰动 (控制在 1.0px 以内，误差 < ±5dp)
         val jitteredVirtual = com.stzb.assistant.antiban.AntiBanCoordinator.randomizePoint(virtualX, virtualY, 1.0f)
 
         // 1) 主通道：系统无障碍手势
-        val touch = AutoTouchService.instance
-        if (touch != null && touch.clickVirtual(jitteredVirtual.x, jitteredVirtual.y)) {
-            return true
-        }
-
         // 2) 兜底：Shizuku（仅在无障碍不可用或未成功时使用）
-        if (ShizukuTouchManager.hasPermission()) {
-            val realPoint = CoordinateTransformer.toReal(jitteredVirtual.x, jitteredVirtual.y)
-            if (ShizukuTouchManager.clickReal(realPoint.x, realPoint.y)) {
-                Log.i(TAG, "无障碍通道未成功，本次点击由 Shizuku 兜底完成。")
-                return true
+        // 两者都排在 [gestureMutex] 里：并发的第二指会被系统直接取消第一指，
+        // 于是两边都“失败”并各自重试，越重试越乱。
+        return gestureMutex.withLock {
+            val touch = AutoTouchService.instance
+            if (touch != null && touch.clickVirtual(jitteredVirtual.x, jitteredVirtual.y)) {
+                return@withLock true
             }
-        }
 
-        Log.w(
-            TAG,
-            "两种触控通道都未能点击：无障碍=" +
-                (if (touch != null) "已连接但未成功" else "未连接") +
-                "，Shizuku=" + (if (ShizukuTouchManager.hasPermission()) "有权限但未成功" else "无权限") +
-                "。请检查无障碍服务是否仍在运行。"
-        )
-        return false
+            if (ShizukuTouchManager.hasPermission()) {
+                val realPoint = CoordinateTransformer.toReal(jitteredVirtual.x, jitteredVirtual.y)
+                if (ShizukuTouchManager.clickReal(realPoint.x, realPoint.y)) {
+                    Log.i(TAG, "无障碍通道未成功，本次点击由 Shizuku 兜底完成。")
+                    return@withLock true
+                }
+            }
+
+            Log.w(
+                TAG,
+                "两种触控通道都未能点击：无障碍=" +
+                    (if (touch != null) "已连接但未成功" else "未连接") +
+                    "，Shizuku=" + (if (ShizukuTouchManager.hasPermission()) "有权限但未成功" else "无权限") +
+                    "。请检查无障碍服务是否仍在运行。"
+            )
+            false
+        }
     }
 
     /**
@@ -153,26 +212,29 @@ object EngineBridge {
     ): Boolean {
         // 前台闸门：滑动在大地图上就是拖动镜头，点在别的应用上会把它的列表/页面拖乱。
         if (!ForegroundGate.allowBlindDispatch("滑动")) return false
+        if (geometryRejectsTouch("滑动")) return false
 
-        val touch = AutoTouchService.instance
-        if (touch != null && touch.swipeVirtual(startX, startY, endX, endY, durationMs)) {
-            return true
-        }
-        if (ShizukuTouchManager.hasPermission()) {
-            val p0 = CoordinateTransformer.toReal(startX, startY)
-            val p3 = CoordinateTransformer.toReal(endX, endY)
-            if (ShizukuTouchManager.swipeReal(p0.x, p0.y, p3.x, p3.y, durationMs)) {
-                Log.i(TAG, "无障碍通道未成功，本次滑动由 Shizuku 兜底完成。")
-                return true
+        return gestureMutex.withLock {
+            val touch = AutoTouchService.instance
+            if (touch != null && touch.swipeVirtual(startX, startY, endX, endY, durationMs)) {
+                return@withLock true
             }
+            if (ShizukuTouchManager.hasPermission()) {
+                val p0 = CoordinateTransformer.toReal(startX, startY)
+                val p3 = CoordinateTransformer.toReal(endX, endY)
+                if (ShizukuTouchManager.swipeReal(p0.x, p0.y, p3.x, p3.y, durationMs)) {
+                    Log.i(TAG, "无障碍通道未成功，本次滑动由 Shizuku 兜底完成。")
+                    return@withLock true
+                }
+            }
+            Log.w(
+                TAG,
+                "两种触控通道都未能滑动：无障碍=" +
+                    (if (touch != null) "已连接但未成功" else "未连接") +
+                    "，Shizuku=" + (if (ShizukuTouchManager.hasPermission()) "有权限但未成功" else "无权限") + "。"
+            )
+            false
         }
-        Log.w(
-            TAG,
-            "两种触控通道都未能滑动：无障碍=" +
-                (if (touch != null) "已连接但未成功" else "未连接") +
-                "，Shizuku=" + (if (ShizukuTouchManager.hasPermission()) "有权限但未成功" else "无权限") + "。"
-        )
-        return false
     }
 
     /**
@@ -192,17 +254,20 @@ object EngineBridge {
     ): Boolean {
         // 前台闸门：缩放同理，两指手势落到别的应用上就是不可预期的页面缩放。
         if (!ForegroundGate.allowBlindDispatch("缩放")) return false
+        if (geometryRejectsTouch("缩放")) return false
 
-        val touch = AutoTouchService.instance
-        if (touch == null) {
-            Log.w(
-                TAG,
-                "无法捏合缩放：无障碍触控未连接。Shizuku 的 `input` 命令不支持多指手势，"
-                    + "故缩放只能经无障碍通道派发。请确认无障碍服务在运行。"
-            )
-            return false
+        return gestureMutex.withLock {
+            val touch = AutoTouchService.instance
+            if (touch == null) {
+                Log.w(
+                    TAG,
+                    "无法捏合缩放：无障碍触控未连接。Shizuku 的 `input` 命令不支持多指手势，"
+                        + "故缩放只能经无障碍通道派发。请确认无障碍服务在运行。"
+                )
+                return@withLock false
+            }
+            touch.pinchVirtual(virtualCenterX, virtualCenterY, scale, durationMs)
         }
-        return touch.pinchVirtual(virtualCenterX, virtualCenterY, scale, durationMs)
     }
 
     // ==========================================
@@ -214,9 +279,29 @@ object EngineBridge {
      */
     fun detectGameState(): StzbUiMatcher.GameState {
         val frame = captureFrame() ?: return StzbUiMatcher.GameState.UNKNOWN
-        val state = StzbUiMatcher.classifyGameState(frame)
-        frame.recycle()
-        return state
+        return try {
+            val hash = ScreenCaptureService.instance?.averageHash(frame) ?: 0L
+            if (hash != 0L) {
+                synchronized(sceneCacheLock) {
+                    val fresh = SystemClock.elapsedRealtime() - sceneCacheAtMs <= SCENE_CACHE_TTL_MS
+                    val still = java.lang.Long.bitCount(hash xor sceneCacheHash) <= 1
+                    if (fresh && still) {
+                        return sceneCacheState
+                    }
+                }
+            }
+            val state = StzbUiMatcher.classifyGameState(frame)
+            if (hash != 0L) {
+                synchronized(sceneCacheLock) {
+                    sceneCacheHash = hash
+                    sceneCacheState = state
+                    sceneCacheAtMs = SystemClock.elapsedRealtime()
+                }
+            }
+            state
+        } finally {
+            frame.recycle()
+        }
     }
 
     /**
@@ -264,6 +349,15 @@ object EngineBridge {
      * 真机上这是最影响排查效率的一环。
      */
     suspend fun clickButtonDiagnosed(type: StzbUiMatcher.ButtonType): ClickOutcome {
+        // 几何闸门放在抓帧之前：省一次全帧抓取，也避免把「竖屏」误报成「没读到文字」。
+        if (!CoordinateTransformer.isLandscapeGeometryConsistent()) {
+            return ClickOutcome(
+                false,
+                StzbUiMatcher.ButtonLookupFailure.GEOMETRY_MISMATCH,
+                "当前为竖屏几何，横屏画布坐标无法安全映射：请把手机横过来（或让游戏保持横屏）后重试"
+            )
+        }
+
         val frame = captureFrame()
             ?: return ClickOutcome(
                 false,
@@ -350,6 +444,14 @@ object EngineBridge {
                     return ClickAndExpect(
                         false, false, i,
                         "${outcome.detail}；OCR 引擎不可用，重试无意义"
+                    )
+                }
+
+                // 竖屏重试一百次也一样，且每次都会白抓一帧、白读一遍 OCR。
+                outcome.failure == StzbUiMatcher.ButtonLookupFailure.GEOMETRY_MISMATCH -> {
+                    return ClickAndExpect(
+                        false, false, i,
+                        "${outcome.detail}；屏幕方向不对，重试无意义"
                     )
                 }
 
@@ -462,7 +564,10 @@ object EngineBridge {
             if (elapsed >= timeoutMs) return false
             // 泊松周期去周期性；**绝不超过剩余预算**，所以本方法的
             // 契约从旧的“最多 timeoutMs+250ms”收紧为硬 timeoutMs。
-            delay(minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed))
+            // 下限 1ms：剩余预算不足 1ms 时 toLong 会得 0，`delay(0)` 不休眠，
+            // 循环就变成「抓帧+识别」的忙等。
+            val wait = minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed)
+            delay(wait.coerceAtLeast(1L))
         }
     }
 
@@ -476,7 +581,8 @@ object EngineBridge {
             if (btn != null) return btn
             val elapsed = System.currentTimeMillis() - start
             if (elapsed >= timeoutMs) return null
-            delay(minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed))
+            val wait = minOf(TimingFingerprintEngine.poissonIntervalMs(POLL_INTERVAL_MS), timeoutMs - elapsed)
+            delay(wait.coerceAtLeast(1L))
         }
     }
 

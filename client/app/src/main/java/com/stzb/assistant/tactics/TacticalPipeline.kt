@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import com.stzb.assistant.runtime.TouchGate
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -113,10 +114,22 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
      * @param block 任务主体，内部需自行处理异常（本函数也会兜底记录并广播 FAILED）
      */
     private fun launchTask(type: TacticalState.TaskType, block: suspend () -> Unit) {
+        // 先抓住旧任务：stopCurrentTask() 会把 currentJob 置空，之后再也找不到它。
+        val previous = currentJob
         stopCurrentTask()
         activeTaskType = type
 
         val job = scope.launch {
+            // ⚠️ 必须等上一个任务**真正退出**再跑新流程。
+            //
+            // 旧任务被 cancel 后，它的 `finally { isRunning.set(false) }` 仍会执行；
+            // 若新流程已经先把标志置 true，这条**迟到的复位**就会把新任务打死：
+            // 新流程在循环第一行读到 isRunning=false → 判定“用户已停止” → 播报
+            // 「当前任务已停止」并退出。用户看到的就是
+            // **“点了开始、面板有提示、游戏一动不动”**——真实、且极易被误认为感知故障。
+            if (previous != null) {
+                withTimeoutOrNull(PREVIOUS_TASK_EXIT_TIMEOUT_MS) { previous.join() }
+            }
             try {
                 // 前台任务整段独占画面所有权：期间夜战守护只抓屏+告警，不会抢屏点击。
                 TouchGate.foregroundSession { block() }
@@ -543,6 +556,14 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
 
     companion object {
         private const val TAG = "TacticalPipeline"
+
+        /**
+         * 等待上一个任务退出的上限。
+         *
+         * 只需要“等到它的 finally 跑完”（毫秒级）；给 3s 是为了容忍它卡在一次
+         * 不可取消的抓帧/识别上。超时也继续启动，不让一个卡死的旧任务永久堵住新任务。
+         */
+        private const val PREVIOUS_TASK_EXIT_TIMEOUT_MS = 3000L
 
         @Volatile
         private var instance: TacticalPipeline? = null
