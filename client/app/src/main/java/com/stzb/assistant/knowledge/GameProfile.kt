@@ -76,7 +76,16 @@ data class GameProfile(
      * 默认 [VisionPolicy.SLG_DEFAULT]：不含 DETECTOR，即 SLG 沙盘盘**不加载 YOLO**。
      * 只有动作类游戏才在知识包里显式开 DETECTOR/POLICY。
      */
-    val visionPolicy: VisionPolicy = VisionPolicy.SLG_DEFAULT
+    val visionPolicy: VisionPolicy = VisionPolicy.SLG_DEFAULT,
+    /**
+     * 战斗推演（PVE 窄口径）的**经验系数**，见 [BattleModel]。
+     *
+     * 为什么它不是常量：本模型的每一个系数都是"某款游戏某赛季的数值手感"，
+     * 率土的伤害公式与三战的兵种克制根本不是一套东西。写死在引擎里，
+     * 换游戏后它仍会自信地给出一个错的战损区间——比不给结论危险得多。
+     * 热更改这里，端上推演立刻跟着变，不必重发 APK。
+     */
+    val battleModel: BattleModel = BattleModel()
 ) {
     /**
      * 把 "1.10.2" 这类版本号解析成可比较的数字序列。
@@ -198,6 +207,32 @@ data class GameProfile(
         }
         if (impossibleRule != null) return false to "机制数值不可能成立：$impossibleRule"
 
+        // ── 5. 推演系数：这里的每一条都对应"算出来看着像结论、方向却是反的"。
+        //     例如 defeatLossRate <= costlyLossRate 时，任何一场都会被判成同一档；
+        //     uncertaintyRatio=0 会让区间退化成单点，而单点正是本模型最不该给出的东西。
+        val bm = battleModel
+        val impossibleBattle = when {
+            bm.lossBaseRate <= 0.0 || bm.lossBaseRate >= 1.0 ->
+                "lossBaseRate=${bm.lossBaseRate}（基准战损率必须在 (0,1)，0 会让推演永远『零战损』）"
+            bm.underStrengthPenalty < 0.0 || bm.underStrengthPenalty > 3.0 ->
+                "underStrengthPenalty=${bm.underStrengthPenalty} 不在 0~3（兵力不足惩罚的斜率，超出即单位写错）"
+            bm.threatPenaltyPerPoint < 0.0 || bm.threatPenaltyPerPoint > 0.2 ->
+                "threatPenaltyPerPoint=${bm.threatPenaltyPerPoint} 不在 0~0.2（单点威胁分不该能直接推翻兵力差）"
+            bm.moralePenaltyAtZero < 0.0 || bm.moralePenaltyAtZero > 1.0 ->
+                "moralePenaltyAtZero=${bm.moralePenaltyAtZero} 不在 0~1"
+            bm.uncertaintyRatio <= 0.0 || bm.uncertaintyRatio > 0.6 ->
+                "uncertaintyRatio=${bm.uncertaintyRatio} 不在 (0,0.6]（0 会把区间退化成单点，>0.6 等于什么都没说）"
+            bm.minSoldiersForSim < 100 ->
+                "minSoldiersForSim=${bm.minSoldiersForSim}（低于 100 时推演等于拿噪声当结论）"
+            bm.costlyLossRate <= 0.0 || bm.costlyLossRate >= bm.defeatLossRate ->
+                "costlyLossRate=${bm.costlyLossRate} 必须大于 0 且小于 defeatLossRate=${bm.defeatLossRate}" +
+                    "（否则『有损』与『翻车』两档会重叠甚至倒挂）"
+            bm.defeatLossRate >= 1.0 ->
+                "defeatLossRate=${bm.defeatLossRate}（>=1 时任何推演都不可能判为翻车）"
+            else -> null
+        }
+        if (impossibleBattle != null) return false to "推演系数不可能成立：$impossibleBattle"
+
         return true to "校验通过"
     }
 
@@ -306,6 +341,19 @@ data class GameProfile(
 
             // 6. 感知层级策略（确定性优先阶梯；缺省即 SLG_DEFAULT，不开检测器）
             put("vision_policy", VisionPolicy.toJson(visionPolicy))
+
+            // 7. 战斗推演系数（经验估算口径）。
+            //    必须导出：漏了它，端上 fromJson 会走默认值，等于热更改不了战损模型。
+            put("battle_model", JSONObject().apply {
+                put("loss_base_rate", battleModel.lossBaseRate)
+                put("under_strength_penalty", battleModel.underStrengthPenalty)
+                put("threat_penalty_per_point", battleModel.threatPenaltyPerPoint)
+                put("morale_penalty_at_zero", battleModel.moralePenaltyAtZero)
+                put("uncertainty_ratio", battleModel.uncertaintyRatio)
+                put("min_soldiers_for_sim", battleModel.minSoldiersForSim)
+                put("costly_loss_rate", battleModel.costlyLossRate)
+                put("defeat_loss_rate", battleModel.defeatLossRate)
+            })
         }
         return root.toString(2)
     }
@@ -451,6 +499,20 @@ data class GameProfile(
             // 6. Vision policy（缺失/为空回退 SLG_DEFAULT，不误开检测器）
             val visionPolicy = VisionPolicy.fromJson(root.optJSONArray("vision_policy"))
 
+            // 7. 战斗推演系数：逐项 optDouble/optInt，缺项走 BattleModel 的默认值。
+            //    默认值只保证"能算"，不保证"准"——所以真机校准后的值必须走热更下发。
+            val bObj2 = root.optJSONObject("battle_model") ?: JSONObject()
+            val battleModel = BattleModel(
+                lossBaseRate = bObj2.optDouble("loss_base_rate", 0.06),
+                underStrengthPenalty = bObj2.optDouble("under_strength_penalty", 0.55),
+                threatPenaltyPerPoint = bObj2.optDouble("threat_penalty_per_point", 0.03),
+                moralePenaltyAtZero = bObj2.optDouble("morale_penalty_at_zero", 0.35),
+                uncertaintyRatio = bObj2.optDouble("uncertainty_ratio", 0.25),
+                minSoldiersForSim = bObj2.optInt("min_soldiers_for_sim", 500),
+                costlyLossRate = bObj2.optDouble("costly_loss_rate", 0.35),
+                defeatLossRate = bObj2.optDouble("defeat_loss_rate", 0.75)
+            )
+
             return GameProfile(
                 gameId = gameId,
                 gameName = gameName,
@@ -465,7 +527,8 @@ data class GameProfile(
                 sceneKeywords = sceneWords,
                 heroBaseSpeed = heroSpeed,
                 pveMechanicNotes = mechanicNotes,
-                visionPolicy = visionPolicy
+                visionPolicy = visionPolicy,
+                battleModel = battleModel
             )
         }
     }
@@ -641,4 +704,46 @@ data class TacticalDefaults(
     val raidPatrolIntervalMs: Long = 4000L,
     val raidDecisionCAutoCounter: Boolean = true,
     val raidAlarmSound: Boolean = true
+)
+
+/**
+ * 战斗推演（PVE 窄口径）的经验系数表。
+ *
+ * ## 它是什么、不是什么
+ * 它**不是一个战斗公式引擎**，而是一个**区间估算模型**：输入"我带多少兵、打几级地、
+ * 守将威胁几分、当前士气多少"，输出一个"战损大概率落在 x%~y%"的区间与一档定性的
+ * 战损定性（无损/可控/重损/翻车）。
+ *
+ * 为什么不做单点预测：两边的兵力、战法、运气、兵种克制都不是端上能读全的量。
+ * 给出"战损 8.3%"这种一位小数的结论，玩家会当成真值去押全部主力；
+ * 给区间 + 定性档，才配得上"推演"这个名字。区间宽度由 [uncertaintyRatio] 控制，
+ * 它本身就是"我们有多不确定"的显式参数。
+ *
+ * 锚点来自知识库自身（不引入第二份数据）：
+ *   * 基准兵力 = [LandSuggestion.recommendedSoldiers]（
+ *     即"官方开荒推荐带兵"）——不是代码里再拍一个比例；
+ *   * 守军总量 = [LandSuggestion.defenderTotalSoldiers]（0 = 未知，直接拒算）；
+ *   * 守将威胁 = [HeroEntry.threatScore]（1~5，未知记 0）；
+ *   * 士气基准 = [GameRules.moraleStandard]。
+ *
+ * 系数全部可热更：真机战报累积起来后，改这几个数就行，不必重编 APK。
+ *
+ * @param lossBaseRate 兵力恰好等于推荐值、士气满、守将无威胁时的基准战损率
+ * @param underStrengthPenalty 兵力每少 10%（相对推荐值）额外抬升的战损率
+ * @param threatPenaltyPerPoint 守将威胁分每 1 分额外抬升的战损率
+ * @param moralePenaltyAtZero 士气为 0 时额外抬升的战损率（按士气线性插值）
+ * @param uncertaintyRatio 区间半宽（相对点估值的比例）；0 会让区间退化成单点
+ * @param minSoldiersForSim 带兵数低于此值一律拒算（拿几百兵去推演只会得到噪声）
+ * @param costlyLossRate 达到此战损率判为"重损"
+ * @param defeatLossRate 达到此战损率判为"翻车"（必须严格大于 costlyLossRate）
+ */
+data class BattleModel(
+    val lossBaseRate: Double = 0.06,
+    val underStrengthPenalty: Double = 0.55,
+    val threatPenaltyPerPoint: Double = 0.03,
+    val moralePenaltyAtZero: Double = 0.35,
+    val uncertaintyRatio: Double = 0.25,
+    val minSoldiersForSim: Int = 500,
+    val costlyLossRate: Double = 0.35,
+    val defeatLossRate: Double = 0.75
 )

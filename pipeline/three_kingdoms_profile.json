@@ -378,5 +378,15 @@
     "DETERMINISTIC",
     "OCR",
     "CLASSIFIER"
-  ]
+  ],
+  "battle_model": {
+    "loss_base_rate": 0.1,
+    "under_strength_penalty": 0.65,
+    "threat_penalty_per_point": 0.04,
+    "morale_penalty_at_zero": 0.3,
+    "uncertainty_ratio": 0.35,
+    "min_soldiers_for_sim": 500,
+    "costly_loss_rate": 0.35,
+    "defeat_loss_rate": 0.7
+  }
 }

@@ -110,6 +110,13 @@ object SgzKnowledgeBase {
             // 与 heroBaseSpeed 目前无可自证的三战数据，**故意留空**：
             // 留空的结果是这些判定如实跳过（战报归为"类型未定"、先手一律"需实测算"），
             // 而猜错的结果是把三战里没有的机制念给玩家——后者才是真事故。
+            //
+            // 同理，战报结构化（battle/BattleReportParser）要用的
+            // REPORT_RESULT_WIN / REPORT_RESULT_LOSE / REPORT_RESULT_DRAW /
+            // REPORT_ROUNDS / REPORT_TROOPS / REPORT_LOSS 六组也**故意不写**：
+            // 三战战报页的文案没有真机样张可以逐字对照。留空的后果只是
+            // "三战这边不产出战报统计"，而不是把率土的胜负字样套到三战截图上。
+            // 真机拍一张战报页后，把这六组词补进来即可（热更生效，不必重编 APK）。
             sceneKeywords = mapOf(
                 "KNOWN_SKILLS" to listOf(
                     "短兵相见", "不辱使命", "后发制人", "弯弓饮羽",
@@ -123,6 +130,24 @@ object SgzKnowledgeBase {
             watchdogKeywords = listOf(
                 "点击空白处继续", "确定", "知道了", "领奖", "签到", "邮件",
                 "势力值提升", "暂不升级", "放弃", "跳过", "关闭"
+            ),
+            // 战斗推演（PVE 窄口径）的经验系数。
+            //
+            // 与率土**必须分开**：三战有兵种克制（骑>盾>弓>枪>骑）与看脸的控制链，
+            // 同一个"推荐带兵"对应的实际战损分布跟率土不是一条曲线。
+            // 从地块表里能读出的差异：三战 Lv6/Lv7 的推荐带兵只有守军总量的 0.33~0.36
+            // （率土是 0.48~0.55），说明"以少打多靠克制"在三战更成立，
+            // 因此基准战损率与兵力不足惩罚都取得更陡。
+            // ⚠️ 同样是**经验区间**，待真机战报校准后热更收紧。
+            battleModel = BattleModel(
+                lossBaseRate = 0.10,
+                underStrengthPenalty = 0.65,
+                threatPenaltyPerPoint = 0.04,
+                moralePenaltyAtZero = 0.30,
+                uncertaintyRatio = 0.35,
+                minSoldiersForSim = 500,
+                costlyLossRate = 0.35,
+                defeatLossRate = 0.70
             )
         )
     }

@@ -162,6 +162,15 @@ object StzbKnowledgeBase {
                 "MAIN_MAP_HUD" to listOf("令", "战报", "势力", "同盟"),
                 "REPORT_PVE" to listOf("守军", "贼兵", "贼寇", "黄巾", "野地", "试炼", "据点", "流寇", "匪"),
                 "REPORT_PVP" to listOf("同盟", "集结", "会战", "攻城", "玩家", "军团", "PVP", "赛季战报", "攻方部队"),
+                // 战报结构化（battle/BattleReportParser）专用词表。
+                // 解析器本身**不写任何中文字面量**：胜负、回合、兵力、损失全部从这里取；
+                // 缺一组就如实把该字段判为未知（fail-closed），绝不拿没配的词去猜。
+                "REPORT_RESULT_WIN" to listOf("胜利", "大胜", "守军覆灭", "守军溃败"),
+                "REPORT_RESULT_LOSE" to listOf("战败", "败北", "作战失败", "守军获胜"),
+                "REPORT_RESULT_DRAW" to listOf("平局", "战平", "不分胜负", "平手"),
+                "REPORT_ROUNDS" to listOf("回合"),
+                "REPORT_TROOPS" to listOf("兵力"),
+                "REPORT_LOSS" to listOf("损失", "战损", "伤兵"),
                 "KNOWN_SKILLS" to listOf(
                     "战必断金", "反计之策", "神兵天降", "大赏三军", "浑水摸鱼",
                     "妖术", "垒实迎击", "健卒不殆", "始计", "避其锋芒", "绝水遏敌",
@@ -192,6 +201,26 @@ object StzbKnowledgeBase {
                 "狂怒" to "守军进入【狂怒】状态：后段伤害显著抬升，务必在前 3 回合建立优势。",
                 "免疫" to "守军带【免疫】：控制类战法对其无效，不要指望靠封普攻取胜。",
                 "守军未溃" to "守军未溃：本轮未能清干净，需要补刀。"
+            ),
+            // 战斗推演（PVE 窄口径）的经验系数。
+            //
+            // 口径说明（写在这里是为了让下一个改数的人知道这些数是从哪来的）：
+            //   推荐带兵恰好等于上面地块表里的 recommendedSoldiers 时，
+            //   实测战损大体落在 5%~15%，所以 lossBaseRate 取 8% 作为区间中值；
+            //   兵力不到推荐值一半时，实测普遍越过 35%（对应 costlyLossRate 档）；
+            //   守将威胁每高 1 分（1~5 分制）抬 3 个百分点，最高 15 个百分点——
+            //   它只配"加权"，不配单独推翻兵力差。
+            // ⚠️ 这些是**经验区间**，不是官方公式；真机战报累积后应通过热更新收紧，
+            //    并在 tools/validate_battle_logic.py 的性质测试里保持单调性不变。
+            battleModel = BattleModel(
+                lossBaseRate = 0.08,
+                underStrengthPenalty = 0.60,
+                threatPenaltyPerPoint = 0.03,
+                moralePenaltyAtZero = 0.35,
+                uncertaintyRatio = 0.30,
+                minSoldiersForSim = 500,
+                costlyLossRate = 0.35,
+                defeatLossRate = 0.75
             )
         )
     }

@@ -46,6 +46,19 @@ open class NightSentinelFlow(
     private var lastThreatTimeMs: Long = 0L
     private var hasAlarmed = false
 
+    /**
+     * 上一次推卡时的告警档与时刻。
+     *
+     * 巡检周期是 4 秒级，而无条件推卡会让"提醒"档每 4 秒响一次——
+     * 那是把提醒做成骚扰，玩家几天内就会把整个哨兵关掉。
+     * 所以只在**档位变化**或**距上次推卡满一分钟**时重新推（后者是为了让倒计时不过期）。
+     */
+    private var lastCardTier: NotifyTier? = null
+    private var lastCardAtMs: Long = 0L
+
+    /** 上一次看到的"有效告警档位构成"；用于只在真的变化时打一条状态日志。 */
+    private var lastLiveTiers: List<NotifyTier> = emptyList()
+
     /** 上一次做"视觉双通道确认"的时刻；用于限流，避免持续告警时反复跑检测。 */
     private var lastVisionCheckMs: Long = 0L
 
@@ -56,6 +69,11 @@ open class NightSentinelFlow(
         isRunning.set(false)
         AlarmRinger.stopAlarm(context)
         hasAlarmed = false
+        // 停止即撤卡：哨兵已经关掉了，还把"主城遭敌袭"的卡挂在界面上就是误导。
+        NotificationCenter.clear(CARD_SOURCE)
+        lastCardTier = null
+        lastCardAtMs = 0L
+        lastLiveTiers = emptyList()
         log(TacticalState.TacticalLog(
             taskType = TacticalState.TaskType.NIGHT_SENTINEL,
             level = "WARN",
@@ -85,6 +103,9 @@ open class NightSentinelFlow(
         lastKeepAliveTimeMs = System.currentTimeMillis()
         lastThreatTimeMs = 0L
         hasAlarmed = false
+        lastCardTier = null
+        lastCardAtMs = 0L
+        lastLiveTiers = emptyList()
 
         try {
             while (isRunning.get()) {
@@ -122,12 +143,37 @@ open class NightSentinelFlow(
                 if (raidReport.hasThreat) {
                     handleRaidEvent(raidReport, config)
                 } else {
-                    // 若此前曾拉响警报，且威胁已解除持续超过 60 秒，自动解除鸣叫
-                    if (hasAlarmed && (System.currentTimeMillis() - lastThreatTimeMs > 60_000L)) {
-                        AlarmRinger.stopAlarm(context)
-                        hasAlarmed = false
-                        logInfo("🕊️ 警戒圈内敌袭威胁已彻底解除，警报已自动复位。")
+                    // 威胁解除 60 秒后收尾。
+                    //
+                    // 两件事必须分开判：鸣叫只有 EMERGENCY 档才会拉响（hasAlarmed），
+                    // 而卡可能只是一张提醒/告知。把它们挂在同一个条件上，就会留下
+                    // “已经安全了、界面还挂着敌袭卡”的错觉（直到 TTL 自然过期）。
+                    if (System.currentTimeMillis() - lastThreatTimeMs > 60_000L) {
+                        if (hasAlarmed) {
+                            AlarmRinger.stopAlarm(context)
+                            hasAlarmed = false
+                            logInfo("🕊️ 警戒圈内敌袭威胁已彻底解除，警报已自动复位。")
+                        }
+                        if (lastCardTier != null) {
+                            NotificationCenter.clear(CARD_SOURCE)
+                            lastCardTier = null
+                            lastCardAtMs = 0L
+                            logInfo("🕊️ 敌情卡已撤下：累计 60 秒没有再检测到威胁。")
+                        }
                     }
+                }
+
+                // 3b. 告警卡自清 + 当前告警状态。
+                //
+                //     active() 每次调用都会剪掉已过期的卡——这就是"通知过期自清"的落点，
+                //     不需要额外定时器：只要巡检还活着，过期的卡就不可能赖在界面上。
+                //     日志只在"有效告警的档位构成"变化时打一条：档位没变时复述一遍，
+                //     只会把真正重要的那条日志刷走。
+                val liveTiers = NotificationCenter.active().map { it.tier }.sortedBy { it.ordinal }
+                if (liveTiers != lastLiveTiers) {
+                    lastLiveTiers = liveTiers
+                    val label = NotificationCenter.stateLabel()
+                    if (liveTiers.isEmpty()) logInfo(label) else logWarn(label)
                 }
 
                 // 4. 拟人随机周期休眠
@@ -200,14 +246,25 @@ open class NightSentinelFlow(
             "🚨 主城警戒圈遭敌袭！正在执行 60 秒秒回保命与应急处置..."
         )
 
-        // 步骤 1：立即拉响高分贝警报 + 强节奏振动，唤醒熟睡中的玩家
-        if (config.enableAudioAlarm && !hasAlarmed) {
-            AlarmRinger.startAlarm(context)
-            hasAlarmed = true
+        // 步骤 1：按告警分级推送敌情卡。
+        //
+        //    旧实现对"有威胁"一律 startAlarm：持续鸣叫 + 10 分钟唤醒锁。
+        //    凌晨为了一支还在半小时外的部队这么响，玩家几天内就会把哨兵关掉。
+        //    现在由 NotificationCenter 按档位处置（紧急持续鸣叫 / 提醒一次性提示 / 告知只记录），
+        //    而"要不要出声"仍由用户的 config.enableAudioAlarm 决定。
+        val cardNow = System.currentTimeMillis()
+        val card = ThreatCardEngine.fromRaidReport(report, sourceLabel = CARD_SOURCE, nowMs = cardNow)
+        val needPush = card.tier != lastCardTier || cardNow - lastCardAtMs >= CARD_REFRESH_MS
+        if (needPush) {
+            NotificationCenter.push(context, card, config.enableAudioAlarm, cardNow)
+            lastCardTier = card.tier
+            lastCardAtMs = cardNow
+            if (card.tier == NotifyTier.EMERGENCY) hasAlarmed = true
         }
 
         // 步骤 2：【商业化黄金王牌——60 秒无损秒回撤退主力保命】
-        //    警报已在步骤 1 无条件拉响（不受锁约束）；下面的点击属触控，需在有限等待内取得画面所有权，
+        //    告警卡已在步骤 1 推完（是否出声由档位与用户开关决定，不受下面的"取画面控制权"影响）；
+        //    下面的点击属触控，需在有限等待内取得画面所有权，
         //    取不到（有前台任务正独占）则如实告警，绝不打断正在压秒的前台任务。
         val countdown = report.remainingCountdownSeconds
         val isEmergencyTime = countdown == null || countdown <= 60 || report.isWithinAlertCircle
@@ -218,7 +275,7 @@ open class NightSentinelFlow(
             if (retreated == null) {
                 logWarn(
                     "⚠️ 画面被前台任务占用，紧急秒回撤退在 ${EMERGENCY_TOUCH_WAIT_MS / 1000}s 内未取得控制权；" +
-                        "警报已响、主力暂未撤回，请手动处置或待前台任务结束。"
+                        "告警卡已推送、主力暂未撤回，请手动处置或待前台任务结束。"
                 )
             }
         }
@@ -446,6 +503,12 @@ open class NightSentinelFlow(
 
     companion object {
         private const val TAG = "NightSentinelFlow"
+
+        /** 敌情卡的来源标识；推卡与撤卡必须用同一个值，否则撤卡会静默失效。 */
+        private const val CARD_SOURCE = "暗夜哨兵"
+
+        /** 威胁持续时重新推卡的间隔：让卡上的倒计时与"剩余时间"不过期。 */
+        private const val CARD_REFRESH_MS = 60_000L
 
         /**
          * 视觉双通道确认的最小间隔。

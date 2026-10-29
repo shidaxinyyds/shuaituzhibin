@@ -304,8 +304,18 @@ class SquadLevelingFlow(
     }
 
     private fun triggerFuseHalt(reason: String) {
-        AlarmRinger.triggerEmergencyAlarm(context, "练级熔断: $reason")
+        // 熔断是“必须立刻知道、但事情已经停了”的一类，走 REMIND 档（一声提示 + 单次震动）。
+        // 与过去直接调 AlarmRinger.triggerEmergencyAlarm 的差别不在“响不响”，而在于：
+        // 熔断卡现在进告警总台，带来源与过期时刻，界面上能回答“现在还有几条有效告警”；
+        // 而一次性蜂鸣响完就什么痕迹都不留，玩家白天回来只看到一行早已被刷走的日志。
+        val card = ThreatCardEngine.remind(
+            title = "练级熔断",
+            detail = reason,
+            sourceLabel = CARD_SOURCE
+        )
+        NotificationCenter.push(context, card, soundEnabled = true)
         notifyStatus(TacticalState.Status.FAILED, "熔断保护生效: $reason")
+        logTactic(card.render(System.currentTimeMillis()))
     }
 
     /**
@@ -371,5 +381,8 @@ class SquadLevelingFlow(
 
     companion object {
         private const val TAG = "SquadLevelingFlow"
+
+        /** 告警来源名：用于 [NotificationCenter] 按来源单独撤卡。 */
+        private const val CARD_SOURCE = "练级管家"
     }
 }

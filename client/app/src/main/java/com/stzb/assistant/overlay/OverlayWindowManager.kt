@@ -139,6 +139,20 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private var lastExtractedDecreeText: String = ""
 
     /**
+     * 最近一次推演输入（地块等级 / 出征兵力 / 士气）。
+     *
+     * 留在这几个字段上而不是每次重填：同一块地玩家往往要反复试“再加两千兵够不够”，
+     * 每次重输三个数字会让这个功能很快被弃用。0 = 还没填过。
+     *
+     * 士气单独一个字段且默认 -1（未知）：士气没有可自动读取的来源——它显示在部队卡片里，
+     * 不在「查看守军」面板的识别区内。留空就如实按知识库基准代入并在结论里写明，
+     * 绝不把一个“满士气”假设当成实测值（士气低会显著抬高战损，差这一项可能差一个档）。
+     */
+    private var lastSimLandLevel: Int = 0
+    private var lastSimSoldiers: Int = 0
+    private var lastSimMorale: Int = -1
+
+    /**
      * 军令安全闸门（防幻觉 + 效用评估），本轮**重新接线**。
      *
      * 此前它被摘出调用链，因为它会把军令的世界坐标丢弃、改用屏幕正中当点击目标。
@@ -829,51 +843,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         // 错误的界面读出无关文字。现走**双队版**：自动读 Lv6/7 的守军1+守军2 取最危险。
         root.findViewById<Button>(R.id.btnAdvisorEvaluateDefenders)?.setOnClickListener {
             if (!ensureEngineReady()) return@setOnClickListener
-            val roi = com.stzb.assistant.service.UiAnchors.rect(
-                com.stzb.assistant.service.UiAnchors.RectKey.DEFENDER_PANEL
-            )
-            // 双队评估含抓帧/OCR/切页点击，重且会挂起，故放协程 + IO 线程，避免卡住浮层主线程。
-            tvAdvisorStream?.text = "正在评估守军（自动读取 Lv6/7 双队）…"
-            tvAdvisorMetrics?.text = "状态: 守军评估中…"
-            scope.launch {
-                val result = try {
-                    withContext(Dispatchers.IO) { EngineBridge.evaluateDefenderPanelDual(roi) }
-                } catch (e: Throwable) {
-                    android.util.Log.e("Overlay", "守军双队评估异常", e)
-                    null
-                }
-                if (result == null) {
-                    tvAdvisorStream?.text = buildString {
-                        append("⚠️ 未能评估守军（没有拿到守军名单）。\n")
-                        append("文字识别状态：")
-                        append(
-                            com.stzb.assistant.ocr.OcrManager.unavailableReason
-                                ?: "引擎已就绪，但该区域未识别到文字"
-                        )
-                        append("\n请先打开「查看守军」面板再点此按钮；")
-                        append("若识别区域不准，可到「标定」页签标定「查看守军·武将名单区」。")
-                    }
-                    tvAdvisorMetrics?.text = "状态: 守军评估失败（未拿到守军名单）"
-                } else {
-                    tvAdvisorStream?.text = buildString {
-                        append(result.tier.desc).append('\n')
-                        append(result.recommendation).append('\n')
-                        append("综合风险分: ").append(result.totalRiskScore).append('\n')
-                        if (result.matchedDefenders.isEmpty()) {
-                            append("\n（未匹配到知识库中的守将，按常规守军处理）")
-                        } else {
-                            append("\n命中守将:\n")
-                            result.matchedDefenders.forEach { m ->
-                                append("  • ").append(m.name).append(" → ").append(m.tier.desc)
-                                    .append("｜").append(m.tag).append('\n')
-                                append("    克制建议: ").append(m.counterTip).append('\n')
-                            }
-                        }
-                        append("\n（Lv6/7 双队已自动合并取最危险；单队地块不受影响）")
-                    }
-                    tvAdvisorMetrics?.text =
-                        "状态: 守军评估完成（识别到 ${result.matchedDefenders.size} 名守将）"
-                }
+            // 先问推演输入，再评估守军。
+            // 为什么必须问：地块等级要打开地块才看得到，带兵数与士气在部队卡片里，
+            // 三项都**不在**「查看守军」面板的识别区内。不问就只能回答“危险不危险”，
+            // 给不出“打下去掉多少兵”——而后者才是玩家真正在权衡的那件事。
+            // 等级/兵力留空 = 只评估守军（不拿 0 当兵力去算）；士气留空 = 按基准代入并写明。
+            askSimInputs { level, soldiers, morale ->
+                evaluateDefendersWithOutlook(level, soldiers, morale)
             }
         }
 
@@ -1008,12 +984,47 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
 
                 edgeSlmEngine.diagnoseBattleReportAsync(reportText) { diagnosis ->
                     mainHandler.post {
-                        tvAdvisorStream?.text = buildString {
-                            append(diagnosis.militaryCommentary)
-                            append("\n— 识别原文: ")
-                            append(reportText.take(120))
+                        // 战报结构化 + 入库：这是“机器可复用”的那一半。
+                        // 放在会诊回调里而不是另设按钮：战报页此刻就在屏幕上、OCR 原文也已在手，
+                        // 再让玩家为同一件事点第二下毫无意义。
+                        val parsed = com.stzb.assistant.battle.BattleReportParser.parse(reportText)
+                        // 写盘与读盘都下放 IO：战报页一到就是几百 KB 的读写，不能压主线程。
+                        scope.launch {
+                            val saved = if (parsed == null) {
+                                false
+                            } else {
+                                withContext(Dispatchers.IO) {
+                                    com.stzb.assistant.battle.BattleReportStore.append(parsed)
+                                }
+                            }
+                            val recent = withContext(Dispatchers.IO) {
+                                com.stzb.assistant.battle.BattleReportStore.recent(10)
+                            }
+                            tvAdvisorStream?.text = buildString {
+                                append(diagnosis.militaryCommentary)
+                                append("\n\n")
+                                if (parsed == null) {
+                                    append("📊 战报结构化：胜负/回合/兵力/损失一个都没读到，本次不入库。")
+                                    append("（知识包未录入战报词表时也会是这个结果，不是故障。）")
+                                } else {
+                                    append("📊 战报已入库：").append(parsed.summary())
+                                    if (!saved) append("（⚠️ 写盘失败，本次不计入统计）")
+                                    com.stzb.assistant.ai.sim.DefenderOutlook
+                                        .describeVerification(parsed)
+                                        ?.let { append('\n').append(it) }
+                                }
+                                append("\n\n")
+                                append(
+                                    com.stzb.assistant.battle.BattleStats.render(
+                                        recent, "近 ${recent.size} 场"
+                                    )
+                                )
+                                append("\n— 识别原文: ")
+                                append(reportText.take(120))
+                            }
+                            tvAdvisorMetrics?.text =
+                                "状态: 战报会诊完成 (${edgeSlmEngine.getBrainDescription()})"
                         }
-                        tvAdvisorMetrics?.text = "状态: 战报会诊完成 (${edgeSlmEngine.getBrainDescription()})"
                     }
                 }
             }
@@ -2313,6 +2324,139 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             .create()
         applyOverlayWindowType(dialog)
         dialog.show()
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 打地推演：输入询问 + 守军评估 + 推演合流
+    // ─────────────────────────────────────────────────────────────────────
+
+    /** 军师面板的两个文本视图（辅助方法里重新取，不把局部变量变字段）。 */
+    private fun advisorStream() = dashboardView?.findViewById<TextView>(R.id.tvAdvisorStream)
+    private fun advisorMetricsView() = dashboardView?.findViewById<TextView>(R.id.tvAdvisorMetrics)
+
+    /**
+     * 询问推演输入（地块等级 + 出征兵力 + 士气）。
+     *
+     * 为什么不自动读：地块等级要打开地块才会显示，带兵数与士气在部队卡片里，
+     * 三者都不在「查看守军」面板的识别区域内。硬猜一个数字去推演，
+     * 比不推演更危险——玩家会把这个数字当成真的。
+     *
+     * 等级/兵力留空 = 跳过推演，只输出危险度（绝不拿 0 当“带兵 0”去算）；
+     * 士气留空 = 按知识库基准代入，并在结论里写明“这是代入值”。
+     * 上次填的值会回填：同一块地往往会反复试“再加两千兵够不够”。
+     */
+    private fun askSimInputs(onReady: (Int, Int, Int) -> Unit) {
+        val pad = dp(16)
+        val form = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+        val etLevel = EditText(context).apply {
+            hint = "地块等级（例：6）"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(if (lastSimLandLevel > 0) lastSimLandLevel.toString() else "")
+        }
+        val etSoldiers = EditText(context).apply {
+            hint = "本次出征兵力（例：18000）"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(if (lastSimSoldiers > 0) lastSimSoldiers.toString() else "")
+        }
+        val etMorale = EditText(context).apply {
+            hint = "士气（可留空，留空按知识库基准代入）"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText(if (lastSimMorale >= 0) lastSimMorale.toString() else "")
+        }
+        form.addView(TextView(context).apply {
+            text = "等级与兵力留空则只给危险度，不给战损估算；" +
+                "士气留空按基准代入（士气低会抬高战损）。"
+        })
+        form.addView(etLevel)
+        form.addView(etSoldiers)
+        form.addView(etMorale)
+
+        val dialog = AlertDialog.Builder(context, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("🎯 打地推演输入")
+            .setView(form)
+            .setPositiveButton("评估并推演") { _, _ ->
+                val level = etLevel.text.toString().trim().toIntOrNull() ?: 0
+                val soldiers = etSoldiers.text.toString().trim().toIntOrNull() ?: 0
+                // 空字符串 = 未读到士气，传 -1；不要用 0 代替“未知”（0 是“士气归零”的意思）。
+                val morale = etMorale.text.toString().trim().toIntOrNull() ?: -1
+                lastSimLandLevel = level
+                lastSimSoldiers = soldiers
+                lastSimMorale = morale
+                onReady(level, soldiers, morale)
+            }
+            .setNegativeButton("只评估守军") { _, _ -> onReady(0, 0, -1) }
+            .create()
+        applyOverlayWindowType(dialog)
+        dialog.show()
+    }
+
+    /**
+     * 「评估当前守军」的完整实现：先跑守军天梯，再按需追加战损推演段。
+     *
+     * 两段结论**并存不互相改写**：天梯回答“危险不危险”（靠守将名单），
+     * 推演回答“会掉多少兵”（靠兵力比）。任何一方覆盖另一方，
+     * 都是在用一个维度的结论冒充两个维度。
+     */
+    private fun evaluateDefendersWithOutlook(landLevel: Int, mySoldiers: Int, morale: Int) {
+        val stream = advisorStream()
+        val metrics = advisorMetricsView()
+        val roi = com.stzb.assistant.service.UiAnchors.rect(
+            com.stzb.assistant.service.UiAnchors.RectKey.DEFENDER_PANEL
+        )
+        // 双队评估含抓帧/OCR/切页点击，重且会挂起，故放协程 + IO 线程，避免卡住浮层主线程。
+        stream?.text = "正在评估守军（自动读取 Lv6/7 双队）…"
+        metrics?.text = "状态: 守军评估中…"
+        scope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) { EngineBridge.evaluateDefenderPanelDual(roi) }
+            } catch (e: Throwable) {
+                android.util.Log.e("Overlay", "守军双队评估异常", e)
+                null
+            }
+            if (result == null) {
+                stream?.text = buildString {
+                    append("⚠️ 未能评估守军（没有拿到守军名单）。\n")
+                    append("文字识别状态：")
+                    append(
+                        com.stzb.assistant.ocr.OcrManager.unavailableReason
+                            ?: "引擎已就绪，但该区域未识别到文字"
+                    )
+                    append("\n请先打开「查看守军」面板再点此按钮；")
+                    append("若识别区域不准，可到「标定」页签标定「查看守军·武将名单区」。")
+                }
+                metrics?.text = "状态: 守军评估失败（未拿到守军名单）"
+                return@launch
+            }
+
+            // 推演只在天梯结果之上追加，不改 tier / recommendation / totalRiskScore。
+            val outlook = if (landLevel > 0 && mySoldiers > 0) {
+                com.stzb.assistant.ai.sim.DefenderOutlook.describe(result, landLevel, mySoldiers, morale)
+            } else {
+                "🎯【打地推演】本次未填「地块等级 + 出征兵力」，只给危险度，不给战损估算。"
+            }
+            stream?.text = buildString {
+                append(result.tier.desc).append('\n')
+                append(result.recommendation).append('\n')
+                append("综合风险分: ").append(result.totalRiskScore).append('\n')
+                if (result.matchedDefenders.isEmpty()) {
+                    append("\n（未匹配到知识库中的守将，按常规守军处理）")
+                } else {
+                    append("\n命中守将:\n")
+                    result.matchedDefenders.forEach { m ->
+                        append("  • ").append(m.name).append(" → ").append(m.tier.desc)
+                            .append("｜").append(m.tag).append('\n')
+                        append("    克制建议: ").append(m.counterTip).append('\n')
+                    }
+                }
+                append("\n（Lv6/7 双队已自动合并取最危险；单队地块不受影响）\n")
+                append(outlook)
+            }
+            metrics?.text =
+                "状态: 守军评估完成（识别到 ${result.matchedDefenders.size} 名守将）"
+        }
     }
 
     private fun showAskAdvisorDialog() {

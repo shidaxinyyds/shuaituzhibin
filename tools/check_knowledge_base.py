@@ -136,6 +136,9 @@ def parse_kb_file(path):
         "scene_keywords": {},
         "hero_speed": {},
         "mechanic_notes": {},
+        # 战斗推演系数（PVE 窄口径）。和上面三张表一样，它是“端上会读、漏导出就静默走默认值”
+        # 的一类配置：少一个键 = server 热更后同一份战报在两个版本上给出相反结论。
+        "battle": {},
     }
 
     def s(key, default=""):
@@ -231,6 +234,13 @@ def parse_kb_file(path):
     if pn:
         for word, note in re.findall(r'"((?:[^"\\]|\\.)*)"\s+to\s*"((?:[^"\\]|\\.)*)"', pn):
             prof["mechanic_notes"][word] = note
+
+    # 战斗推演系数：battleModel = BattleModel(lossBaseRate = 0.08, ...)
+    # 只取标量：这些系数是“区间估算”的经验值，没有嵌套结构可解析。
+    bm = _balanced_block(src, "battleModel = BattleModel(")
+    if bm:
+        for k, v in re.findall(r"\b(\w+)\s*=\s*(-?[\d.]+)", bm):
+            prof["battle"][k] = _scalar(v)
     return prof
 
 
@@ -994,6 +1004,65 @@ def check_rag_corpus(prof, rag):
     return bad
 
 
+# 推演系数的字段名与端上 BattleModel 的构造参数逐字对应（camelCase）。
+BATTLE_FIELDS = ("lossBaseRate", "underStrengthPenalty", "threatPenaltyPerPoint",
+                 "moralePenaltyAtZero", "uncertaintyRatio", "minSoldiersForSim",
+                 "costlyLossRate", "defeatLossRate")
+
+
+def check_battle_model(prof):
+    """推演系数必须写全，且落在端上 validateFor 认可的区间内。
+
+    为什么要在这里再判一次区间：端上的 validateFor 一旦拒收就是“整包知识库不生效”，
+    表现是热更后所有功能退回旧版；在 CI 里提前报红，比玩家那边整包被拒便宜得多。
+    """
+    bad = []
+    b = prof.get("battle") or {}
+    missing = [k for k in BATTLE_FIELDS if k not in b]
+    if missing:
+        bad.append(_f("battle-model-missing",
+                      "%s 缺推演系数：%s" % (prof["file"], ", ".join(missing)),
+                      "BattleModel(...) 必须写全 8 项；少一项就会走 fromJson 默认值，"
+                      "同一份战报在两个版本上会给出相反结论"))
+        return bad
+
+    def num(k):
+        try:
+            return float(b[k])
+        except (TypeError, ValueError):
+            return None
+
+    def bad_val(k, label):
+        bad.append(_f("battle-model-impossible",
+                      "%s 的 %s 不可能成立：%s" % (prof["file"], k, label),
+                      "改回合理区间；端上 validateFor 会因此拒收整包知识库"))
+
+    v = num("lossBaseRate")
+    if v is None or not (0.0 < v < 1.0):
+        bad_val("lossBaseRate", "必须 0<x<1")
+    v = num("underStrengthPenalty")
+    if v is None or not (0.0 <= v <= 3.0):
+        bad_val("underStrengthPenalty", "必须 0~3")
+    v = num("threatPenaltyPerPoint")
+    if v is None or not (0.0 <= v <= 0.2):
+        bad_val("threatPenaltyPerPoint", "必须 0~0.2")
+    v = num("moralePenaltyAtZero")
+    if v is None or not (0.0 <= v <= 1.0):
+        bad_val("moralePenaltyAtZero", "必须 0~1")
+    v = num("uncertaintyRatio")
+    if v is None or not (0.0 < v <= 0.6):
+        bad_val("uncertaintyRatio", "必须 0<x<=0.6")
+    v = num("minSoldiersForSim")
+    if v is None or v < 100:
+        bad_val("minSoldiersForSim", "必须 >=100（低于三个兵的数字推演没意义）")
+    costly, defeat = num("costlyLossRate"), num("defeatLossRate")
+    if costly is None or defeat is None or not (0.0 < costly < defeat):
+        bad_val("costlyLossRate/defeatLossRate", "必须 0<costly<defeat")
+    elif defeat >= 1.0:
+        bad_val("defeatLossRate", "必须 <1（战损率不可能达到 100%）")
+    return bad
+
+
 def check_cloud_drift(prof, cloud, serialized_keys, root_keys=None):
     """云端 JSON 必须与内置知识库、与当前 schema 完全对齐。"""
     bad = []
@@ -1065,8 +1134,8 @@ def check_cloud_drift(prof, cloud, serialized_keys, root_keys=None):
                 bad.append(_f("cloud-rule-drift",
                               "%s 的 rules.%s 不一致（内置=%s / JSON=%s）" % (c["file"], k, prof["rules"][kk], v),
                               "重新导出"))
-        # 三张"引擎按组向知识包取的表"（P7 迁出来的）：内置与产物必须逐条一致。
-        # 少一组 / 少一个词，都会让热更后的端上"如实不判定"，玩家只看到功能莫名消失。
+        # 三张“引擎按组向知识包取的表”（P7 迁出来的）：内置与产物必须逐条一致。
+        # 少一组 / 少一个词，都会让热更后的端上“如实不判定”，玩家只看到功能莫名消失。
         for label, kb_map, cl_map in (
                 ("scene_keywords", prof.get("scene_keywords", {}), d.get("scene_keywords") or {}),
                 ("hero_base_speed", prof.get("hero_speed", {}), d.get("hero_speed") or {}),
@@ -1077,6 +1146,23 @@ def check_cloud_drift(prof, cloud, serialized_keys, root_keys=None):
                               "%s 的 %s 与内置不一致（内置 %d 项 / JSON %d 项，差异键：%s）"
                               % (c["file"], label, len(kb_map), len(cl_map), ", ".join(diff) or "内容不同"),
                               "跑 python tools/export_profile.py 重新导出，别让词表两份真相"))
+        # 推演系数：两边都带了才比。只一侧有时不报——这保证旧产物（还没导出过
+        # battle_model 的那份）不会把整条闸门卡死，但一旦开始导出就不允许再放宽。
+        kb_battle = prof.get("battle") or {}
+        cl_battle = d.get("battle_model") or {}
+        if kb_battle and cl_battle:
+            for k in BATTLE_FIELDS:
+                ck = _snake(k)
+                if ck not in cl_battle:
+                    bad.append(_f("cloud-battle-drift",
+                                  "%s 的 battle_model 缺 %s" % (c["file"], ck),
+                                  "跑 python tools/export_profile.py 重新导出；"
+                                  "缺一个系数，热更后的端上会退回默认值，推演结论就变了"))
+                elif abs(float(cl_battle[ck]) - float(kb_battle[k])) > 1e-9:
+                    bad.append(_f("cloud-battle-drift",
+                                  "%s 的 battle_model.%s 与内置不一致（内置=%s / JSON=%s）"
+                                  % (c["file"], ck, kb_battle[k], cl_battle[ck]),
+                                  "重新导出；同一份战报在两个版本上会给出相反的推演结论"))
     return bad
 
 
@@ -1205,6 +1291,7 @@ def run_all(list_fields=False):
         problems += check_ghost_heroes(prof)
         problems += check_button_coverage(prof, enum_names)
         problems += check_rules_sanity(prof)
+        problems += check_battle_model(prof)
         problems += check_land_table(prof)
         problems += check_land_list_consistency(prof)
         problems += check_rag_corpus(prof, rag)
@@ -1246,6 +1333,9 @@ def _base_prof():
         "scene_keywords": {"DISPATCH_ACTION": ["出征"], "KNOWN_HEROES": ["邓茂"]},
         "hero_speed": {"邓茂": 60},
         "mechanic_notes": {"暴走": "守军触发【暴走】：需要解控。"},
+        "battle": {"lossBaseRate": 0.06, "underStrengthPenalty": 0.55, "threatPenaltyPerPoint": 0.03,
+                   "moralePenaltyAtZero": 0.35, "uncertaintyRatio": 0.25, "minSoldiersForSim": 500,
+                   "costlyLossRate": 0.35, "defeatLossRate": 0.75},
     }
 
 
@@ -1309,6 +1399,23 @@ def selftest():
     p = _base_prof()
     p["rules"]["immunityPaddingMs"] = 90000
     results.append(expect("破免补偿单位夹具", check_rules_sanity(p), "rules-impossible"))
+
+    # 推演系数：漏项与越界必须各抢一条，且干净夹具不许被误报。
+    # 漏项的后果是“一份漏导出的热更把系数静默改成默认值”，越界的后果是整包被
+    # 端上 validateFor 拒收——两类事故不同，不能只用一条断言盖住。
+    p = _base_prof()
+    del p["battle"]["threatPenaltyPerPoint"]
+    results.append(expect("推演系数漏项夹具", check_battle_model(p), "battle-model-missing"))
+    p = _base_prof()
+    p["battle"]["costlyLossRate"] = 0.90         # 比 defeatLossRate 还高：档位永远不可能命中
+    results.append(expect("推演阈值倒挂夹具", check_battle_model(p), "battle-model-impossible"))
+    p = _base_prof()
+    p["battle"]["uncertaintyRatio"] = 0.0        # 区间宽度为 0 等于把估算当确定值
+    results.append(expect("推演区间退化为点夹具", check_battle_model(p), "battle-model-impossible"))
+    ok_battle = not check_battle_model(_base_prof())
+    if not ok_battle:
+        print("❌ 正例被误报: 夹具里的推演系数均在合理区间")
+    results.append(ok_battle)
 
     p = _base_prof()
     p["lands"][2]["soldiers"] = 2000
@@ -1455,7 +1562,7 @@ def selftest():
         "top_keys": {"game_id", "rules", "semantic_buttons", "screen_virtual_width"}}}]
     keys = {"game_id", "game_name", "profile_version", "target_package", "description",
             "rules", "semantic_buttons", "max_stamina", "stamina_per_action", "vision_policy",
-            "scene_keywords", "hero_base_speed", "pve_mechanic_notes"}
+            "scene_keywords", "hero_base_speed", "pve_mechanic_notes", "battle_model"}
     # root_keys = 端上 fromJson 真会读的键。产物少任何一个都会"静默走默认值"，
     # 所以这条方向（缺键）比 ghost（多键）更要命：P7 实测时四个新字段全漏在这一点上。
     root_keys = keys - {"game_name"}
@@ -1478,7 +1585,11 @@ def selftest():
         "lands": [dict(l) for l in p["lands"]],
         "tactical": dict(p["tactical"]), "watchdog": list(p["watchdog"]),
         "scene_keywords": dict(p["scene_keywords"]), "hero_speed": dict(p["hero_speed"]),
-        "mechanic_notes": dict(p["mechanic_notes"]), "top_keys": set(root_keys)}}
+        "mechanic_notes": dict(p["mechanic_notes"]),
+        # 推演系数是嵌套对象（JSON 里是 snake_case），必须整个带上：
+        # 单独漏一项就会让端上退回默认值，而默认值与内置库的值通常并不相同。
+        "battle_model": {_snake(k): v for k, v in p["battle"].items()},
+        "top_keys": set(root_keys)}}
     good_findings = check_cloud_drift(p, [good], keys, root_keys)
     if good_findings:
         print("❌ 正例被误报: 与内置逐条一致的产物不该出问题 -> %s"
@@ -1492,6 +1603,15 @@ def selftest():
         mutate(drifted["data"]["lands"][2])
         results.append(expect("%s夹具" % label, check_cloud_drift(p, [drifted], keys, root_keys),
                               "cloud-land-drift"))
+    # 推演系数漂移：改一个数、抹一个键都必须被抓；两者是不同的事故
+    # （改数 = 两边结论不同；抹键 = 热更后端上静默走默认值）。
+    for label, mutate in (("推演系数被改", lambda b: b.update({"loss_base_rate": 0.5})),
+                          ("推演系数被抹", lambda b: b.pop("uncertainty_ratio"))):
+        drifted = {"file": "battle.json", "error": "",
+                   "data": dict(good["data"], battle_model=dict(good["data"]["battle_model"]))}
+        mutate(drifted["data"]["battle_model"])
+        results.append(expect("%s夹具" % label, check_cloud_drift(p, [drifted], keys, root_keys),
+                              "cloud-battle-drift"))
 
     classes = {"GameRules": {"maxMorale", "maxStamina", "staminaPerAction", "immunityPaddingMs",
                             "nightStaminaMultiplier"},

@@ -306,6 +306,13 @@ def build_checks(args):
             "required": True,
         },
         {
+            "id": "battle-sim",
+            "title": "战斗推演验证（单调性 + 区间自洽 + 拒算分支 + 解析器零中文 + 接线）",
+            "script": "validate_battle_logic.py",
+            "argv": [],
+            "required": True,
+        },
+        {
             "id": "watchdog-logic",
             "title": "看门狗自愈验证（状态空间枚举 + 弹窗按键顺序）",
             "script": "validate_watchdog_logic.py",

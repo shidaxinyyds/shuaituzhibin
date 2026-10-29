@@ -670,6 +670,11 @@
       "势力",
       "同盟"
     ],
+    "REPORT_LOSS": [
+      "损失",
+      "战损",
+      "伤兵"
+    ],
     "REPORT_PVE": [
       "守军",
       "贼兵",
@@ -691,6 +696,30 @@
       "PVP",
       "赛季战报",
       "攻方部队"
+    ],
+    "REPORT_RESULT_DRAW": [
+      "平局",
+      "战平",
+      "不分胜负",
+      "平手"
+    ],
+    "REPORT_RESULT_LOSE": [
+      "战败",
+      "败北",
+      "作战失败",
+      "守军获胜"
+    ],
+    "REPORT_RESULT_WIN": [
+      "胜利",
+      "大胜",
+      "守军覆灭",
+      "守军溃败"
+    ],
+    "REPORT_ROUNDS": [
+      "回合"
+    ],
+    "REPORT_TROOPS": [
+      "兵力"
     ],
     "TROOP_PANEL": [
       "部队一",
@@ -731,5 +760,15 @@
     "DETERMINISTIC",
     "OCR",
     "CLASSIFIER"
-  ]
+  ],
+  "battle_model": {
+    "loss_base_rate": 0.08,
+    "under_strength_penalty": 0.6,
+    "threat_penalty_per_point": 0.03,
+    "morale_penalty_at_zero": 0.35,
+    "uncertainty_ratio": 0.3,
+    "min_soldiers_for_sim": 500,
+    "costly_loss_rate": 0.35,
+    "defeat_loss_rate": 0.75
+  }
 }

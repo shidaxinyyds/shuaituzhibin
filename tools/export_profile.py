@@ -89,6 +89,20 @@ HERO_TIERS = [
     ("safe", "safe_heroes"),
 ]
 
+# 推演系数的 JSON 键：顺序与 GameProfile.toJson() 的 battle_model 完全一致。
+# 这几个数字是“区间估算”的经验值，不是战斗公式：漏导一项，端上就会拿默认值
+# 覆盖内置库调过的系数——同一份战报在两个版本上给出相反的结论。
+BATTLE_KEYS = [
+    ("lossBaseRate", "loss_base_rate"),
+    ("underStrengthPenalty", "under_strength_penalty"),
+    ("threatPenaltyPerPoint", "threat_penalty_per_point"),
+    ("moralePenaltyAtZero", "morale_penalty_at_zero"),
+    ("uncertaintyRatio", "uncertainty_ratio"),
+    ("minSoldiersForSim", "min_soldiers_for_sim"),
+    ("costlyLossRate", "costly_loss_rate"),
+    ("defeatLossRate", "defeat_loss_rate"),
+]
+
 
 def _die(msg):
     print("❌ %s" % msg)
@@ -207,6 +221,18 @@ def build_json(prof):
              "%s 的 heroBaseSpeed 有非正数速度（%s），这类值会让先手判定算出假差距。"
              % (prof["file"], prof["hero_speed"]))
 
+    # 推演系数：和 rules 一样“多一个少一个都报错”，不补默认值。
+    battle = prof.get("battle") or {}
+    unknown_battle = sorted(set(battle) - {k for k, _ in BATTLE_KEYS})
+    _require(not unknown_battle,
+             "%s 有 battleModel 字段未被导出表覆盖：%s；请在 BATTLE_KEYS 里补上。"
+             % (prof["file"], ", ".join(unknown_battle)))
+    missing_battle = sorted({k for k, _ in BATTLE_KEYS} - set(battle))
+    _require(not missing_battle,
+             "%s 缺 battleModel 系数：%s；少一项就等于让端上默写一个推演结论。"
+             % (prof["file"], ", ".join(missing_battle)))
+    battle_model = {snake: num(camel, battle[camel]) for camel, snake in BATTLE_KEYS}
+
     return {
         "game_id": prof["game_id"],
         "game_name": prof["game_name"],
@@ -222,6 +248,7 @@ def build_json(prof):
         "hero_base_speed": {k: v for k, v in sorted(prof["hero_speed"].items())},
         "pve_mechanic_notes": {k: v for k, v in sorted(prof["mechanic_notes"].items())},
         "vision_policy": VISION_TIERS[vp],
+        "battle_model": battle_model,
     }
 
 

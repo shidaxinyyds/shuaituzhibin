@@ -59,6 +59,15 @@ class App : Application() {
         com.stzb.assistant.service.SceneFingerprint.attach(this)
         // 按键模板库：OCR 不可用时按键定位的唯一依靠（模板匹配不依赖文字识别）
         com.stzb.assistant.service.ButtonTemplateStore.attach(this)
+        // 战报库：登记分域目录 + 换包重置。
+        // 这一行不是可有可无的“挪个位置”：没有上下文时 append() 只能静默返回 false，
+        // 表现是“战报会诊看着正常、但胜率永远 0 场”。
+        com.stzb.assistant.battle.BattleReportStore.attach(this)
+        Log.i("StzbApp", "战报库已载入 ${com.stzb.assistant.battle.BattleReportStore.count()} 条历史记录")
+        // 告警总台：换游戏时清台并复位鸣叫。
+        // 不登记的话，切到三战后屏幕上仍挂着“率土主城遭敌袭”，而铃声也可能还在响——
+        // 告警卡的“此刻”是绑在某一款游戏上的，跨游戏保留就是假消息。
+        com.stzb.assistant.tactics.NotificationCenter.attachToProfileSwitch(this)
         com.stzb.assistant.service.MapProjection.logSelfTest()
         // 地图缩放锁定自检（确定性仿真，不依赖真机）：验证捏合缩放数学与收敛编排。
         com.stzb.assistant.service.MapZoomController.logSelfTest()
