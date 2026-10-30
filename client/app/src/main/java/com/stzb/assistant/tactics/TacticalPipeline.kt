@@ -131,6 +131,21 @@ class TacticalPipeline(private val context: Context) : TacticalState.TacticalEve
                 withTimeoutOrNull(PREVIOUS_TASK_EXIT_TIMEOUT_MS) { previous.join() }
             }
             try {
+                // 起点留痕：用户点击后日志必须立刻出现这一行。
+                // 没有它时，「点了没反应」无法区分“根本没启动”与“启动了但流程内部静默返回”，
+                // 而这正是本项目反复返工的根源。
+                onLogEmitted(
+                    TacticalState.TacticalLog(type, "INFO", "▶ 任务已启动：${type.displayName}")
+                )
+                // 若画面所有权还被上一个任务握着，这一行会直接暴露“排队无反应”：
+                // 否则用户只会看到“点了什么都不发生”，而实际是卡在锁上。
+                if (TouchGate.isHeld) {
+                    onLogEmitted(
+                        TacticalState.TacticalLog(
+                            type, "INFO", "⏳ 画面正被上一个任务占用，本轮在排队等待所有权…"
+                        )
+                    )
+                }
                 // 前台任务整段独占画面所有权：期间夜战守护只抓屏+告警，不会抢屏点击。
                 TouchGate.foregroundSession { block() }
             } catch (e: CancellationException) {

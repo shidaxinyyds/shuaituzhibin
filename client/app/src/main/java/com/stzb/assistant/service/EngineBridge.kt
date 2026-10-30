@@ -17,6 +17,7 @@ import com.stzb.assistant.antiban.TimingFingerprintEngine
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlin.math.roundToInt
 import kotlin.random.Random
 
 /**
@@ -31,6 +32,39 @@ import kotlin.random.Random
 object EngineBridge {
 
     private const val TAG = "EngineBridge"
+
+    /**
+     * 触控链路的“上屏”通道：由 [com.stzb.assistant.overlay.OverlayWindowManager]
+     * 挂到面板的“日志”页签。
+     *
+     * ## 为什么必须有这个
+     * 点击失败过去只写 logcat。用户看不到任何东西，于是“点了没反应”被反复反馈，
+     * 而每一次排查都只能靠猜。现在任何一次被拦、被拒、派发失败，都会在面板日志里
+     * 留下**一句能定位的话**——这是本项目最贵的一类返工的止血点。
+     */
+    @Volatile
+    var logSink: ((level: String, message: String) -> Unit)? = null
+
+    /** 上一次上报的内容与时刻：高频点击（如铺路逐格）时避免把日志刷满。 */
+    @Volatile
+    private var lastIssueMsg: String = ""
+
+    @Volatile
+    private var lastIssueMs: Long = 0L
+
+    /** 首指成功是否已上报。 */
+    @Volatile
+    private var firstTapReported: Boolean = false
+
+    /** logcat 每次都写；同一条内容在面板日志里 5 秒内只写一次。 */
+    private fun reportTouchIssue(message: String) {
+        Log.w(TAG, message)
+        val now = SystemClock.elapsedRealtime()
+        if (message == lastIssueMsg && now - lastIssueMs < 5_000L) return
+        lastIssueMsg = message
+        lastIssueMs = now
+        logSink?.invoke("WARN", message)
+    }
 
     /** 8x8 均值哈希的汉明距离阈值：达到即认为画面发生显著变化。 */
     private const val MOTION_THRESHOLD = 5
@@ -165,40 +199,76 @@ object EngineBridge {
     suspend fun tap(virtualX: Float, virtualY: Float): Boolean {
         // 0) 前台闸门：坐标是从游戏画面算出来的，游戏不在前台时这一指就会落在别的应用上。
         //    拦在这里而不是各战术流里，是因为所有盲点都走这个入口（包括压秒的 firePreparedTap）。
-        if (!ForegroundGate.allowBlindDispatch("点击")) return false
+        if (!ForegroundGate.allowBlindDispatch("点击")) {
+            reportTouchIssue("⛔ 点击被拦：${ForegroundGate.describeBlock()}。请把游戏切回前台")
+            return false
+        }
         // 几何闸门：竖屏下发出去的坐标必然落空（见 [geometryRejectsTouch]）。
-        if (geometryRejectsTouch("点击")) return false
+        if (geometryRejectsTouch("点击")) {
+            reportTouchIssue(
+                "⛔ 点击被拒：当前是竖屏几何（${CoordinateTransformer.physicalWidth.roundToInt()}x" +
+                    "${CoordinateTransformer.physicalHeight.roundToInt()}），横屏画布坐标无法安全映射，请把手机横过来"
+            )
+            return false
+        }
 
         // 微量高斯拟人微扰动 (控制在 1.0px 以内，误差 < ±5dp)
         val jitteredVirtual = com.stzb.assistant.antiban.AntiBanCoordinator.randomizePoint(virtualX, virtualY, 1.0f)
+
+        // 越界守卫：toReal 之后落在屏幕外时，dispatchGesture **依然会回调 COMPLETED**，
+        // 上层据此认为“点成功了”，而游戏完全没有反应。这是最无声的一类失败：
+        // 既不报错、也不触发任何重试，用户只能反复反馈“点了没反应”。
+        val probe = CoordinateTransformer.toReal(jitteredVirtual.x, jitteredVirtual.y)
+        if (probe.x < 0f || probe.y < 0f ||
+            probe.x > CoordinateTransformer.physicalWidth ||
+            probe.y > CoordinateTransformer.physicalHeight
+        ) {
+            reportTouchIssue(
+                "⛔ 点击坐标越界：画布(${jitteredVirtual.x.roundToInt()},${jitteredVirtual.y.roundToInt()}) " +
+                    "→ 屏幕(${probe.x.roundToInt()},${probe.y.roundToInt()})，屏幕为 " +
+                    "${CoordinateTransformer.physicalWidth.roundToInt()}x" +
+                    "${CoordinateTransformer.physicalHeight.roundToInt()}。已拒绝派发"
+            )
+            return false
+        }
 
         // 1) 主通道：系统无障碍手势
         // 2) 兜底：Shizuku（仅在无障碍不可用或未成功时使用）
         // 两者都排在 [gestureMutex] 里：并发的第二指会被系统直接取消第一指，
         // 于是两边都“失败”并各自重试，越重试越乱。
-        return gestureMutex.withLock {
+        val ok = gestureMutex.withLock {
             val touch = AutoTouchService.instance
             if (touch != null && touch.clickVirtual(jitteredVirtual.x, jitteredVirtual.y)) {
                 return@withLock true
             }
 
             if (ShizukuTouchManager.hasPermission()) {
-                val realPoint = CoordinateTransformer.toReal(jitteredVirtual.x, jitteredVirtual.y)
-                if (ShizukuTouchManager.clickReal(realPoint.x, realPoint.y)) {
+                if (ShizukuTouchManager.clickReal(probe.x, probe.y)) {
                     Log.i(TAG, "无障碍通道未成功，本次点击由 Shizuku 兜底完成。")
                     return@withLock true
                 }
             }
 
-            Log.w(
-                TAG,
-                "两种触控通道都未能点击：无障碍=" +
-                    (if (touch != null) "已连接但未成功" else "未连接") +
+            reportTouchIssue(
+                "⛔ 点击没有派发出去：无障碍=" +
+                    (if (touch != null) "已连接但派发失败（可能被系统拒绝或锁屏）" else "未连接") +
                     "，Shizuku=" + (if (ShizukuTouchManager.hasPermission()) "有权限但未成功" else "无权限") +
-                    "。请检查无障碍服务是否仍在运行。"
+                    "。请重新开启无障碍服务"
             )
             false
         }
+
+        // 首指成功只报一次：它证明“手势确实进了系统”。之后若游戏仍不动，
+        // 问题就在坐标落点或游戏侧，而不在触控通道——这一行能直接分开这两种可能。
+        if (ok && !firstTapReported) {
+            firstTapReported = true
+            logSink?.invoke(
+                "INFO",
+                "✅ 首指已派发：画布(${jitteredVirtual.x.roundToInt()},${jitteredVirtual.y.roundToInt()}) " +
+                    "→ 屏幕(${probe.x.roundToInt()},${probe.y.roundToInt()})"
+            )
+        }
+        return ok
     }
 
     /**

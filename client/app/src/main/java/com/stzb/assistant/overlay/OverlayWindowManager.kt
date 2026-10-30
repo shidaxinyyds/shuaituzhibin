@@ -82,6 +82,36 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
      */
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
+    /**
+     * 预检结果的快照（后台刷新，点击时只读）。
+     *
+     * ## 为什么必须这样
+     * 预检里有两项是**跨进程查询**（前台窗口归属、屏幕几何），还有一项要**抓一帧真图**。
+     * 这些都放在按钮点击的主线程上时，游戏占满 GPU 的一瞬间 `rootInActiveWindow`
+     * 会卡在 Binder 上几百毫秒到数秒——用户看到的正是「点了完全没反应」，
+     * 而这最容易被误判成“功能坏了”。
+     *
+     * 现在：后台协程在 IO 线程探测并刷新本快照，点击只读内存（零 IPC、零抓帧）。
+     */
+    private data class ReadySnapshot(
+        val capture: Boolean = false,
+        val touch: Boolean = false,
+        val ocr: Boolean = false,
+        val geometry: Boolean = true,
+        val foreground: Boolean = true,
+        val frameOk: Boolean = true,
+        val frameDetail: String = "",
+        val atMs: Long = 0L
+    ) {
+        /** 快照是否已建立（false 表示还没探测过，不能拿默认值当结论）。 */
+        val established: Boolean get() = atMs > 0L
+    }
+
+    @Volatile
+    private var readySnapshot = ReadySnapshot()
+
+    private var readyMonitorJob: Job? = null
+
     private var capsuleView: View? = null
     private var dashboardView: View? = null
     private var pickerView: View? = null
@@ -308,6 +338,12 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         // 版本号写进「日志」页签顶部：这是用户确认“自己跑的是哪一版”最快的地方。
         // 本项目曾因为版本不可见，拿 21 天前的旧包反复复测新修复。
         emitAdvisorLog("INFO", "📦 战术内核就绪 · 版本 ${panelVersion()}")
+        // 预检快照必须有人刷：点击时只读内存，探测全部在后台 IO 线程做。
+        startReadyMonitor()
+
+        // 把触控链路的失败接到“日志”页签：引擎层自己看不见界面，
+        // 而被拦/被拒/派发失败过去只写 logcat，用户就什么也看不到。
+        EngineBridge.logSink = { level, message -> emitAdvisorLog(level, message) }
     }
 
     /** 安装包版本串（仅用于上屏，读不到时给“未知”而不抛异常）。 */
@@ -532,6 +568,66 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         setupDashboardActions()
     }
 
+    /**
+     * 在 IO 线程做一次真正的环境探测（含 IPC 与抓帧）。**只能在后台调用。**
+     */
+    private fun probeReadyNow(): ReadySnapshot {
+        val capture = EngineBridge.isCaptureReady
+        val touch = EngineBridge.isTouchReady
+        val ocr = com.stzb.assistant.ocr.OcrManager.isEngineAvailable
+        val geometry = com.stzb.assistant.service.CoordinateTransformer.isLandscapeGeometryConsistent()
+        val foreground = !com.stzb.assistant.service.ForegroundGate.isDefinitelyNotTargetForeground()
+        val health = if (capture) {
+            com.stzb.assistant.service.ScreenCaptureService.instance?.probeFrameHealth()
+        } else {
+            null
+        }
+        return ReadySnapshot(
+            capture = capture,
+            touch = touch,
+            ocr = ocr,
+            geometry = geometry,
+            foreground = foreground,
+            // 只把「抓到的不是游戏画面」（纯色/系统弹窗）算失败。
+            // 「这一瞬抓不到帧」不算：后台流程可能正好在取帧，acquireLatestImage 抢不到属正常，
+            // 拿它当结论会变成“随机拒绝执行”的假红。捕获未开的情形由 capture=false 单独报。
+            frameOk = health == null || !health.degenerate,
+            frameDetail = health?.detail ?: "",
+            atMs = android.os.SystemClock.elapsedRealtime()
+        )
+    }
+
+    /** 一行可读的环境状态，直接写进「日志」页签。 */
+    private fun readyLine(s: ReadySnapshot): String {
+        fun m(ok: Boolean) = if (ok) "✓" else "✗"
+        return "环境：捕获${m(s.capture)} 触控${m(s.touch)} 识别${m(s.ocr)}" +
+            " 横屏${m(s.geometry)} 前台${m(s.foreground)} 画面${m(s.frameOk)}"
+    }
+
+    /**
+     * 后台刷新预检快照。只在面板可见时探测（避免无谓耗电），且只在状态变化时上屏。
+     */
+    private fun startReadyMonitor() {
+        if (readyMonitorJob?.isActive == true) return
+        readyMonitorJob = scope.launch {
+            var lastReported = ""
+            while (isActive) {
+                if (dashboardView?.isShown == true) {
+                    val snap = withContext(Dispatchers.IO) { probeReadyNow() }
+                    readySnapshot = snap
+                    val line = readyLine(snap)
+                    if (line != lastReported) {
+                        lastReported = line
+                        val allOk = snap.capture && snap.touch && snap.ocr &&
+                            snap.geometry && snap.foreground && snap.frameOk
+                        emitAdvisorLog(if (allOk) "INFO" else "WARN", line)
+                    }
+                }
+                delay(3_000L)
+            }
+        }
+    }
+
     private fun setupDashboardActions() {
         val root = dashboardView ?: return
 
@@ -547,42 +643,41 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         }
 
         val ensureEngineReady = {
+            // ⚠️ 这里只许读内存。任何 IPC（rootInActiveWindow / maximumWindowMetrics）
+            // 或抓帧都会把“点了没反应”直接做出来——预检快照由 [startReadyMonitor]
+            // 在 IO 线程维护（见 [ReadySnapshot] 的注释）。
+            val s = readySnapshot
             when {
-                !EngineBridge.isCaptureReady ->
-                    rejectExecution("请先在主程序开启屏幕捕获")
+                !s.established -> {
+                    emitAdvisorLog("INFO", "⏳ 正在检查运行环境，请稍候再点一次…")
+                    Toast.makeText(context, "正在检查运行环境，请稍候再点一次", Toast.LENGTH_SHORT).show()
+                    false
+                }
 
-                !EngineBridge.isTouchReady ->
-                    rejectExecution("请先开启无障碍触控通道")
+                !s.capture -> rejectExecution("请先在主程序开启屏幕捕获")
 
-                // 方向不对时所有坐标都落在别处：这一条必须在抓屏/OCR 之前报，
+                !s.touch -> rejectExecution("请先开启无障碍触控通道")
+
+                !s.ocr -> rejectExecution(
+                    "文字识别不可用：" +
+                        (com.stzb.assistant.ocr.OcrManager.unavailableReason
+                            ?: "引擎未就绪，请用带 ncnn/OpenCV 的构建重装")
+                )
+
+                // 方向不对时所有坐标都落在别处：必须在抓屏/OCR 之前报，
                 // 否则用户会去查识别或权限，而真正的问题是手机没有横过来。
-                !com.stzb.assistant.service.CoordinateTransformer.isLandscapeGeometryConsistent() ->
+                !s.geometry ->
                     rejectExecution("当前是竖屏：所有坐标都按横屏画布计算，竖屏点出去必然落空。请把手机横过来（或确认游戏处于横屏）后重试")
 
-                // 这一条不是新闸门（真正的派发拦在 ForegroundGate 里），而是把
-                // “已点击但界面没跳”背后的真实原因说出来：游戏不在前台。
-                com.stzb.assistant.service.ForegroundGate.isDefinitelyNotTargetForeground() ->
+                // 这条不是新闸门（真正的派发拦在 ForegroundGate 里），
+                // 而是把“已点击但界面没跳”背后的真实原因说出来。
+                !s.foreground ->
                     rejectExecution("当前前台不是目标游戏：请先把游戏切回前台。后台派发的点击会落到别的应用上，已被拦下")
 
-                !com.stzb.assistant.ocr.OcrManager.isEngineAvailable ->
-                    rejectExecution(
-                        "文字识别不可用：" +
-                            (com.stzb.assistant.ocr.OcrManager.unavailableReason
-                                ?: "引擎未就绪，请用带 ncnn/OpenCV 的构建重装")
-                    )
+                !s.frameOk ->
+                    rejectExecution(s.frameDetail.ifBlank { "抓到的画面不可用，请重新授权屏幕捕获" })
 
-                else -> {
-                    // 最后一道：拿真实帧当证据。纯色帧几乎只可能是“授权选成了单个应用”
-                    // 或捕获会话已失效——这两种情况下无论点多少次都不会有反应。
-                    val health = com.stzb.assistant.service.ScreenCaptureService.instance
-                        ?.probeFrameHealth()
-                    when {
-                        health == null ->
-                            rejectExecution("屏幕捕获服务异常，请先关闭再重新授权捕获")
-                        !health.readable || health.degenerate -> rejectExecution(health.detail)
-                        else -> true
-                    }
-                }
+                else -> true
             }
         }
 
@@ -3185,6 +3280,9 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     }
 
     fun destroy() {
+        EngineBridge.logSink = null
+        readyMonitorJob?.cancel()
+        readyMonitorJob = null
         pipeline.unregisterListener(this)
         com.stzb.assistant.tactics.ScheduledTaskManager.unregisterListener(scheduleChangeListener)
         com.stzb.assistant.tactics.AutoPilot.unregisterListener(autoPilotListener)

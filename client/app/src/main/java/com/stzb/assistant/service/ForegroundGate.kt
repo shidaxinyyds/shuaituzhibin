@@ -100,6 +100,17 @@ object ForegroundGate {
      */
     fun isDefinitelyNotTargetForeground(): Boolean = evaluate() == Verdict.BLOCKED_NOT_FOREGROUND
 
+    /**
+     * 被拦时的现场描述（期望包名 vs 实际前台）。
+     *
+     * 闸门过去只说“拦了”，把“期望是谁、实际是谁”留在 logcat 里——而这两个包名
+     * 恰恰是判断“游戏包名根本不叫这个”的唯一证据（渠道服改名、装的是国际服等）。
+     */
+    fun describeBlock(): String {
+        val (expected, actual) = snapshot()
+        return "目标游戏 [$expected] 不在前台，当前前台是 [$actual]"
+    }
+
     private fun evaluate(): Verdict {
         val expected = KnowledgeBaseManager.activeProfile.targetPackage
         if (expected.isBlank()) return Verdict.NO_EXPECTED_PACKAGE
