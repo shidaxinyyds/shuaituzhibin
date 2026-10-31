@@ -71,6 +71,19 @@ class RoadPavingFlow(
             return false
         }
 
+        // 世界坐标必须与地块一一对应。缺了它就只能用“取点时的屏幕位置”，
+        // 而流程一开始就会把镜头拉回主城——那组坐标随即失效，点出去必然落空，
+        // 且没有任何报错（这正是真机上“点了开始、什么都没发生”的机制）。
+        // 这里再拦一层：定时任务与 AutoPilot 绕过了面板预检，直接调本函数。
+        if (config.worldTargetList.size != config.targetTileList.size) {
+            isRunning.set(false)
+            logWarn(
+                "目标地块缺少游戏内坐标（世界坐标 ${config.worldTargetList.size}/${config.targetTileList.size}）：" +
+                    "未完成地图标定，本次不执行。请到「校准」页签做 ③ 两点标定后重新点选。"
+            )
+            return false
+        }
+
         listener?.onStatusChanged(
             TacticalState.TaskType.ROAD_PAVING,
             TacticalState.Status.RUNNING,

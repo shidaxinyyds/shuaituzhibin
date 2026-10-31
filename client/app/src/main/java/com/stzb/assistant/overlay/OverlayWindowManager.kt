@@ -101,6 +101,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         val foreground: Boolean = true,
         val frameOk: Boolean = true,
         val frameDetail: String = "",
+        /** 地图投影（每格像素数 + 镜头中心世界坐标）是否已标定。 */
+        val mapCalibrated: Boolean = false,
         val atMs: Long = 0L
     ) {
         /** 快照是否已建立（false 表示还没探测过，不能拿默认值当结论）。 */
@@ -593,6 +595,7 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             // 拿它当结论会变成“随机拒绝执行”的假红。捕获未开的情形由 capture=false 单独报。
             frameOk = health == null || !health.degenerate,
             frameDetail = health?.detail ?: "",
+            mapCalibrated = com.stzb.assistant.service.MapProjection.isCalibrated,
             atMs = android.os.SystemClock.elapsedRealtime()
         )
     }
@@ -601,7 +604,8 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
     private fun readyLine(s: ReadySnapshot): String {
         fun m(ok: Boolean) = if (ok) "✓" else "✗"
         return "环境：捕获${m(s.capture)} 触控${m(s.touch)} 识别${m(s.ocr)}" +
-            " 横屏${m(s.geometry)} 前台${m(s.foreground)} 画面${m(s.frameOk)}"
+            " 横屏${m(s.geometry)} 前台${m(s.foreground)} 画面${m(s.frameOk)}" +
+            " 标定${m(s.mapCalibrated)}"
     }
 
     /**
@@ -693,6 +697,17 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             // 没有目标就明确拒绝执行，并告诉用户该做什么。
             if (pickedPavingPoints.isEmpty()) {
                 Toast.makeText(context, "请先点选目标地块（可多点），再开始铺路", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+            // 数量对不上 = 有地块只拿到了“取点时的屏幕位置”。流程一开头会把镜头拉回主城，
+            // 那组屏幕坐标随即全部失效：点出去落在别处，且既不报错也不重试。
+            // 这就是“点了开始、什么都没发生”的机制，所以宁可在门口拒绝。
+            if (pickedPavingWorld.size != pickedPavingPoints.size) {
+                rejectExecution(
+                    "目标地块缺少游戏内坐标（世界坐标 ${pickedPavingWorld.size}/${pickedPavingPoints.size}）：" +
+                        "未完成地图标定，现在只能按“取点时的屏幕位置”点，镜头一动就全部落空。" +
+                        "请先到「校准」页签点 ③ 两点标定（输入两块地各自的坐标），再重新点选地块。"
+                )
                 return@setOnClickListener
             }
             pipeline.startRoadPaving(
