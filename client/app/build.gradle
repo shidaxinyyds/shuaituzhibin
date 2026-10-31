@@ -15,8 +15,8 @@ android {
         // 版本号三处必须同步：这里的 versionCode/versionName、
         // .github/workflows/build_apk.yml 里的 APK 文件名与 tag_name、以及 Release 说明里的“核对第一行”。
         // 不同步的后果是“装上去分不清是哪一版”——本项目已经为此白跑过几轮排查。
-        versionCode 131
-        versionName "1.3.1-diag-log"
+        versionCode 132
+        versionName "1.3.2-coord-selfcheck"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
 

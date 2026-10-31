@@ -1418,6 +1418,13 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
         // 首次真机按 classify 日志（含各槽最高分与当前门槛）把门槛挪到“能覆盖真机、又不误认”的位置。
         // 越界（0.50~0.95 之外）由 setMatchThreshold 拒绝并保留原值，这里只按 ±0.02 步进。
         val defThreshStep = 0.02f
+        // ⑩ 坐标四角自检：把画布四角与中心依次点出去。
+        //    “坐标是不是错了”只能靠系统真的在那几个位置注入手指来判定，
+        //    打开 开发者选项 → 显示点按操作反馈，看五个点是否落在屏幕四角与正中。
+        root.findViewById<Button>(R.id.btnCalibCoordSelfTest)?.setOnClickListener {
+            runCoordinateSelfTest()
+        }
+
         root.findViewById<Button>(R.id.btnCalibDefThreshDown)?.setOnClickListener {
             adjustDefenderThreshold(-defThreshStep)
         }
@@ -2799,14 +2806,20 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
             commitPicks()
         }
 
-        pickerView?.setOnTouchListener { _, event ->
+        pickerView?.setOnTouchListener { v, event ->
+            // 准星必须和落点标记用同一套基准：都以「容器在屏幕上的原点」为准。
+            // 当前悬浮窗带 FLAG_LAYOUT_IN_SCREEN，这个原点通常是 (0,0)，两者算出来一样；
+            // 但一旦 flags 或系统栏内缩变了，只扣一半就会变成“准星偏了、记录的点也跟着偏”——
+            // 而用户是跟着准星挑手势的，这种偏移会直接写进地块坐标。
+            val loc = IntArray(2)
+            v.getLocationOnScreen(loc)
             when (event.action) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                     flCrosshair?.visibility = View.VISIBLE
                     val cw = flCrosshair?.width?.takeIf { it > 0 } ?: dp(60)
                     val ch = flCrosshair?.height?.takeIf { it > 0 } ?: dp(60)
-                    flCrosshair?.x = event.rawX - cw / 2f
-                    flCrosshair?.y = event.rawY - ch / 2f
+                    flCrosshair?.x = event.rawX - loc[0] - cw / 2f
+                    flCrosshair?.y = event.rawY - loc[1] - ch / 2f
                 }
                 MotionEvent.ACTION_UP -> {
                     addPickPoint(event.rawX, event.rawY)
@@ -3128,6 +3141,59 @@ class OverlayWindowManager(private val context: Context) : TacticalState.Tactica
                 }
             }
             else -> Toast.makeText(context, "已确认 ${pts.size} 个地块虚拟坐标", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 坐标四角自检：把设计画布的 左上/右上/左下/右下/中心 依次点出去。
+     *
+     * ## 为什么需要它
+     * 坐标映射是否自洽，光看日志里的数字无法判断——必须让系统**真的**在那几个位置注入手指。
+     * 打开系统「开发者选项 → 显示点按操作反馈」后：
+     *  - 五个反馈点落在屏幕四角与正中 → 映射正确，问题不在坐标；
+     *  - 挤在一起 / 整体偏到一侧 / 只有一半在屏内 → 映射错了，改看下面打印的数值。
+     *
+     * 每指间隔 900ms，是因为系统同一时刻只能容纳一条注入手势：
+     * 连发会把前一条取消，看起来像“只点了一下”。
+     */
+    private fun runCoordinateSelfTest() {
+        val vw = com.stzb.assistant.service.CoordinateTransformer.virtualWidth
+        val vh = com.stzb.assistant.service.CoordinateTransformer.virtualHeight
+        val pw = com.stzb.assistant.service.CoordinateTransformer.physicalWidth
+        val ph = com.stzb.assistant.service.CoordinateTransformer.physicalHeight
+        val sx = com.stzb.assistant.service.CoordinateTransformer.scaleX
+        val sy = com.stzb.assistant.service.CoordinateTransformer.scaleY
+
+        val sxStr = "%.3f".format(sx)
+        val syStr = "%.3f".format(sy)
+
+        emitAdvisorLog(
+            "INFO",
+            "🧭 坐标自检：屏幕 ${pw.toInt()}x${ph.toInt()}，画布 ${vw.toInt()}x${vh.toInt()}，" +
+                "scale=$sxStr/$syStr"
+        )
+
+        val points = listOf(
+            "左上" to android.graphics.PointF(1f, 1f),
+            "右上" to android.graphics.PointF(vw - 2f, 1f),
+            "左下" to android.graphics.PointF(1f, vh - 2f),
+            "右下" to android.graphics.PointF(vw - 2f, vh - 2f),
+            "中心" to android.graphics.PointF(vw / 2f, vh / 2f)
+        )
+
+        scope.launch {
+            for ((name, p) in points) {
+                val ok = withContext(Dispatchers.IO) { EngineBridge.tap(p.x, p.y) }
+                val real = com.stzb.assistant.service.CoordinateTransformer.toReal(p.x, p.y)
+                emitAdvisorLog(
+                    if (ok) "INFO" else "WARN",
+                    "🧭 ${name}：画布(${p.x.toInt()},${p.y.toInt()}) → " +
+                        "屏幕(${real.x.toInt()},${real.y.toInt()}) " +
+                        (if (ok) "已派发" else "未派发（原因见上一条）")
+                )
+                delay(900L)
+            }
+            emitAdvisorLog("INFO", "🧭 坐标自检结束：请对照屏幕上五个点按反馈的位置")
         }
     }
 

@@ -1001,6 +1001,19 @@
                         android:textColor="#FFFFFF"
                         android:textSize="11sp" />
 
+                    <!-- 坐标自检：把画布四角与中心依次点出去。
+                         开 开发者选项→显示点按操作反馈 后，五个点应该落在屏幕四角与正中。
+                         “点不准/点了没反应”到底是坐标错、还是手势没发出去，靠它一次分清。 -->
+                    <Button
+                        android:id="@+id/btnCalibCoordSelfTest"
+                        android:layout_width="match_parent"
+                        android:layout_height="30dp"
+                        android:layout_marginTop="4dp"
+                        android:background="@drawable/bg_pill"
+                        android:text="⑩ 坐标四角自检（先开“显示点按反馈”）"
+                        android:textColor="#FFFFFF"
+                        android:textSize="11sp" />
+
                     <!-- 守军头像阈值：真机抓帧分数整体低于截图，需现场步进微调；
                          区间 0.50~0.95 由分类器兜底，越界自动拒绝，这里只按 ±0.02 挪。 -->
                     <LinearLayout
